@@ -220,6 +220,7 @@ library
       Grisette.Internal.Unified.UnifiedBV
       Grisette.Internal.Unified.UnifiedData
       Grisette.Internal.Unified.UnifiedFP
+      Grisette.Internal.Unified.UnifiedArray
       Grisette.Internal.Unified.UnifiedFun
       Grisette.Internal.Unified.UnifiedInteger
       Grisette.Internal.Unified.UnifiedPrim

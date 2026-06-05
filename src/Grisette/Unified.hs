@@ -179,6 +179,11 @@ module Grisette.Unified
     unifiedFunInstanceName,
     genUnifiedFunInstance,
 
+    -- ** Unified arrays
+    GetArray,
+    UnifiedArray (..),
+    UnifiedArrayConstraint,
+
     -- ** Supplemental conversions
     UnifiedBVBVConversion,
     UnifiedBVFPConversion,
@@ -343,6 +348,11 @@ import Grisette.Internal.Unified.UnifiedFP
     GetFPRoundingMode,
     SafeUnifiedFP,
     UnifiedFP,
+  )
+import Grisette.Internal.Unified.UnifiedArray
+  ( GetArray,
+    UnifiedArray (..),
+    UnifiedArrayConstraint,
   )
 import Grisette.Internal.Unified.UnifiedFun
   ( GetFun,

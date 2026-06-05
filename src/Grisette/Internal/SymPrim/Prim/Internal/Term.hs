@@ -7607,8 +7607,11 @@ instance
   withNonFuncPrim = withNonFuncPrim @k $ withNonFuncPrim @v $ id
   sbvToCon (SBV.ArrayModel tbl def) = do
     -- NOTE: We reverse the list as later elements should take precedence.
-    let tbl' = HM.fromList . reverse . fmap (bimap sbvToCon sbvToCon) $ tbl
     let def' = sbvToCon def
+    -- Canonicalize: drop overrides whose value equals the default, so a decoded
+    -- model array satisfies the same canonical invariant as 'const'/'store'
+    -- (see 'Grisette.Internal.SymPrim.Array.Array').
+    let tbl' = HM.filter (/= def') . HM.fromList . reverse . fmap (bimap sbvToCon sbvToCon) $ tbl
     Array tbl' def'
 
 -- Bitwise

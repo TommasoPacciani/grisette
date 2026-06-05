@@ -97,6 +97,7 @@ import Grisette.Internal.SymPrim.Prim.Term
   )
 import Grisette.Internal.SymPrim.Prim.TermUtils (extractTerm)
 import Grisette.Internal.SymPrim.SymAlgReal (SymAlgReal (SymAlgReal))
+import Grisette.Internal.SymPrim.Array (Array)
 import Grisette.Internal.SymPrim.SymArray (SymArray (SymArray))
 import Grisette.Internal.SymPrim.SymBV
   ( SymIntN (SymIntN),
@@ -233,6 +234,11 @@ instance
     case decideSymbolKind @knd of
       Left HRefl -> SymbolSet <$> extractTerm HS.empty t
       Right HRefl -> SymbolSet <$> extractTerm HS.empty t
+
+-- A concrete array contains no symbolic variables (the 'C-mode side of
+-- @GetArray@), so it exposes the empty symbol set.
+instance ExtractSym (Array k v) where
+  extractSymMaybe _ = Just mempty
 
 derive
   [ ''(),

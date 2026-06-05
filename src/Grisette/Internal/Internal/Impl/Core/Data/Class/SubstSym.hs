@@ -89,6 +89,7 @@ import Grisette.Internal.SymPrim.Prim.Term
     someTypedSymbol,
   )
 import Grisette.Internal.SymPrim.SymAlgReal (SymAlgReal (SymAlgReal))
+import Grisette.Internal.SymPrim.Array (Array)
 import Grisette.Internal.SymPrim.SymArray (SymArray (SymArray))
 import Grisette.Internal.SymPrim.SymBV
   ( SymIntN (SymIntN),
@@ -195,6 +196,11 @@ instance
   ) =>
   SubstSym (SymArray sk sv) where
   substSym sym v (SymArray t) = SymArray $ substTerm sym (underlyingTerm v) HS.empty t
+
+-- A concrete array contains no symbolic variables (the 'C-mode side of
+-- @GetArray@), so substitution is the identity.
+instance SubstSym (Array k v) where
+  substSym _ _ = id
 
 derive
   [ ''(),

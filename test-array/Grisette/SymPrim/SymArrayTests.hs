@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE DerivingVia #-}
@@ -27,6 +28,7 @@
 module Grisette.SymPrim.SymArrayTests (symArrayTests) where
 
 import qualified Data.HashMap.Strict as HM
+import Data.Hashable (hash)
 import qualified Data.SBV as SBV
 import Data.Word (Word8)
 import GHC.Generics (Generic)
@@ -45,6 +47,7 @@ import Grisette
     SymInteger,
     SymWordN,
     ToCon (toCon),
+    ToSym (toSym),
     TypedConstantSymbol,
     WordN,
     isEmptySet,
@@ -58,6 +61,10 @@ import qualified Grisette.Internal.SymPrim.Array as Arr
 -- operations from the dedicated public module (imported qualified).
 import Grisette.SymPrim (SymArray)
 import qualified Grisette.SymPrim.SymArray as A
+-- The unified array layer, exercised through the public umbrella. Imported
+-- qualified so the unified '.==' / 'GetBool' do not clash with the base ones.
+import Grisette.Unified (EvalModeTag (C, S))
+import qualified Grisette.Unified as U
 import Test.Framework (Test, testGroup)
 import Test.Framework.Providers.HUnit (testCase)
 import Test.Framework.Providers.QuickCheck2 (testProperty)
@@ -136,6 +143,53 @@ concreteLaws =
           forAll arbitrary $ \(k, u, v) ->
             Arr.select (Arr.store (Arr.store arr (k :: Int) (u :: Int)) k (v :: Int)) k
               === Arr.select (Arr.store arr k v) k
+    ]
+
+-- Build a canonical array via the smart constructors (store over const), so
+-- the canonical invariant holds. Default is 0; values are drawn from a range
+-- that includes the default (so some overrides get dropped) over keys [0..8].
+genCanon :: Gen (Array Int Int)
+genCanon = do
+  n <- choose (0, 6)
+  kvs <- vectorOf n ((,) <$> choose (0, 8) <*> choose (0, 3))
+  pure (foldl (\a (k, v) -> Arr.store a k v) (Arr.const 0) kvs)
+
+-- | Concrete-mode ('C carrier) equality. After canonicalize-on-construction,
+-- the derived structural '==' on 'Array' is extensional for arrays that share a
+-- default. These are the regressions for the non-canonical 'Eq' hazard that
+-- unified 'C-mode register equality would otherwise hit.
+concreteCanonicalEq :: Test
+concreteCanonicalEq =
+  testGroup
+    "concrete canonical equality (Array, 'C-mode carrier)"
+    [ testCase "storing the default value is a structural no-op" $
+        assertEqual
+          "store (const 0) 5 0 == const 0"
+          (Arr.const 0 :: Array Int Int)
+          (Arr.store (Arr.const 0) 5 0),
+      testCase "overwriting back to the default cancels an override" $
+        assertEqual
+          "store (store (const 0) 3 7) 3 0 == const 0"
+          (Arr.const 0 :: Array Int Int)
+          (Arr.store (Arr.store (Arr.const 0) 3 7) 3 0),
+      testCase "an override equal to the default does not distinguish arrays" $
+        assertEqual
+          "{3->7,5->0}/0 == {3->7}/0"
+          (Arr.store (Arr.const 0) 3 7 :: Array Int Int)
+          (Arr.store (Arr.store (Arr.const 0) 3 7) 5 0),
+      testCase "genuinely different concrete arrays remain unequal" $
+        assertBool
+          "{3->7}/0 /= {}/0"
+          (Arr.store (Arr.const 0) 3 7 /= (Arr.const 0 :: Array Int Int)),
+      testCase "Hashable stays consistent with the canonical Eq" $
+        assertEqual
+          "equal arrays hash equally"
+          (hash (Arr.store (Arr.const 0) 5 0 :: Array Int Int))
+          (hash (Arr.const 0 :: Array Int Int)),
+      testProperty "structural == agrees with pointwise equality (shared default)" $
+        forAll genCanon $ \a ->
+          forAll genCanon $ \b ->
+            (a == b) === all (\k -> Arr.select a k == Arr.select b k) [0 .. 8]
     ]
 
 -- ---------------------------------------------------------------------------
@@ -374,7 +428,81 @@ machineryTests =
         checkValid
           ( A.select (A.store (A.const (con 0)) iW (con 5)) iW
               .== (con 5 :: SymWordN 8)
-          )
+          ),
+      testCase "ToSym then ToCon round-trips a concrete array" $ do
+        let ca = Arr.store (Arr.store (Arr.const 0) 3 7) 4 9 :: Array (WordN 8) (WordN 8)
+            sa = toSym ca :: SymArray (SymWordN 8) (SymWordN 8)
+        assertEqual "toCon (toSym a) == Just a" (Just ca) (toCon sa),
+      testCase "ToCon of a non-concrete symbolic array is Nothing" $
+        assertEqual
+          "toCon \"a\" == Nothing"
+          (Nothing :: Maybe (Array (WordN 8) (WordN 8)))
+          (toCon (aW :: SymArray (SymWordN 8) (SymWordN 8)))
+    ]
+
+-- ---------------------------------------------------------------------------
+-- 7. Unified array layer (GetArray) — the mode-polymorphic interface that lets
+--    p4check drop its lane type-family split. Imported only through the public
+--    "Grisette.Unified": the abstract type 'U.GetArray' and the canonicalizing
+--    smart constructors 'U.constArray'/'U.storeArray'/'U.selectArray' (the raw
+--    'Array'/'SymArray' constructors are NOT exported there).
+-- ---------------------------------------------------------------------------
+
+-- | A single mode-polymorphic computation. It type-checks only if the entire
+-- 'U.UnifiedArrayConstraint' bundle (the ops plus unified equality, ite, and
+-- mergeability) resolves for @mode@. It is instantiated at both 'C and 'S
+-- below, which is exactly the mode-generic register code p4check wants to write
+-- once. By last-write-wins, @a@ and @b@ denote the same array, so the returned
+-- unified equality is true ('C) / valid ('S).
+unifiedRoundTrip ::
+  forall mode k v.
+  (U.DecideEvalMode mode, U.UnifiedArrayConstraint mode k v) =>
+  v -> k -> v -> v -> (v, U.GetBool mode)
+unifiedRoundTrip d key val val2 =
+  let a = U.storeArray (U.storeArray (U.constArray d) key val) key val2 :: U.GetArray mode k v
+      b = U.storeArray (U.constArray d) key val2 :: U.GetArray mode k v
+   in (U.selectArray a key, (U..==) @mode a b)
+
+unifiedLayer :: Test
+unifiedLayer =
+  testGroup
+    "unified array layer (GetArray, abstract smart constructors)"
+    [ testCase "'C: select after store reads the stored value" $
+        assertEqual
+          "select (store (const 0) 3 7) 3 == 7"
+          (7 :: WordN 8)
+          ( U.selectArray
+              (U.storeArray (U.constArray 0 :: U.GetArray 'C (WordN 8) (WordN 8)) 3 7)
+              3
+          ),
+      testCase "'C: store-of-default canonicalizes; unified == is a concrete Bool" $
+        let z = U.constArray 0 :: U.GetArray 'C (WordN 8) (WordN 8)
+            s = U.storeArray z 5 0
+         in assertBool "store (const 0) 5 0 .== const 0" ((U..==) @'C s z),
+      testCase "'C: mode-polymorphic round trip (last write wins, eq is True)" $
+        let (v, eq) = unifiedRoundTrip @'C @(WordN 8) @(WordN 8) 0 3 7 9
+         in do
+              assertEqual "select after the two stores" (9 :: WordN 8) v
+              assertBool "the two arrays are concretely equal" eq,
+      testCase "'S: select after store is provable through unified ops" $
+        checkValid
+          ( (U..==) @'S
+              ( U.selectArray
+                  ( U.storeArray
+                      (U.constArray (con 0) :: U.GetArray 'S (SymWordN 8) (SymWordN 8))
+                      iW
+                      (con 5)
+                  )
+                  iW
+              )
+              (con 5 :: SymWordN 8)
+          ),
+      testCase "'S: array-level unified equality is a solvable SymBool" $
+        let a = U.storeArray (U.constArray (con 0)) iW (con 5) :: U.GetArray 'S (SymWordN 8) (SymWordN 8)
+         in checkValid ((U..==) @'S a a),
+      testCase "'S: mode-polymorphic round trip equality is valid" $
+        let (_, eq) = unifiedRoundTrip @'S @(SymWordN 8) @(SymWordN 8) (con 0) iW (con 5) (con 9)
+         in checkValid eq
     ]
 
 -- ---------------------------------------------------------------------------
@@ -384,9 +512,11 @@ symArrayTests =
   testGroup
     "SymArray"
     [ concreteLaws,
+      concreteCanonicalEq,
       sbvProbes,
       axioms,
       soundnessRegressions,
       modelRoundTrip,
-      machineryTests
+      machineryTests,
+      unifiedLayer
     ]

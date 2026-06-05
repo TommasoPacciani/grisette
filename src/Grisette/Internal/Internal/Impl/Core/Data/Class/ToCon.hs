@@ -92,7 +92,9 @@ import Grisette.Internal.SymPrim.FP
   )
 import Grisette.Internal.SymPrim.GeneralFun (type (-->))
 import Grisette.Internal.SymPrim.IntBitwidth (intBitwidthQ)
-import Grisette.Internal.SymPrim.Prim.Term (LinkedRep)
+import Grisette.Internal.SymPrim.Prim.Term (LinkedRep, SupportedNonFuncPrim)
+import Grisette.Internal.SymPrim.Array (Array)
+import Grisette.Internal.SymPrim.SymArray (SymArray)
 import Grisette.Internal.SymPrim.SymAlgReal (SymAlgReal)
 import Grisette.Internal.SymPrim.SymBV
   ( SymIntN,
@@ -209,6 +211,21 @@ TO_CON_FROMSYM_SIMPLE(FPRoundingMode, SymFPRoundingMode)
 
 instance (ValidFP eb sb) => ToCon (SymFP eb sb) (FP eb sb) where
   toCon = conView
+
+-- Symbolic arrays: sym->con yields the concrete array when the term is concrete
+-- (otherwise 'Nothing'); sym->sym is the identity.
+instance
+  ( SupportedNonFuncPrim ck,
+    SupportedNonFuncPrim cv,
+    LinkedRep ck sk,
+    LinkedRep cv sv
+  ) =>
+  ToCon (SymArray sk sv) (Array ck cv)
+  where
+  toCon = conView
+
+instance ToCon (SymArray sk sv) (SymArray sk sv) where
+  toCon = Just
 
 #define TOCON_MACHINE_INTEGER(sbvw, bvw, n, int) \
 instance ToCon (sbvw n) int where \

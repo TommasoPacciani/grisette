@@ -92,6 +92,8 @@ import Grisette.Internal.SymPrim.FP
     ValidFP,
   )
 import Grisette.Internal.SymPrim.GeneralFun (type (-->))
+import Grisette.Internal.SymPrim.Array (Array)
+import Grisette.Internal.SymPrim.SymArray (SymArray)
 import Grisette.Internal.SymPrim.IntBitwidth (intBitwidthQ)
 import Grisette.Internal.SymPrim.Prim.Term
   ( LinkedRep,
@@ -215,6 +217,21 @@ TO_SYM_FROMCON_SIMPLE(FPRoundingMode, SymFPRoundingMode)
 
 instance (ValidFP eb sb) => ToSym (FP eb sb) (SymFP eb sb) where
   toSym = con
+
+-- Symbolic arrays: con->sym lifts a concrete array into a constant symbolic
+-- array; sym->sym is the identity.
+instance
+  ( SupportedNonFuncPrim ck,
+    SupportedNonFuncPrim cv,
+    LinkedRep ck sk,
+    LinkedRep cv sv
+  ) =>
+  ToSym (Array ck cv) (SymArray sk sv)
+  where
+  toSym = con
+
+instance ToSym (SymArray sk sv) (SymArray sk sv) where
+  toSym = id
 
 #define TOSYM_MACHINE_INTEGER(int, bv) \
 instance ToSym int (bv) where \
