@@ -29,22 +29,20 @@ import GHC.Generics (Generic)
 import Language.Haskell.TH.Syntax (Lift)
 import Prelude (Show, Eq, Ord)
 
--- TODO: The equality of this array model is incorrect. The easy solution is
--- to disallow it entirely. Alternatively, I already have a version with a
--- working equality check. It works by canonicalising the array.
+-- | Concrete model of a symbolic array: a finite map of overrides over a
+-- default ("everything else") value. Mirrors SBV's @ArrayModel@ and the SMT
+-- theory of arrays (@select@/@store@/@const@).
 --
--- Canonicalisation will not happen for keys with an infinite domain and
--- realistically also not for keys with a sufficiently large domain. In fact,
--- we avoid tracking information for canonicalisation in these cases altogether!
--- The main gripe with this is that at that point is that insertions do require
--- keys for which we know both their cardinality and can enumerate their domain.
--- The latter we could restrict to only enumerable domains given a finite
--- cardinality with type-level shenanigans, but still.
---
--- Yet another alternative would be to simply accept that we cannot conclude
--- inequality if one of the arrays would require canonicalisation? Then we don't
--- need the additional typeclass constraints. This way, we could still perform
--- normalisation of most terms.
+-- NOTE on equality: the derived 'Eq'/'Ord'/'Hashable' here are /structural/ and
+-- therefore non-canonical — two values denoting the same array can differ
+-- structurally (an override whose value equals the default, or, on finite key
+-- domains, different defaults fully masked by overrides). This structural
+-- instance is used only for term interning (where being conservative merely
+-- reduces sharing and is always sound). Symbolic equality of arrays does NOT
+-- rely on it: 'Grisette.Internal.SymPrim.Prim.Internal.Term.pevalArrayEqTerm'
+-- never concrete-folds distinct arrays to unequal and defers to the solver's
+-- extensional (object) array equality. Do not rely on this structural 'Eq' for
+-- deciding semantic equality of concrete arrays on finite key domains.
 data Array k v = Array (HM.HashMap k v) v
   deriving (Show, Eq, Ord, Generic, Lift, Hashable, NFData)
 

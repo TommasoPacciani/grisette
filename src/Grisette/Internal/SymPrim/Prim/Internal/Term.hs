@@ -388,6 +388,7 @@ import Grisette.Internal.Core.Data.Symbol
   )
 import Grisette.Internal.SymPrim.AlgReal (AlgReal, fromSBVAlgReal, toSBVAlgReal)
 import Grisette.Internal.SymPrim.Array (Array (Array))
+import qualified Grisette.Internal.SymPrim.Array as Arr
 import Grisette.Internal.SymPrim.BV (IntN, WordN)
 import Grisette.Internal.SymPrim.FP
   ( FP (FP),
@@ -7471,13 +7472,26 @@ instance SupportedNonFuncPrim AlgReal where
 
 -- Array
 
+-- | Partial evaluation for @select@. When both the array and the index are
+-- concrete, fold @select (con arr) (con key)@ to the concrete element
+-- @con (Arr.select arr key)@. This is what lets @evalSym@/@toCon@ read concrete
+-- element values back out of a model (after the array term has been replaced by
+-- its decoded concrete value). All other shapes are left symbolic.
+--
+-- @withPrim \@(Array k v)@ brings the array's 'PrimConstraint' into scope, which
+-- supplies both @Hashable k@ (for the lookup) and @SupportedPrim v@ (for
+-- 'conTerm' on the element).
 pevalSelectTerm ::
   forall k v.
   SupportedPrim (Array k v) =>
   Term (Array k v) ->
   Term k ->
   Term v
-pevalSelectTerm = selectTerm -- TODO: perform optimisation
+pevalSelectTerm arr key =
+  withPrim @(Array k v) $
+    case (arr, key) of
+      (ConTerm a, ConTerm kc) -> conTerm (Arr.select a kc)
+      _ -> selectTerm arr key
 
 pevalStoreTerm ::
   forall k v.
@@ -7496,6 +7510,49 @@ pevalConstArrayTerm ::
   Term (Array k v)
 pevalConstArrayTerm = constArrayTerm -- TODO: perform optimisation
 
+-- | Sound equality partial-evaluation for symbolic arrays.
+--
+-- The concrete array model ('Array') uses a /structural/ 'Eq' that is not
+-- canonical: two concrete arrays denoting the same mapping can be represented
+-- differently (e.g. an explicit entry whose value equals the default, or, on
+-- finite key domains, differing defaults that are fully masked by overrides).
+-- Hence we must never concrete-fold the equality of two distinct concrete-array
+-- terms to 'False'. We only perform the always-sound fold (syntactically
+-- identical interned terms denote equal arrays) and otherwise defer to the
+-- solver, whose array equality is extensional (SMT object equality). This is
+-- what makes symbolic array equality sound even though the concrete 'Eq' is
+-- non-canonical.
+pevalArrayEqTerm ::
+  forall k v.
+  SupportedPrim (Array k v) =>
+  Term (Array k v) ->
+  Term (Array k v) ->
+  Term Bool
+pevalArrayEqTerm l r
+  | l == r = trueTerm
+  | otherwise = eqTerm l r
+{-# INLINEABLE pevalArrayEqTerm #-}
+
+-- | Sound distinctness partial-evaluation for symbolic arrays. Mirrors
+-- 'pevalArrayEqTerm': the only fold performed is the sound one (a repeated
+-- interned term makes the group non-distinct); everything else is deferred to
+-- the solver. In particular we never use the non-canonical concrete 'Eq' to
+-- decide that concrete arrays are distinct.
+pevalArrayDistinctTerm ::
+  forall k v.
+  SupportedPrim (Array k v) =>
+  NonEmpty (Term (Array k v)) ->
+  Term Bool
+pevalArrayDistinctTerm (_ :| []) = trueTerm
+pevalArrayDistinctTerm (a :| [b]) = pevalNotTerm (pevalArrayEqTerm a b)
+pevalArrayDistinctTerm l
+  | hasInternedDup (toList l) = falseTerm
+  | otherwise = distinctTerm l
+  where
+    hasInternedDup [] = False
+    hasInternedDup (x : xs) = any (== x) xs || hasInternedDup xs
+{-# INLINEABLE pevalArrayDistinctTerm #-}
+
 instance SupportedPrimConstraint (Array k v) where
   type PrimConstraint (Array k v) =
     ( SupportedNonFuncPrim k
@@ -7513,8 +7570,8 @@ instance
   ) => SupportedPrim (Array k v) where
   defaultValue = Array mempty defaultValue
   pevalITETerm = pevalITEBasicTerm
-  pevalEqTerm = pevalDefaultEqTerm
-  pevalDistinctTerm = pevalGeneralDistinct
+  pevalEqTerm = pevalArrayEqTerm
+  pevalDistinctTerm = pevalArrayDistinctTerm
   conSBVTerm (Array entries def) = withNonFuncPrim @(Array k v) $ do
     let root = SBV.constArray $ conSBVTerm def
     let foldlWithKeyBy acc xs f = HM.foldlWithKey' f acc xs

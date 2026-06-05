@@ -522,3 +522,29 @@ test-suite spec
   if impl(ghc >= 9.2)
     ghc-prof-options: -finfo-table-map -fdistinct-constructor-tables
   else
+
+test-suite array-spec
+  type: exitcode-stdio-1.0
+  main-is: Main.hs
+  other-modules:
+      Grisette.SymPrim.SymArrayTests
+  hs-source-dirs:
+      test-array
+  ghc-options: -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      HUnit ==1.6.*
+    , QuickCheck >=2.14 && <2.17
+    , base >=4.14 && <5
+    , containers >=0.5.7 && <0.9
+    , grisette
+    , hashable >=1.3 && <1.6
+    , sbv >=13.4
+    , test-framework >=0.8.2 && <0.9
+    , test-framework-hunit >=0.3.0.2 && <0.4
+    , test-framework-quickcheck2 >=0.3.0.5 && <0.4
+    , unordered-containers >=0.2.17 && <0.3
+  default-language: Haskell2010
+  if flag(optimize)
+    ghc-options: -O2
+  else
+    ghc-options: -O0
