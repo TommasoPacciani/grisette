@@ -85,9 +85,11 @@ import Grisette.Internal.SymPrim.GeneralFun (substTerm, type (-->) (GeneralFun))
 import Grisette.Internal.SymPrim.Prim.Term
   ( LinkedRep (underlyingTerm),
     SymRep (SymType),
+    SupportedNonFuncPrim,
     someTypedSymbol,
   )
 import Grisette.Internal.SymPrim.SymAlgReal (SymAlgReal (SymAlgReal))
+import Grisette.Internal.SymPrim.SymArray (SymArray (SymArray))
 import Grisette.Internal.SymPrim.SymBV
   ( SymIntN (SymIntN),
     SymWordN (SymWordN),
@@ -182,6 +184,17 @@ SUBSTITUTE_SYM_SIMPLE(SymFPRoundingMode)
 
 instance (ValidFP eb sb) => SubstSym (SymFP eb sb) where
   substSym sym v (SymFP t) = SymFP $ substTerm sym (underlyingTerm v) HS.empty t
+
+-- A symbolic array is backed by a single array-sorted term; substitution simply
+-- rewrites that term, like the scalar primitives.
+instance
+  ( SupportedNonFuncPrim ck,
+    SupportedNonFuncPrim cv,
+    LinkedRep ck sk,
+    LinkedRep cv sv
+  ) =>
+  SubstSym (SymArray sk sv) where
+  substSym sym v (SymArray t) = SymArray $ substTerm sym (underlyingTerm v) HS.empty t
 
 derive
   [ ''(),

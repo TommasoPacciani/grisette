@@ -91,10 +91,13 @@ import Grisette.Internal.SymPrim.Prim.Model
 import Grisette.Internal.SymPrim.Prim.Term
   ( IsSymbolKind (decideSymbolKind),
     SymRep (SymType),
+    SupportedNonFuncPrim,
+    LinkedRep,
     someTypedSymbol,
   )
 import Grisette.Internal.SymPrim.Prim.TermUtils (extractTerm)
 import Grisette.Internal.SymPrim.SymAlgReal (SymAlgReal (SymAlgReal))
+import Grisette.Internal.SymPrim.SymArray (SymArray (SymArray))
 import Grisette.Internal.SymPrim.SymBV
   ( SymIntN (SymIntN),
     SymWordN (SymWordN),
@@ -210,6 +213,23 @@ instance (ValidFP eb fb) => ExtractSym (SymFP eb fb) where
   extractSymMaybe ::
     forall knd. (IsSymbolKind knd) => SymFP eb fb -> Maybe (SymbolSet knd)
   extractSymMaybe (SymFP t) =
+    case decideSymbolKind @knd of
+      Left HRefl -> SymbolSet <$> extractTerm HS.empty t
+      Right HRefl -> SymbolSet <$> extractTerm HS.empty t
+
+-- A symbolic array is backed by a single first-order array-sorted term, so its
+-- symbolic variables are extracted exactly like the scalar primitives (delegate
+-- to the underlying term in both symbol kinds).
+instance
+  ( SupportedNonFuncPrim ck,
+    SupportedNonFuncPrim cv,
+    LinkedRep ck sk,
+    LinkedRep cv sv
+  ) =>
+  ExtractSym (SymArray sk sv) where
+  extractSymMaybe ::
+    forall knd. (IsSymbolKind knd) => SymArray sk sv -> Maybe (SymbolSet knd)
+  extractSymMaybe (SymArray t) =
     case decideSymbolKind @knd of
       Left HRefl -> SymbolSet <$> extractTerm HS.empty t
       Right HRefl -> SymbolSet <$> extractTerm HS.empty t

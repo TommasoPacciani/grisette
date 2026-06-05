@@ -290,6 +290,7 @@ module Grisette.SymPrim
     pattern FromIntegralTerm,
     pattern FromFPOrTerm,
     pattern ToFPTerm,
+    SymArray (..),
     pattern SelectTerm,
     pattern StoreTerm,
     pattern ConstArrayTerm,
@@ -430,6 +431,7 @@ import Grisette.Internal.SymPrim.Prim.TermUtils
     termSize,
     termsSize,
   )
+import Grisette.Internal.SymPrim.SymArray (SymArray (..))
 import Grisette.Internal.SymPrim.Quantifier
   ( existsFresh,
     existsSet,

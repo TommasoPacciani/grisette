@@ -1,4 +1,7 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -26,26 +29,35 @@ module Grisette.SymPrim.SymArrayTests (symArrayTests) where
 import qualified Data.HashMap.Strict as HM
 import qualified Data.SBV as SBV
 import Data.Word (Word8)
+import GHC.Generics (Generic)
 import GHC.Stack (HasCallStack)
+import Generics.Deriving (Default (Default))
 import Grisette
   ( EvalSym (evalSym),
+    ExtractSym (extractSym),
     ITEOp (symIte),
     LogicalOp (symImplies, symNot, (.&&)),
+    Mergeable,
     Solvable (con),
+    SubstSym (substSym),
     SymBool,
     SymEq ((./=), (.==)),
     SymInteger,
     SymWordN,
     ToCon (toCon),
+    TypedConstantSymbol,
     WordN,
+    isEmptySet,
     solve,
   )
 import Grisette.Internal.Backend.Solving (z3)
 import Grisette.Internal.Core.Data.Class.Solver (SolvingFailure (Unsat))
 import Grisette.Internal.SymPrim.Array (Array (Array))
 import qualified Grisette.Internal.SymPrim.Array as Arr
-import Grisette.Internal.SymPrim.SymArray (SymArray)
-import qualified Grisette.Internal.SymPrim.SymArray as A
+-- Exercise the public re-exports: the type from the umbrella module and the
+-- operations from the dedicated public module (imported qualified).
+import Grisette.SymPrim (SymArray)
+import qualified Grisette.SymPrim.SymArray as A
 import Test.Framework (Test, testGroup)
 import Test.Framework.Providers.HUnit (testCase)
 import Test.Framework.Providers.QuickCheck2 (testProperty)
@@ -314,6 +326,59 @@ modelRoundTrip =
 
 -- ---------------------------------------------------------------------------
 
+-- ---------------------------------------------------------------------------
+-- 6. Register-model machinery: ExtractSym / SubstSym + public re-export path
+-- ---------------------------------------------------------------------------
+
+-- | A Generic record embedding a 'SymArray', exactly as the p4 register model
+-- embeds a lane. This declaration only compiles if 'SymArray' has 'Mergeable',
+-- 'EvalSym', 'ExtractSym', and 'SubstSym' and they compose through 'Generic'
+-- (the machinery the register state needs to flow through @mrgIf@, be solved
+-- for, and be read back from a model).
+newtype RegBox = RegBox (SymArray (SymWordN 8) (SymWordN 8))
+  deriving stock (Generic)
+  deriving (Mergeable, EvalSym, ExtractSym, SubstSym) via (Default RegBox)
+
+machineryTests :: Test
+machineryTests =
+  testGroup
+    "register-model machinery (ExtractSym / SubstSym / public re-exports)"
+    [ testCase "ExtractSym: fresh array exposes its variable, concrete exposes none" $ do
+        assertBool
+          "fresh symbolic array must expose its variable"
+          (not (isEmptySet (extractSym aW)))
+        assertBool
+          "concrete array must expose no variables"
+          ( isEmptySet
+              (extractSym (con (Array HM.empty 0) :: SymArray (SymWordN 8) (SymWordN 8)))
+          ),
+      testCase "SubstSym: substituting the array symbol rewrites the array" $ do
+        -- aW is the symbol "aw"; replacing it with bW turns aW into bW, both
+        -- directly and underneath a select.
+        let aSym = "aw" :: TypedConstantSymbol (Array (WordN 8) (WordN 8))
+        checkValid (substSym aSym bW aW .== bW)
+        checkValid (A.select (substSym aSym bW aW) iW .== A.select bW iW),
+      testCase "Generic container (RegBox) round-trips extractSym + evalSym" $ do
+        assertBool
+          "RegBox must expose the wrapped array's symbol"
+          (not (isEmptySet (extractSym (RegBox aW))))
+        r <- solve z3 (A.select aW (con 3) .== con 7)
+        case r of
+          Left e -> assertFailure $ "expected SAT: " ++ show e
+          Right m -> do
+            let RegBox a' = evalSym False m (RegBox aW)
+                v = A.select a' (con 3) :: SymWordN 8
+            assertEqual "evalSym through RegBox then select 3" (Just 7) (toCon v :: Maybe (WordN 8)),
+      testCase "public Grisette.SymPrim.SymArray select/store/const round-trip" $
+        -- select/store/const here resolve through the public re-export module 'A'.
+        checkValid
+          ( A.select (A.store (A.const (con 0)) iW (con 5)) iW
+              .== (con 5 :: SymWordN 8)
+          )
+    ]
+
+-- ---------------------------------------------------------------------------
+
 symArrayTests :: Test
 symArrayTests =
   testGroup
@@ -322,5 +387,6 @@ symArrayTests =
       sbvProbes,
       axioms,
       soundnessRegressions,
-      modelRoundTrip
+      modelRoundTrip,
+      machineryTests
     ]

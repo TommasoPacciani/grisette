@@ -248,6 +248,7 @@ library
       Grisette.Lib.Data.Traversable
       Grisette.Lib.Data.Tuple
       Grisette.SymPrim
+      Grisette.SymPrim.SymArray
       Grisette.TH
       Grisette.Unified
       Grisette.Unified.Lib.Control.Applicative
@@ -536,6 +537,7 @@ test-suite array-spec
     , QuickCheck >=2.14 && <2.17
     , base >=4.14 && <5
     , containers >=0.5.7 && <0.9
+    , generic-deriving >=1.14.1 && <1.15
     , grisette
     , hashable >=1.3 && <1.6
     , sbv >=13.4
