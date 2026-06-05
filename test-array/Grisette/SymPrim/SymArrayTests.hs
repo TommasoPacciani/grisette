@@ -36,6 +36,7 @@ import GHC.Stack (HasCallStack)
 import Generics.Deriving (Default (Default))
 import Grisette
   ( EvalSym (evalSym),
+    AllSyms (allSyms),
     ExtractSym (extractSym),
     ITEOp (symIte),
     LogicalOp (symImplies, symNot, (.&&)),
@@ -391,7 +392,7 @@ modelRoundTrip =
 -- for, and be read back from a model).
 newtype RegBox = RegBox (SymArray (SymWordN 8) (SymWordN 8))
   deriving stock (Generic)
-  deriving (Mergeable, EvalSym, ExtractSym, SubstSym) via (Default RegBox)
+  deriving (Mergeable, EvalSym, ExtractSym, SubstSym, AllSyms) via (Default RegBox)
 
 machineryTests :: Test
 machineryTests =
@@ -423,6 +424,19 @@ machineryTests =
             let RegBox a' = evalSym False m (RegBox aW)
                 v = A.select a' (con 3) :: SymWordN 8
             assertEqual "evalSym through RegBox then select 3" (Just 7) (toCon v :: Maybe (WordN 8)),
+      testCase "AllSyms: symbolic array is one primitive, concrete array is none" $ do
+        assertEqual
+          "a symbolic array contributes exactly one symbolic primitive"
+          1
+          (length (allSyms aW))
+        assertEqual
+          "a concrete array contributes no symbolic primitives"
+          0
+          (length (allSyms (Arr.const 0 :: Array (WordN 8) (WordN 8))))
+        assertEqual
+          "a Default-derived container surfaces the wrapped array's primitive"
+          1
+          (length (allSyms (RegBox aW))),
       testCase "public Grisette.SymPrim.SymArray select/store/const round-trip" $
         -- select/store/const here resolve through the public re-export module 'A'.
         checkValid

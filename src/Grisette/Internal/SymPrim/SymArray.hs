@@ -49,6 +49,10 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
   , pattern ConstArrayTerm
   )
 import Grisette.Internal.SymPrim.Prim.Internal.Serialize ()
+import Grisette.Internal.Internal.Decl.SymPrim.AllSyms
+  ( AllSyms (allSymsS),
+    SomeSym (SomeSym),
+  )
 import Grisette.Internal.Core.Data.Class.Solvable (Solvable (con, sym, conView), ssym)
 import GHC.Generics (Generic)
 import Language.Haskell.TH.Syntax (Lift)
@@ -85,6 +89,17 @@ instance
   conView v = case underlyingTerm v of
     ConTerm t -> Just t
     _ -> Nothing
+
+-- A symbolic array is a single SMT primitive (like a symbolic function), so it
+-- contributes exactly itself to the list of symbolic primitives.
+instance
+  ( SupportedNonFuncPrim ck,
+    SupportedNonFuncPrim cv,
+    LinkedRep ck sk,
+    LinkedRep cv sv
+  ) =>
+  AllSyms (SymArray sk sv) where
+  allSymsS v = (SomeSym v :)
 
 instance
   ( SupportedNonFuncPrim ck,

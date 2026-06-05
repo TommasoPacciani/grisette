@@ -58,6 +58,7 @@ import Grisette.Internal.Internal.Decl.SymPrim.AllSyms
     allSymsS1,
   )
 import Grisette.Internal.SymPrim.AlgReal (AlgReal)
+import Grisette.Internal.SymPrim.Array (Array)
 import Grisette.Internal.SymPrim.BV (IntN, WordN)
 import Grisette.Internal.SymPrim.FP (FP, FPRoundingMode, ValidFP)
 import Grisette.Internal.TH.Derivation.Derive (derive)
@@ -160,6 +161,7 @@ CONCRETE_ALLSYMS(FPRoundingMode)
 CONCRETE_ALLSYMS_BV(WordN)
 CONCRETE_ALLSYMS_BV(IntN)
 CONCRETE_ALLSYMS(AlgReal)
+CONCRETE_ALLSYMS((Array k v))
 #endif
 
 instance AllSyms (Proxy a) where
