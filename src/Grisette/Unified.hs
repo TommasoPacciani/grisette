@@ -183,6 +183,7 @@ module Grisette.Unified
     GetArray,
     UnifiedArray (..),
     UnifiedArrayConstraint,
+    EvalModeArray,
 
     -- ** Supplemental conversions
     UnifiedBVBVConversion,
@@ -353,6 +354,7 @@ import Grisette.Internal.Unified.UnifiedArray
   ( GetArray,
     UnifiedArray (..),
     UnifiedArrayConstraint,
+    EvalModeArray,
   )
 import Grisette.Internal.Unified.UnifiedFun
   ( GetFun,

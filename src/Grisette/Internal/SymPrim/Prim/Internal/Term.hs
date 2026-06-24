@@ -7472,15 +7472,27 @@ instance SupportedNonFuncPrim AlgReal where
 
 -- Array
 
--- | Partial evaluation for @select@. When both the array and the index are
--- concrete, fold @select (con arr) (con key)@ to the concrete element
--- @con (Arr.select arr key)@. This is what lets @evalSym@/@toCon@ read concrete
--- element values back out of a model (after the array term has been replaced by
--- its decoded concrete value). All other shapes are left symbolic.
+-- | Partial evaluation for @select@, implementing the standard theory-of-arrays
+-- read equations so that a /closed/ array expression reduces on the host (which
+-- is not the solver: @evalSym@\/@toCon@ cannot discharge array axioms, so a
+-- closed @select (store … ) …@ left symbolic would make @toCon@ return
+-- 'Nothing'). The rules, each of which either yields a 'conTerm', returns an
+-- existing subterm, or recurses on a strictly smaller array — never growing the
+-- term and never introducing an @ite@:
+--
+--   * @select (con a) (con k) = con (Arr.select a k)@ — both leaf and index
+--     concrete; reads the element straight out of a decoded model array.
+--   * @select (const v) _ = v@ — a constant array reads its default for /any/
+--     index, concrete or symbolic.
+--   * @select (store a i x) j@ — pushed through only when the index equality is
+--     /concretely decided/ by 'pevalEqTerm': @i == j@ ⇒ @x@; @i \/= j@ ⇒
+--     @select a j@ (drop this store, recurse). A genuinely symbolic comparison
+--     is left as a 'selectTerm' for the solver's native array theory rather than
+--     expanded into a nested @ite@ chain (sound but a needless blow-up).
 --
 -- @withPrim \@(Array k v)@ brings the array's 'PrimConstraint' into scope, which
--- supplies both @Hashable k@ (for the lookup) and @SupportedPrim v@ (for
--- 'conTerm' on the element).
+-- supplies @Hashable k@ (lookups), @Eq v@ (the 'Arr.store' canonicalisation),
+-- and 'SupportedPrim' for 'conTerm' / 'pevalEqTerm'.
 pevalSelectTerm ::
   forall k v.
   SupportedPrim (Array k v) =>
@@ -7491,8 +7503,17 @@ pevalSelectTerm arr key =
   withPrim @(Array k v) $
     case (arr, key) of
       (ConTerm a, ConTerm kc) -> conTerm (Arr.select a kc)
+      (ConstArrayTerm _ v, _) -> v
+      (StoreTerm a i x, _) -> case pevalEqTerm i key of
+        ConTerm True -> x
+        ConTerm False -> pevalSelectTerm a key
+        _ -> selectTerm arr key
       _ -> selectTerm arr key
 
+-- | Partial evaluation for @store@: when array, index, and value are all
+-- concrete, fold to a concrete (canonicalised) 'Arr.store' so a closed
+-- store-chain becomes a single 'conTerm' an array-valued @toCon@ can read.
+-- All other shapes are left symbolic for the solver.
 pevalStoreTerm ::
   forall k v.
   SupportedPrim (Array k v) =>
@@ -7500,15 +7521,25 @@ pevalStoreTerm ::
   Term k ->
   Term v ->
   Term (Array k v)
-pevalStoreTerm = storeTerm -- TODO: perform optimisation
+pevalStoreTerm arr key val =
+  withPrim @(Array k v) $
+    case (arr, key, val) of
+      (ConTerm a, ConTerm kc, ConTerm vc) -> conTerm (Arr.store a kc vc)
+      _ -> storeTerm arr key val
 
+-- | Partial evaluation for @const@: a concrete default folds to a concrete
+-- 'Arr.const'; otherwise left symbolic.
 pevalConstArrayTerm ::
   forall k v.
   SupportedPrim (Array k v) =>
   Proxy k ->
   Term v ->
   Term (Array k v)
-pevalConstArrayTerm = constArrayTerm -- TODO: perform optimisation
+pevalConstArrayTerm pkey val =
+  withPrim @(Array k v) $
+    case val of
+      ConTerm vc -> conTerm (Arr.const vc)
+      _ -> constArrayTerm pkey val
 
 -- | Sound equality partial-evaluation for symbolic arrays.
 --
