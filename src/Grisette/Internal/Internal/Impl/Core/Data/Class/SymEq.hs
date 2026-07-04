@@ -97,6 +97,8 @@ import Grisette.Internal.SymPrim.SymFP
 import Grisette.Internal.SymPrim.SymInteger (SymInteger (SymInteger))
 import Grisette.Internal.TH.Derivation.Derive (derive)
 import Grisette.Internal.SymPrim.SymArray (SymArray)
+import Grisette.Internal.SymPrim.SymUninterp (SymUninterp)
+import GHC.TypeLits (KnownSymbol)
 
 #define CONCRETE_SEQ(type) \
 instance SymEq type where \
@@ -195,6 +197,10 @@ instance
   ) =>
   SymEq (SymArray sk sv) where
   lhs .== rhs = wrapTerm $ pevalEqTerm (underlyingTerm lhs) (underlyingTerm rhs)
+
+instance (KnownSymbol n) => SymEq (SymUninterp n) where
+  lhs .== rhs = wrapTerm $ pevalEqTerm (underlyingTerm lhs) (underlyingTerm rhs)
+  {-# INLINE (.==) #-}
 
 derive
   [ ''(),

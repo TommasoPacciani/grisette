@@ -51,6 +51,8 @@ import Grisette.Internal.SymPrim.SymFP
   )
 import Grisette.Internal.SymPrim.SymGeneralFun (type (-~>) (SymGeneralFun))
 import Grisette.Internal.SymPrim.SymInteger (SymInteger (SymInteger))
+import Grisette.Internal.SymPrim.SymUninterp (SymUninterp (SymUninterp))
+import GHC.TypeLits (KnownSymbol)
 import Grisette.Internal.SymPrim.SymTabularFun (type (=~>) (SymTabularFun))
 
 -- $setup
@@ -104,6 +106,10 @@ instance
   ) =>
   ITEOp (SymArray sk sv) where
   symIte (SymBool c) (SymArray t) (SymArray f) = SymArray $ pevalITETerm c t f
+
+instance (KnownSymbol n) => ITEOp (SymUninterp n) where
+  symIte (SymBool c) (SymUninterp t) (SymUninterp f) =
+    SymUninterp $ pevalITETerm c t f
 
 instance ITEOp (a --> b) where
   symIte

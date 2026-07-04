@@ -95,6 +95,9 @@ import Grisette.Internal.SymPrim.IntBitwidth (intBitwidthQ)
 import Grisette.Internal.SymPrim.Prim.Term (LinkedRep, SupportedNonFuncPrim)
 import Grisette.Internal.SymPrim.Array (Array)
 import Grisette.Internal.SymPrim.SymArray (SymArray)
+import Grisette.Internal.SymPrim.SymUninterp (SymUninterp)
+import Grisette.Internal.SymPrim.Uninterp (Uninterp)
+import GHC.TypeLits (KnownSymbol)
 import Grisette.Internal.SymPrim.SymAlgReal (SymAlgReal)
 import Grisette.Internal.SymPrim.SymBV
   ( SymIntN,
@@ -225,6 +228,14 @@ instance
   toCon = conView
 
 instance ToCon (SymArray sk sv) (SymArray sk sv) where
+  toCon = Just
+
+-- Uninterpreted sort: sym->con succeeds only for a concrete (model) identity;
+-- sym->sym is the identity.
+instance (KnownSymbol n) => ToCon (SymUninterp n) (Uninterp n) where
+  toCon = conView
+
+instance ToCon (SymUninterp n) (SymUninterp n) where
   toCon = Just
 
 #define TOCON_MACHINE_INTEGER(sbvw, bvw, n, int) \

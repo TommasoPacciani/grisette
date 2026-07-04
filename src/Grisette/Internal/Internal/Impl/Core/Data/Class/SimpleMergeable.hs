@@ -83,6 +83,8 @@ import Grisette.Internal.SymPrim.Prim.SomeTerm (SomeTerm (SomeTerm))
 import Grisette.Internal.SymPrim.Prim.Term (TypedConstantSymbol, SupportedNonFuncPrim)
 import Grisette.Internal.SymPrim.SymAlgReal (SymAlgReal (SymAlgReal))
 import Grisette.Internal.SymPrim.SymArray (SymArray (SymArray))
+import Grisette.Internal.SymPrim.SymUninterp (SymUninterp (SymUninterp))
+import GHC.TypeLits (KnownSymbol)
 import Grisette.Internal.SymPrim.SymBV
   ( SymIntN (SymIntN),
     SymWordN (SymWordN),
@@ -568,6 +570,11 @@ instance
   ) =>
   SimpleMergeable (SymArray sk sv) where
   mrgIte (SymBool c) (SymArray t) (SymArray f) = SymArray $ pevalITETerm c t f
+
+instance (KnownSymbol n) => SimpleMergeable (SymUninterp n) where
+  mrgIte (SymBool c) (SymUninterp t) (SymUninterp f) =
+    SymUninterp $ pevalITETerm c t f
+  {-# INLINE mrgIte #-}
 
 instance SimpleMergeable (a --> b) where
   mrgIte

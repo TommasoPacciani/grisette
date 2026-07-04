@@ -94,6 +94,9 @@ import Grisette.Internal.SymPrim.FP
 import Grisette.Internal.SymPrim.GeneralFun (type (-->))
 import Grisette.Internal.SymPrim.Array (Array)
 import Grisette.Internal.SymPrim.SymArray (SymArray)
+import Grisette.Internal.SymPrim.SymUninterp (SymUninterp)
+import Grisette.Internal.SymPrim.Uninterp (Uninterp)
+import GHC.TypeLits (KnownSymbol)
 import Grisette.Internal.SymPrim.IntBitwidth (intBitwidthQ)
 import Grisette.Internal.SymPrim.Prim.Term
   ( LinkedRep,
@@ -231,6 +234,14 @@ instance
   toSym = con
 
 instance ToSym (SymArray sk sv) (SymArray sk sv) where
+  toSym = id
+
+-- Uninterpreted sort: con->sym lifts an opaque concrete identity into a
+-- constant symbolic value; sym->sym is the identity.
+instance (KnownSymbol n) => ToSym (Uninterp n) (SymUninterp n) where
+  toSym = con
+
+instance ToSym (SymUninterp n) (SymUninterp n) where
   toSym = id
 
 #define TOSYM_MACHINE_INTEGER(int, bv) \

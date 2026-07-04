@@ -53,7 +53,7 @@ import GHC.Generics
     type (:*:),
   )
 import GHC.Real (ratioPrec, ratioPrec1)
-import GHC.TypeLits (KnownNat, type (<=))
+import GHC.TypeLits (KnownNat, KnownSymbol, type (<=))
 import Generics.Deriving
   ( Default (Default),
     Default1 (Default1),
@@ -112,6 +112,7 @@ import Grisette.Internal.SymPrim.SymFP
   )
 import Grisette.Internal.SymPrim.SymGeneralFun (type (-~>) (SymGeneralFun))
 import Grisette.Internal.SymPrim.SymInteger (SymInteger (SymInteger))
+import Grisette.Internal.SymPrim.SymUninterp (SymUninterp (SymUninterp))
 import Grisette.Internal.SymPrim.SymTabularFun (type (=~>) (SymTabularFun))
 import Grisette.Internal.SymPrim.TabularFun (type (=->))
 import Grisette.Internal.TH.Derivation.Derive (derive)
@@ -209,6 +210,9 @@ FORMAT_SYM_FUN(-~>, SymGeneralFun)
 
 instance (ValidFP eb sb) => PPrint (SymFP eb sb) where
   pformat (SymFP t) = prettyPrintTerm t
+
+instance (KnownSymbol n) => PPrint (SymUninterp n) where
+  pformat (SymUninterp t) = prettyPrintTerm t
 
 derive
   [ ''(),

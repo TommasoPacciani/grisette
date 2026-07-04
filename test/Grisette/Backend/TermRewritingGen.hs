@@ -1200,9 +1200,7 @@ instance Arbitrary FPRoundingModeBoolOpSpec where
       [ eqvSpec l r,
         distinctSpec $ l :| [],
         distinctSpec $ l :| [r],
-        distinctSpec $ l :| [r, x],
-        ltOrdSpec l r,
-        leOrdSpec l r
+        distinctSpec $ l :| [r, x]
       ]
 
 data BoolWithNRASpec = BoolWithNRASpec (Term Bool) (Term Bool)

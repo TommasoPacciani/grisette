@@ -367,6 +367,7 @@ import GHC.Fingerprint (Fingerprint)
 import GHC.Generics (Generic)
 import GHC.IO (unsafePerformIO)
 import GHC.Stack (HasCallStack)
+import GHC.TypeLits (KnownSymbol)
 import GHC.TypeNats (KnownNat, Nat, natVal, sameNat, type (+), type (-), type (<=))
 import Grisette.Internal.Core.Data.Class.BitCast (BitCast (bitCast), BitCastOr)
 import Grisette.Internal.Core.Data.Class.BitVector
@@ -389,6 +390,7 @@ import Grisette.Internal.Core.Data.Symbol
 import Grisette.Internal.SymPrim.AlgReal (AlgReal, fromSBVAlgReal, toSBVAlgReal)
 import Grisette.Internal.SymPrim.Array (Array (Array))
 import qualified Grisette.Internal.SymPrim.Array as Arr
+import Grisette.Internal.SymPrim.Uninterp (Uninterp (Uninterp), uninterpConSBVPrefix)
 import Grisette.Internal.SymPrim.BV (IntN, WordN)
 import Grisette.Internal.SymPrim.FP
   ( FP (FP),
@@ -7116,6 +7118,53 @@ instance NonFuncSBVRep Integer where
 instance SupportedNonFuncPrim Integer where
   conNonFuncSBVTerm = conSBVTerm
   symNonFuncSBVTerm = symSBVTerm @Integer
+  withNonFuncPrim r = r
+  sbvToCon = id
+
+-- Uninterpreted (abstract) sort, named at the type level by @n@. Lowers to the
+-- SBV empty-ADT kind @KADT name [] []@ (see
+-- 'Grisette.Internal.SymPrim.Uninterp.Uninterp'). It supports only fresh-symbol
+-- creation, equality/distinctness, and use as an uninterpreted-function
+-- argument — no arithmetic, ordering, or bit-indexing — so eq/distinct/ite are
+-- the generic evaluators.
+--
+-- An opaque sort has no writable literal, so a concrete element (only ever a
+-- model tag from read-back) lowers to a /named nullary uninterpreted constant/
+-- of the sort — the faithful SBV form of "an unspecified element". This path is
+-- reached by 'funcDummyConstraint' for any UF over the sort (it pins the
+-- function by applying it to @conSBVTerm defaultValue@) and by mixing a
+-- concrete element with symbolic terms; concrete-vs-concrete equality never
+-- reaches SBV because 'pevalDefaultEqTerm' decides it structurally on the tag.
+instance SBVRep (Uninterp n) where
+  type SBVType (Uninterp n) = SBV.SBV (Uninterp n)
+
+instance (KnownSymbol n) => SupportedPrimConstraint (Uninterp n)
+
+instance (KnownSymbol n) => SupportedPrim (Uninterp n) where
+  defaultValue = Uninterp "!default"
+  pevalITETerm = pevalITEBasicTerm
+  pevalEqTerm = pevalDefaultEqTerm
+  pevalDistinctTerm = pevalGeneralDistinct
+  conSBVTerm (Uninterp tag) = SBV.uninterpret (uninterpConSBVPrefix <> tag)
+  symSBVName symbol _ = show symbol
+  symSBVTerm name = sbvFresh name
+  castTypedSymbol ::
+    forall knd knd'.
+    (IsSymbolKind knd') =>
+    TypedSymbol knd (Uninterp n) ->
+    Maybe (TypedSymbol knd' (Uninterp n))
+  castTypedSymbol s =
+    case decideSymbolKind @knd' of
+      Left HRefl -> Just $ typedConstantSymbol $ unTypedSymbol s
+      Right HRefl -> Just $ typedAnySymbol $ unTypedSymbol s
+  funcDummyConstraint _ = SBV.sTrue
+
+instance (KnownSymbol n) => NonFuncSBVRep (Uninterp n) where
+  type NonFuncSBVBaseType (Uninterp n) = Uninterp n
+
+instance (KnownSymbol n) => SupportedNonFuncPrim (Uninterp n) where
+  conNonFuncSBVTerm = conSBVTerm
+  symNonFuncSBVTerm = symSBVTerm @(Uninterp n)
   withNonFuncPrim r = r
   sbvToCon = id
 

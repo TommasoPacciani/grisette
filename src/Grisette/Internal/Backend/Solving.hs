@@ -90,7 +90,9 @@ import Control.Monad.State.Strict
 import Data.Dynamic (fromDyn, toDyn)
 import qualified Data.HashSet as HS
 import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
+import qualified Data.List as L
 import Data.List.NonEmpty (NonEmpty)
+import Grisette.Internal.SymPrim.Uninterp (uninterpConSBVPrefix)
 import Data.Proxy (Proxy (Proxy))
 import qualified Data.SBV as SBV
 import qualified Data.SBV.Control as SBVC
@@ -862,10 +864,18 @@ parseModel ::
   PM.Model
 parseModel _ model@(SBVI.SMTModel _ _ assoc origFuncs) mp =
   case preprocessUIFuncs origFuncs of
-    Just funcs -> foldr goSingle emptyModel $ funcs ++ assocFuncs
+    Just funcs ->
+      foldr goSingle emptyModel $
+        filter (not . isInternalDummy . fst) $
+          funcs ++ assocFuncs
     _ -> error "SBV Failed to parse model"
   where
     assocFuncs = (\(s, v) -> (s, ([], v))) <$> assoc
+    -- Internal nullary constants of an uninterpreted sort (introduced e.g. by
+    -- 'funcDummyConstraint' pinning a UF over the sort) leak into the SBV model
+    -- but are not Grisette symbols; they denote an arbitrary element, so drop
+    -- them rather than failing the model-consistency check below.
+    isInternalDummy = L.isPrefixOf uninterpConSBVPrefix
     goSingle :: (String, ([([SBVD.CV], SBVD.CV)], SBVD.CV)) -> PM.Model -> PM.Model
     goSingle (name, cv) m = case findStringToSymbol name mp of
       Just (SomeTypedSymbol (s@TypedSymbol {} :: TypedSymbol 'AnyKind r)) ->
