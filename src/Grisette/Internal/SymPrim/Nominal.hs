@@ -1,4 +1,5 @@
 {-# LANGUAGE GHC2024 #-}
+{-# LANGUAGE DeriveAnyClass #-}
 
 -- |
 -- Module      :   Grisette.Internal.SymPrim.Nominal

@@ -572,6 +572,7 @@ test-suite sequence-spec
       HUnit ==1.6.*
     , base >=4.14 && <5
     , binary >=0.8.8 && <0.9
+    , bytestring >=0.10.12 && <0.13
     , deepseq >=1.4.4 && <1.6
     , grisette
     , sbv >=13.4

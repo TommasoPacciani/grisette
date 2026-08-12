@@ -1,4 +1,6 @@
 {-# LANGUAGE GHC2024 #-}
+{-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE TypeFamilies #-}
 
 -- |
 -- Module      :   Grisette.Internal.SymPrim.SymNominal
@@ -63,10 +65,16 @@ instance Eq (SymNominal domain value) where
   (==) =
     shouldUseAsKeyHasSymbolicVersionError "SymNominal" "(==)" "(.==)"
 
-instance KeyEq (SymNominal domain value) where
+instance
+  (KnownNominalDomain domain, SupportedNonFuncPrim value) =>
+  KeyEq (SymNominal domain value)
+  where
   keyEq (SymNominal left) (SymNominal right) = left == right
 
-instance KeyHashable (SymNominal domain value) where
+instance
+  (KnownNominalDomain domain, SupportedNonFuncPrim value) =>
+  KeyHashable (SymNominal domain value)
+  where
   keyHashWithSalt salt (SymNominal value) = salt `hashWithSalt` value
 
 instance ConRep (SymNominal domain value) where

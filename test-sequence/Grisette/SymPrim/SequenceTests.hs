@@ -367,17 +367,47 @@ sequenceTests =
             assertEqual
               "left nominal model"
               (Just 1)
-              (U.nominalValue @'C <$> toCon (evalSym False model left))
+              ( U.nominalValue @'C
+                  <$> ( toCon (evalSym False model left) ::
+                          Maybe
+                            ( Nominal
+                                ('Domain "p4runtime" '[ 'Domain "left" '[] ])
+                                WordN32
+                            )
+                      )
+              )
             assertEqual
               "right nominal model"
               (Just 2)
-              (U.nominalValue @'C <$> toCon (evalSym False model right))
+              ( U.nominalValue @'C
+                  <$> ( toCon (evalSym False model right) ::
+                          Maybe
+                            ( Nominal
+                                ('Domain "p4runtime" '[ 'Domain "right" '[] ])
+                                WordN32
+                            )
+                      )
+              )
             assertEqual
               "nested nominal product model"
               (Just ([1], (1, 2)))
               ( do
                   (values, (leftResult, rightResult)) <-
-                    toCon (evalSym False model nested)
+                    ( toCon (evalSym False model nested) ::
+                        Maybe
+                          ( [ Nominal
+                                ('Domain "p4runtime" '[ 'Domain "left" '[] ])
+                                WordN32
+                            ],
+                            ( Nominal
+                                ('Domain "p4runtime" '[ 'Domain "left" '[] ])
+                                WordN32,
+                              Nominal
+                                ('Domain "p4runtime" '[ 'Domain "right" '[] ])
+                                WordN32
+                            )
+                          )
+                    )
                   pure
                     ( U.nominalValue @'C <$> values,
                       ( U.nominalValue @'C leftResult,
