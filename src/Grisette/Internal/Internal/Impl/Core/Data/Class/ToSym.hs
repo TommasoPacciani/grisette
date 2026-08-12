@@ -94,6 +94,8 @@ import Grisette.Internal.SymPrim.FP
 import Grisette.Internal.SymPrim.GeneralFun (type (-->))
 import Grisette.Internal.SymPrim.Array (Array)
 import Grisette.Internal.SymPrim.SymArray (SymArray)
+import Grisette.Internal.SymPrim.SymPair (SymPair)
+import Grisette.Internal.SymPrim.SymSeq (SymSeq)
 import Grisette.Internal.SymPrim.SymUninterp (SymUninterp)
 import Grisette.Internal.SymPrim.Uninterp (Uninterp)
 import GHC.TypeLits (KnownSymbol)
@@ -234,6 +236,28 @@ instance
   toSym = con
 
 instance ToSym (SymArray sk sv) (SymArray sk sv) where
+  toSym = id
+
+instance
+  (SupportedNonFuncPrim ca, LinkedRep ca sa) =>
+  ToSym [ca] (SymSeq sa)
+  where
+  toSym = con
+
+instance ToSym (SymSeq sa) (SymSeq sa) where
+  toSym = id
+
+instance
+  ( SupportedNonFuncPrim ca,
+    SupportedNonFuncPrim cb,
+    LinkedRep ca sa,
+    LinkedRep cb sb
+  ) =>
+  ToSym (ca, cb) (SymPair sa sb)
+  where
+  toSym = con
+
+instance ToSym (SymPair sa sb) (SymPair sa sb) where
   toSym = id
 
 -- Uninterpreted sort: con->sym lifts an opaque concrete identity into a

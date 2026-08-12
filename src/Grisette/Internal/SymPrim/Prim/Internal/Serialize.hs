@@ -59,7 +59,11 @@ import Grisette.Internal.SymPrim.FP
     invalidFPMessage,
     withUnsafeValidFP,
   )
-import Grisette.Internal.SymPrim.GeneralFun (type (-->) (GeneralFun))
+import Grisette.Internal.SymPrim.GeneralFun
+  ( checkClosedSeqFold,
+    checkClosedSeqFoldWith,
+    type (-->) (GeneralFun),
+  )
 import Grisette.Internal.SymPrim.Prim.Internal.Caches (Id)
 import Grisette.Internal.SymPrim.Prim.Internal.Instances.PEvalBitCastTerm ()
 import Grisette.Internal.SymPrim.Prim.Internal.Instances.PEvalDivModIntegralTerm ()
@@ -151,6 +155,14 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
     selectTerm,
     storeTerm,
     constArrayTerm,
+    seqConsTerm,
+    seqAppendTerm,
+    seqLengthTerm,
+    seqFoldTerm,
+    seqFoldWithTerm,
+    pairTerm,
+    firstTerm,
+    secondTerm,
     pattern AbsNumTerm,
     pattern AddNumTerm,
     pattern AndBitsTerm,
@@ -203,6 +215,14 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
     pattern SelectTerm,
     pattern StoreTerm,
     pattern ConstArrayTerm,
+    pattern SeqConsTerm,
+    pattern SeqAppendTerm,
+    pattern SeqLengthTerm,
+    pattern SeqFoldTerm,
+    pattern SeqFoldWithTerm,
+    pattern PairTerm,
+    pattern FirstTerm,
+    pattern SecondTerm,
   )
 import Grisette.Internal.SymPrim.Prim.SomeTerm
   ( SomeTerm (SomeTerm),
@@ -242,6 +262,8 @@ data KnownNonFuncType where
   FPRoundingModeType :: KnownNonFuncType
   AlgRealType :: KnownNonFuncType
   ArrayType :: KnownNonFuncType -> KnownNonFuncType -> KnownNonFuncType
+  ListType :: KnownNonFuncType -> KnownNonFuncType
+  PairType :: KnownNonFuncType -> KnownNonFuncType -> KnownNonFuncType
 
 instance Eq KnownNonFuncType where
   BoolType == BoolType = True
@@ -251,6 +273,9 @@ instance Eq KnownNonFuncType where
   FPType p q == FPType r s = natVal p == natVal r && natVal q == natVal s
   FPRoundingModeType == FPRoundingModeType = True
   AlgRealType == AlgRealType = True
+  ArrayType lk lv == ArrayType rk rv = lk == rk && lv == rv
+  ListType l == ListType r = l == r
+  PairType la lb == PairType ra rb = la == ra && lb == rb
   _ == _ = False
 
 instance Hashable KnownNonFuncType where
@@ -266,6 +291,13 @@ instance Hashable KnownNonFuncType where
   hashWithSalt s AlgRealType = s `hashWithSalt` (6 :: Int)
   hashWithSalt s (ArrayType k v) =
     s `hashWithSalt` k `hashWithSalt` v `hashWithSalt` (7 :: Int)
+  hashWithSalt s (ListType element) =
+    s `hashWithSalt` element `hashWithSalt` (8 :: Int)
+  hashWithSalt s (PairType firstType secondType) =
+    s
+      `hashWithSalt` firstType
+      `hashWithSalt` secondType
+      `hashWithSalt` (9 :: Int)
 
 data KnownNonFuncTypeWitness where
   KnownNonFuncTypeWitness ::
@@ -295,6 +327,16 @@ witnessKnownNonFuncType (ArrayType k v) = runIdentity $ do
   KnownNonFuncTypeWitness (_ :: Proxy k) <- pure $ witnessKnownNonFuncType k
   KnownNonFuncTypeWitness (_ :: Proxy v) <- pure $ witnessKnownNonFuncType v
   pure $ KnownNonFuncTypeWitness @(Array k v) Proxy
+witnessKnownNonFuncType (ListType element) = runIdentity $ do
+  KnownNonFuncTypeWitness (_ :: Proxy element) <-
+    pure $ witnessKnownNonFuncType element
+  pure $ KnownNonFuncTypeWitness @[element] Proxy
+witnessKnownNonFuncType (PairType firstType secondType) = runIdentity $ do
+  KnownNonFuncTypeWitness (_ :: Proxy firstType) <-
+    pure $ witnessKnownNonFuncType firstType
+  KnownNonFuncTypeWitness (_ :: Proxy secondType) <-
+    pure $ witnessKnownNonFuncType secondType
+  pure $ KnownNonFuncTypeWitness @(firstType, secondType) Proxy
 
 data KnownType where
   NonFuncType :: KnownNonFuncType -> KnownType
@@ -512,6 +554,9 @@ instance Show KnownNonFuncType where
   show FPRoundingModeType = "FPRoundingMode"
   show AlgRealType = "AlgReal"
   show (ArrayType key val) = "Array (" ++ show key ++ ") (" ++ show val ++ ")"
+  show (ListType element) = "[" ++ show element ++ "]"
+  show (PairType firstType secondType) =
+    "(" ++ show firstType ++ ", " ++ show secondType ++ ")"
 
 instance Show KnownType where
   show (NonFuncType t) = show t
@@ -536,6 +581,14 @@ knownNonFuncTypeMaybe _ = withPrim @a $ case tr of
       keyTy <- knownNonFuncTypeMaybe @k Proxy
       valTy <- knownNonFuncTypeMaybe @v Proxy
       pure $ ArrayType keyTy valTy
+  App listR (_ :: TypeRep element)
+    | Just HRefl <- eqTypeRep listR $ typeRep @[] ->
+        ListType <$> knownNonFuncTypeMaybe @element Proxy
+  App (App pairR (_ :: TypeRep firstType)) (_ :: TypeRep secondType)
+    | Just HRefl <- eqTypeRep pairR $ typeRep @(,) ->
+        PairType
+          <$> knownNonFuncTypeMaybe @firstType Proxy
+          <*> knownNonFuncTypeMaybe @secondType Proxy
   _ -> Nothing
   where
     tr = typeRep @a
@@ -604,6 +657,8 @@ knownType proxy = do
 -- FPRoundingMode: 5
 -- AlgReal: 6
 -- Array: 7
+-- List: 8
+-- Pair: 9
 serializeKnownNonFuncType :: (MonadPut m) => KnownNonFuncType -> m ()
 serializeKnownNonFuncType BoolType = putWord8 0
 serializeKnownNonFuncType IntegerType = putWord8 1
@@ -619,6 +674,13 @@ serializeKnownNonFuncType (ArrayType key val) = do
   putWord8 7
   serializeKnownNonFuncType key
   serializeKnownNonFuncType val
+serializeKnownNonFuncType (ListType element) = do
+  putWord8 8
+  serializeKnownNonFuncType element
+serializeKnownNonFuncType (PairType firstType secondType) = do
+  putWord8 9
+  serializeKnownNonFuncType firstType
+  serializeKnownNonFuncType secondType
 
 serializeKnownType :: (MonadPut m) => KnownType -> m ()
 serializeKnownType (NonFuncType t) = putWord8 0 >> serializeKnownNonFuncType t
@@ -662,6 +724,8 @@ deserializeKnownNonFuncType = do
       keyT <- deserializeKnownNonFuncType
       valT <- deserializeKnownNonFuncType
       pure $ ArrayType keyT valT
+    8 -> ListType <$> deserializeKnownNonFuncType
+    9 -> PairType <$> deserializeKnownNonFuncType <*> deserializeKnownNonFuncType
     _ -> fail "deserializeKnownNonFuncType: Unknown type tag"
 
 deserializeKnownType :: (MonadGet m) => m KnownType
@@ -908,6 +972,30 @@ storeTermTag = 49
 
 constArrayTermTag :: Word8
 constArrayTermTag = 50
+
+seqConsTermTag :: Word8
+seqConsTermTag = 51
+
+seqAppendTermTag :: Word8
+seqAppendTermTag = 52
+
+seqLengthTermTag :: Word8
+seqLengthTermTag = 53
+
+seqFoldTermTag :: Word8
+seqFoldTermTag = 54
+
+seqFoldWithTermTag :: Word8
+seqFoldWithTermTag = 55
+
+pairTermTag :: Word8
+pairTermTag = 56
+
+firstTermTag :: Word8
+firstTermTag = 57
+
+secondTermTag :: Word8
+secondTermTag = 58
 
 terminalTag :: Word8
 terminalTag = 255
@@ -1367,6 +1455,7 @@ knownTypeTermId :: Term a -> (KnownType, Id)
 knownTypeTermId t@SupportedTerm = (knownType t, termId t)
 
 statefulDeserializeSomeTerm ::
+  forall m.
   (MonadGet m) =>
   StateT (HM.HashMap (KnownType, Id) SomeTerm, SomeTerm) m SomeTerm
 statefulDeserializeSomeTerm = do
@@ -1605,14 +1694,105 @@ statefulDeserializeSomeTerm = do
           let term = someTerm $ constArrayTerm @k Proxy val
 
           pure $ Just (term, ktTmId)
+      | tag == seqConsTermTag -> do
+          element <- deserializeTerm
+          sequence <- deserializeTerm
+          withNonFuncTerm element $ \(element' :: Term element) ->
+            withListTerm sequence $ \(sequence' :: Term [sequenceElement]) ->
+              case eqTypeRep (typeRep @element) (typeRep @sequenceElement) of
+                Just HRefl ->
+                  pure $ Just (someTerm $ seqConsTerm element' sequence', ktTmId)
+                Nothing -> fail "statefulDeserializeSomeTerm: SeqCons type mismatch"
+      | tag == seqAppendTermTag -> do
+          left <- deserializeTerm
+          right <- deserializeTerm
+          withListTerm left $ \(left' :: Term [element]) ->
+            case castSomeTerm right of
+              Just (right' :: Term [element]) ->
+                pure $ Just (someTerm $ seqAppendTerm left' right', ktTmId)
+              Nothing -> fail "statefulDeserializeSomeTerm: SeqAppend type mismatch"
+      | tag == seqLengthTermTag -> do
+          sequence <- deserializeTerm
+          withListTerm sequence $ \sequence' ->
+            pure $ Just (someTerm $ seqLengthTerm sequence', ktTmId)
+      | tag == seqFoldTermTag -> do
+          step <- deserializeTerm
+          initial <- deserializeTerm
+          sequence <- deserializeTerm
+          withNonFuncTerm initial $ \(initial' :: Term state) ->
+            withListTerm sequence $ \(sequence' :: Term [element]) ->
+              case castSomeTerm step of
+                Nothing -> fail "statefulDeserializeSomeTerm: SeqFold type mismatch"
+                Just (step'@SupportedTerm :: Term (state --> element --> state)) ->
+                  case checkClosedSeqFold step' of
+                    Left diagnostic -> fail diagnostic
+                    Right checked ->
+                      checked `seq`
+                        pure
+                          ( Just
+                              ( someTerm $ seqFoldTerm checked initial' sequence',
+                                ktTmId
+                              )
+                          )
+      | tag == seqFoldWithTermTag -> do
+          step <- deserializeTerm
+          environment <- deserializeTerm
+          initial <- deserializeTerm
+          sequence <- deserializeTerm
+          withNonFuncTerm environment $ \(environment' :: Term environment) ->
+            withNonFuncTerm initial $ \(initial' :: Term state) ->
+              withListTerm sequence $ \(sequence' :: Term [element]) ->
+                case castSomeTerm step of
+                  Nothing ->
+                    fail "statefulDeserializeSomeTerm: SeqFoldWith type mismatch"
+                  Just
+                    ( step'@SupportedTerm ::
+                        Term (environment --> state --> element --> state)
+                      ) ->
+                      case checkClosedSeqFoldWith step' of
+                        Left diagnostic -> fail diagnostic
+                        Right checked ->
+                          checked `seq`
+                            pure
+                              ( Just
+                                  ( someTerm $
+                                      seqFoldWithTerm
+                                        checked
+                                        environment'
+                                        initial'
+                                        sequence',
+                                    ktTmId
+                                  )
+                              )
+      | tag == pairTermTag -> do
+          firstValue <- deserializeTerm
+          secondValue <- deserializeTerm
+          withNonFuncTerm firstValue $ \firstValue' ->
+            withNonFuncTerm secondValue $ \secondValue' ->
+              pure $ Just (someTerm $ pairTerm firstValue' secondValue', ktTmId)
+      | tag == firstTermTag -> do
+          pairValue <- deserializeTerm
+          withPairTerm pairValue $ \pairValue' ->
+            pure $ Just (someTerm $ firstTerm pairValue', ktTmId)
+      | tag == secondTermTag -> do
+          pairValue <- deserializeTerm
+          withPairTerm pairValue $ \pairValue' ->
+            pure $ Just (someTerm $ secondTerm pairValue', ktTmId)
       | otherwise ->
           error $ "statefulDeserializeSomeTerm: unknown tag: " <> show tag
   case r of
     Just (tm, ktTmId) -> do
+      let actualType = case tm of
+            SomeTerm term -> knownType term
+      unless (actualType == fst ktTmId) $
+        fail "statefulDeserializeSomeTerm: declared term type mismatch"
       State.modify' $ \(m, _) -> (HM.insert ktTmId tm m, tm)
       statefulDeserializeSomeTerm
     Nothing -> State.gets snd
   where
+    castSomeTerm ::
+      forall value. Typeable value => SomeTerm -> Maybe (Term value)
+    castSomeTerm (SomeTerm term) = castTerm term
     deserializeNonEmptyTermList ::
       (MonadGet m) =>
       StateT
@@ -1642,6 +1822,66 @@ statefulDeserializeSomeTerm = do
       case tm of
         Nothing -> fail "statefulDeserializeSomeTerm: unknown term id"
         Just tm' -> return tm'
+    withNonFuncTerm ::
+      SomeTerm ->
+      ( forall value.
+        SupportedNonFuncPrim value =>
+        Term value ->
+        StateT (HM.HashMap (KnownType, Id) SomeTerm, SomeTerm) m result
+      ) ->
+      StateT (HM.HashMap (KnownType, Id) SomeTerm, SomeTerm) m result
+    withNonFuncTerm (SomeTerm (term :: Term actual)) continuation =
+      case knownNonFuncTypeMaybe @actual Proxy of
+        Nothing -> fail "statefulDeserializeSomeTerm: expected non-function term"
+        Just descriptor ->
+          case witnessKnownNonFuncType descriptor of
+            KnownNonFuncTypeWitness (_ :: Proxy value) ->
+              case eqTypeRep (primTypeRep @actual) (typeRep @value) of
+                Just HRefl -> continuation term
+                Nothing ->
+                  fail "statefulDeserializeSomeTerm: non-function type mismatch"
+    withListTerm ::
+      SomeTerm ->
+      ( forall element.
+        SupportedNonFuncPrim element =>
+        Term [element] ->
+        StateT (HM.HashMap (KnownType, Id) SomeTerm, SomeTerm) m result
+      ) ->
+      StateT (HM.HashMap (KnownType, Id) SomeTerm, SomeTerm) m result
+    withListTerm (SomeTerm (term :: Term actual)) continuation =
+      case knownNonFuncTypeMaybe @actual Proxy of
+        Just (ListType elementDescriptor) ->
+          case witnessKnownNonFuncType elementDescriptor of
+            KnownNonFuncTypeWitness (_ :: Proxy element) ->
+              case eqTypeRep (primTypeRep @actual) (typeRep @[element]) of
+                Just HRefl -> continuation term
+                Nothing -> fail "statefulDeserializeSomeTerm: list type mismatch"
+        _ -> fail "statefulDeserializeSomeTerm: expected sequence term"
+    withPairTerm ::
+      SomeTerm ->
+      ( forall firstType secondType.
+        (SupportedNonFuncPrim firstType, SupportedNonFuncPrim secondType) =>
+        Term (firstType, secondType) ->
+        StateT (HM.HashMap (KnownType, Id) SomeTerm, SomeTerm) m result
+      ) ->
+      StateT (HM.HashMap (KnownType, Id) SomeTerm, SomeTerm) m result
+    withPairTerm (SomeTerm (term :: Term actual)) continuation =
+      case knownNonFuncTypeMaybe @actual Proxy of
+        Just (PairType firstDescriptor secondDescriptor) ->
+          case ( witnessKnownNonFuncType firstDescriptor,
+                 witnessKnownNonFuncType secondDescriptor
+               ) of
+            ( KnownNonFuncTypeWitness (_ :: Proxy firstType),
+              KnownNonFuncTypeWitness (_ :: Proxy secondType)
+              ) ->
+                case
+                    eqTypeRep
+                      (primTypeRep @actual)
+                      (typeRep @(firstType, secondType))
+                  of
+                    Just HRefl -> continuation term
+                    Nothing -> fail "statefulDeserializeSomeTerm: pair type mismatch"
+        _ -> fail "statefulDeserializeSomeTerm: expected pair term"
     deserializeBoolBinary tmId f = do
       t1 <- deserializeTerm
       t2 <- deserializeTerm
@@ -1897,6 +2137,26 @@ serializeSingleSomeTerm (SomeTerm (tm :: Term t)) = do
         ConstArrayTerm pkey val -> withPrim @t $ do
           serializeUnary ktTmId constArrayTermTag val
           serializeKnownType $ knownType pkey
+        SeqConsTerm element sequence ->
+          serializeBinary ktTmId seqConsTermTag element sequence
+        SeqAppendTerm left right ->
+          serializeBinary ktTmId seqAppendTermTag left right
+        SeqLengthTerm sequence ->
+          serializeUnary ktTmId seqLengthTermTag sequence
+        SeqFoldTerm step initial sequence ->
+          serializeTernary ktTmId seqFoldTermTag step initial sequence
+        SeqFoldWithTerm step environment initial sequence ->
+          serializeQuaternary
+            ktTmId
+            seqFoldWithTermTag
+            step
+            environment
+            initial
+            sequence
+        PairTerm firstValue secondValue ->
+          serializeBinary ktTmId pairTermTag firstValue secondValue
+        FirstTerm pairValue -> serializeUnary ktTmId firstTermTag pairValue
+        SecondTerm pairValue -> serializeUnary ktTmId secondTermTag pairValue
   State.put $ HS.insert ktTmId st
   where
     serializeQuantified ::
@@ -1933,6 +2193,17 @@ serializeSingleSomeTerm (SomeTerm (tm :: Term t)) = do
       serialize $ knownTypeTermId t1
       serialize $ knownTypeTermId t2
       serialize $ knownTypeTermId t3
+    serializeQuaternary ktTmId tag t1 t2 t3 t4 = do
+      serializeSingleSomeTerm $ someTerm t1
+      serializeSingleSomeTerm $ someTerm t2
+      serializeSingleSomeTerm $ someTerm t3
+      serializeSingleSomeTerm $ someTerm t4
+      serialize ktTmId
+      serialize tag
+      serialize $ knownTypeTermId t1
+      serialize $ knownTypeTermId t2
+      serialize $ knownTypeTermId t3
+      serialize $ knownTypeTermId t4
 
 serializeSomeTerm :: (MonadPut m) => SomeTerm -> m ()
 serializeSomeTerm t = do

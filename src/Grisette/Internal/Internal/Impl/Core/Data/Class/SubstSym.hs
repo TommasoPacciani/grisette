@@ -91,6 +91,8 @@ import Grisette.Internal.SymPrim.Prim.Term
 import Grisette.Internal.SymPrim.SymAlgReal (SymAlgReal (SymAlgReal))
 import Grisette.Internal.SymPrim.Array (Array)
 import Grisette.Internal.SymPrim.SymArray (SymArray (SymArray))
+import Grisette.Internal.SymPrim.SymPair (SymPair (SymPair))
+import Grisette.Internal.SymPrim.SymSeq (SymSeq (SymSeq))
 import Grisette.Internal.SymPrim.SymUninterp (SymUninterp (SymUninterp))
 import GHC.TypeLits (KnownSymbol)
 import Grisette.Internal.SymPrim.SymBV
@@ -198,6 +200,24 @@ instance
   ) =>
   SubstSym (SymArray sk sv) where
   substSym sym v (SymArray t) = SymArray $ substTerm sym (underlyingTerm v) HS.empty t
+
+instance
+  (SupportedNonFuncPrim ca, LinkedRep ca sa) =>
+  SubstSym (SymSeq sa)
+  where
+  substSym sym v (SymSeq t) =
+    SymSeq $ substTerm sym (underlyingTerm v) HS.empty t
+
+instance
+  ( SupportedNonFuncPrim ca,
+    SupportedNonFuncPrim cb,
+    LinkedRep ca sa,
+    LinkedRep cb sb
+  ) =>
+  SubstSym (SymPair sa sb)
+  where
+  substSym sym v (SymPair t) =
+    SymPair $ substTerm sym (underlyingTerm v) HS.empty t
 
 instance (KnownSymbol n) => SubstSym (SymUninterp n) where
   substSym sym v (SymUninterp t) =

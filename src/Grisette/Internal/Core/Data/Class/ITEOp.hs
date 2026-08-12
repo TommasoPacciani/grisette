@@ -40,6 +40,8 @@ import Grisette.Internal.SymPrim.Prim.Term
   )
 import Grisette.Internal.SymPrim.SymAlgReal (SymAlgReal (SymAlgReal))
 import Grisette.Internal.SymPrim.SymArray (SymArray (SymArray))
+import Grisette.Internal.SymPrim.SymPair (SymPair (SymPair))
+import Grisette.Internal.SymPrim.SymSeq (SymSeq (SymSeq))
 import Grisette.Internal.SymPrim.SymBV
   ( SymIntN (SymIntN),
     SymWordN (SymWordN),
@@ -106,6 +108,22 @@ instance
   ) =>
   ITEOp (SymArray sk sv) where
   symIte (SymBool c) (SymArray t) (SymArray f) = SymArray $ pevalITETerm c t f
+
+instance
+  (SupportedNonFuncPrim ca, LinkedRep ca sa) =>
+  ITEOp (SymSeq sa)
+  where
+  symIte (SymBool c) (SymSeq t) (SymSeq f) = SymSeq $ pevalITETerm c t f
+
+instance
+  ( SupportedNonFuncPrim ca,
+    SupportedNonFuncPrim cb,
+    LinkedRep ca sa,
+    LinkedRep cb sb
+  ) =>
+  ITEOp (SymPair sa sb)
+  where
+  symIte (SymBool c) (SymPair t) (SymPair f) = SymPair $ pevalITETerm c t f
 
 instance (KnownSymbol n) => ITEOp (SymUninterp n) where
   symIte (SymBool c) (SymUninterp t) (SymUninterp f) =

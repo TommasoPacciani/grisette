@@ -93,6 +93,8 @@ import Grisette.Internal.SymPrim.Prim.Term
   )
 import Grisette.Internal.SymPrim.SymAlgReal (SymAlgReal (SymAlgReal))
 import Grisette.Internal.SymPrim.SymArray (SymArray (SymArray))
+import Grisette.Internal.SymPrim.SymPair (SymPair (SymPair))
+import Grisette.Internal.SymPrim.SymSeq (SymSeq (SymSeq))
 import Grisette.Internal.SymPrim.SymUninterp (SymUninterp (SymUninterp))
 import GHC.TypeLits (KnownSymbol)
 import Grisette.Internal.SymPrim.SymBV
@@ -201,6 +203,22 @@ instance
   ) =>
   EvalSym (SymArray sk sv) where
   evalSym fill model (SymArray t) = SymArray $ evalTerm fill model HS.empty t
+
+instance
+  (SupportedNonFuncPrim ca, LinkedRep ca sa) =>
+  EvalSym (SymSeq sa)
+  where
+  evalSym fill model (SymSeq t) = SymSeq $ evalTerm fill model HS.empty t
+
+instance
+  ( SupportedNonFuncPrim ca,
+    SupportedNonFuncPrim cb,
+    LinkedRep ca sa,
+    LinkedRep cb sb
+  ) =>
+  EvalSym (SymPair sa sb)
+  where
+  evalSym fill model (SymPair t) = SymPair $ evalTerm fill model HS.empty t
 
 instance (KnownSymbol n) => EvalSym (SymUninterp n) where
   evalSym fill model (SymUninterp t) = SymUninterp $ evalTerm fill model HS.empty t

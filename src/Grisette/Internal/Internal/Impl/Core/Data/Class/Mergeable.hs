@@ -105,6 +105,8 @@ import Grisette.Internal.SymPrim.FP
 import Grisette.Internal.SymPrim.GeneralFun (type (-->))
 import Grisette.Internal.SymPrim.SymAlgReal (SymAlgReal)
 import Grisette.Internal.SymPrim.SymArray (SymArray)
+import Grisette.Internal.SymPrim.SymPair (SymPair)
+import Grisette.Internal.SymPrim.SymSeq (SymSeq)
 import Grisette.Internal.SymPrim.SymUninterp (SymUninterp)
 import GHC.TypeLits (KnownSymbol)
 import Grisette.Internal.SymPrim.SymBV (SymIntN, SymWordN)
@@ -213,6 +215,22 @@ instance
   ) =>
   Mergeable (SymArray sk sv) where
   rootStrategy = SimpleStrategy $ symIte
+
+instance
+  (SupportedNonFuncPrim ca, LinkedRep ca sa) =>
+  Mergeable (SymSeq sa)
+  where
+  rootStrategy = SimpleStrategy symIte
+
+instance
+  ( SupportedNonFuncPrim ca,
+    SupportedNonFuncPrim cb,
+    LinkedRep ca sa,
+    LinkedRep cb sb
+  ) =>
+  Mergeable (SymPair sa sb)
+  where
+  rootStrategy = SimpleStrategy symIte
 
 instance (KnownSymbol n) => Mergeable (SymUninterp n) where
   rootStrategy = SimpleStrategy symIte

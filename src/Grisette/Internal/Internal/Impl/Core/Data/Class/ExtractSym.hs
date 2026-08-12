@@ -99,6 +99,8 @@ import Grisette.Internal.SymPrim.Prim.TermUtils (extractTerm)
 import Grisette.Internal.SymPrim.SymAlgReal (SymAlgReal (SymAlgReal))
 import Grisette.Internal.SymPrim.Array (Array)
 import Grisette.Internal.SymPrim.SymArray (SymArray (SymArray))
+import Grisette.Internal.SymPrim.SymPair (SymPair (SymPair))
+import Grisette.Internal.SymPrim.SymSeq (SymSeq (SymSeq))
 import Grisette.Internal.SymPrim.SymUninterp (SymUninterp (SymUninterp))
 import GHC.TypeLits (KnownSymbol)
 import Grisette.Internal.SymPrim.SymBV
@@ -233,6 +235,32 @@ instance
   extractSymMaybe ::
     forall knd. (IsSymbolKind knd) => SymArray sk sv -> Maybe (SymbolSet knd)
   extractSymMaybe (SymArray t) =
+    case decideSymbolKind @knd of
+      Left HRefl -> SymbolSet <$> extractTerm HS.empty t
+      Right HRefl -> SymbolSet <$> extractTerm HS.empty t
+
+instance
+  (SupportedNonFuncPrim ca, LinkedRep ca sa) =>
+  ExtractSym (SymSeq sa)
+  where
+  extractSymMaybe ::
+    forall knd. IsSymbolKind knd => SymSeq sa -> Maybe (SymbolSet knd)
+  extractSymMaybe (SymSeq t) =
+    case decideSymbolKind @knd of
+      Left HRefl -> SymbolSet <$> extractTerm HS.empty t
+      Right HRefl -> SymbolSet <$> extractTerm HS.empty t
+
+instance
+  ( SupportedNonFuncPrim ca,
+    SupportedNonFuncPrim cb,
+    LinkedRep ca sa,
+    LinkedRep cb sb
+  ) =>
+  ExtractSym (SymPair sa sb)
+  where
+  extractSymMaybe ::
+    forall knd. IsSymbolKind knd => SymPair sa sb -> Maybe (SymbolSet knd)
+  extractSymMaybe (SymPair t) =
     case decideSymbolKind @knd of
       Left HRefl -> SymbolSet <$> extractTerm HS.empty t
       Right HRefl -> SymbolSet <$> extractTerm HS.empty t

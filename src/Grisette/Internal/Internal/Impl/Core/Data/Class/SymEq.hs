@@ -97,6 +97,8 @@ import Grisette.Internal.SymPrim.SymFP
 import Grisette.Internal.SymPrim.SymInteger (SymInteger (SymInteger))
 import Grisette.Internal.TH.Derivation.Derive (derive)
 import Grisette.Internal.SymPrim.SymArray (SymArray)
+import Grisette.Internal.SymPrim.SymPair (SymPair)
+import Grisette.Internal.SymPrim.SymSeq (SymSeq)
 import Grisette.Internal.SymPrim.SymUninterp (SymUninterp)
 import GHC.TypeLits (KnownSymbol)
 
@@ -196,6 +198,22 @@ instance
     LinkedRep cv sv
   ) =>
   SymEq (SymArray sk sv) where
+  lhs .== rhs = wrapTerm $ pevalEqTerm (underlyingTerm lhs) (underlyingTerm rhs)
+
+instance
+  (SupportedNonFuncPrim ca, LinkedRep ca sa) =>
+  SymEq (SymSeq sa)
+  where
+  lhs .== rhs = wrapTerm $ pevalEqTerm (underlyingTerm lhs) (underlyingTerm rhs)
+
+instance
+  ( SupportedNonFuncPrim ca,
+    SupportedNonFuncPrim cb,
+    LinkedRep ca sa,
+    LinkedRep cb sb
+  ) =>
+  SymEq (SymPair sa sb)
+  where
   lhs .== rhs = wrapTerm $ pevalEqTerm (underlyingTerm lhs) (underlyingTerm rhs)
 
 instance (KnownSymbol n) => SymEq (SymUninterp n) where

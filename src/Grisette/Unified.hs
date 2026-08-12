@@ -185,6 +185,16 @@ module Grisette.Unified
     UnifiedArrayConstraint,
     EvalModeArray,
 
+    -- ** Unified solver sequences and products
+    SolverValue,
+    GetSeq,
+    GetPair,
+    SeqValue,
+    SeqStep,
+    SeqStepWith,
+    UnifiedSeq (..),
+    UnifiedPair (..),
+
     -- ** Supplemental conversions
     UnifiedBVBVConversion,
     UnifiedBVFPConversion,
@@ -355,6 +365,16 @@ import Grisette.Internal.Unified.UnifiedArray
     UnifiedArray (..),
     UnifiedArrayConstraint,
     EvalModeArray,
+  )
+import Grisette.Internal.Unified.UnifiedSeq
+  ( GetPair,
+    GetSeq,
+    SeqStep,
+    SeqStepWith,
+    SeqValue,
+    SolverValue,
+    UnifiedPair (..),
+    UnifiedSeq (..),
   )
 import Grisette.Internal.Unified.UnifiedFun
   ( GetFun,

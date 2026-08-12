@@ -20,6 +20,7 @@ module Grisette.Internal.Backend.QuantifiedStack
     addQuantified,
     lookupQuantified,
     emptyQuantifiedSymbols,
+    nullQuantifiedSymbols,
     addQuantifiedSymbol,
     isQuantifiedSymbol,
     emptyQuantifiedStack,
@@ -51,6 +52,10 @@ newtype QuantifiedSymbols = QuantifiedSymbols
 -- | An empty set of quantified symbols.
 emptyQuantifiedSymbols :: QuantifiedSymbols
 emptyQuantifiedSymbols = QuantifiedSymbols S.empty
+
+-- | Check whether no scoped symbols are active.
+nullQuantifiedSymbols :: QuantifiedSymbols -> Bool
+nullQuantifiedSymbols (QuantifiedSymbols symbols) = S.null symbols
 
 -- | Add a quantified symbol to the set.
 addQuantifiedSymbol ::

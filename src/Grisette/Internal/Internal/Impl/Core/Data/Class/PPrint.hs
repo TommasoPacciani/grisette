@@ -112,6 +112,8 @@ import Grisette.Internal.SymPrim.SymFP
   )
 import Grisette.Internal.SymPrim.SymGeneralFun (type (-~>) (SymGeneralFun))
 import Grisette.Internal.SymPrim.SymInteger (SymInteger (SymInteger))
+import Grisette.Internal.SymPrim.SymPair (SymPair (SymPair))
+import Grisette.Internal.SymPrim.SymSeq (SymSeq (SymSeq))
 import Grisette.Internal.SymPrim.SymUninterp (SymUninterp (SymUninterp))
 import Grisette.Internal.SymPrim.SymTabularFun (type (=~>) (SymTabularFun))
 import Grisette.Internal.SymPrim.TabularFun (type (=->))
@@ -207,6 +209,12 @@ FORMAT_SYM_BV(SymWordN)
 FORMAT_SYM_FUN(=~>, SymTabularFun)
 FORMAT_SYM_FUN(-~>, SymGeneralFun)
 #endif
+
+instance PPrint (SymSeq a) where
+  pformat (SymSeq term) = prettyPrintTerm term
+
+instance PPrint (SymPair a b) where
+  pformat (SymPair term) = prettyPrintTerm term
 
 instance (ValidFP eb sb) => PPrint (SymFP eb sb) where
   pformat (SymFP t) = prettyPrintTerm t

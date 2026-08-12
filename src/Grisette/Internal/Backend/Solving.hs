@@ -13,6 +13,7 @@
 {-# LANGUAGE Strict #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
 
 -- |
@@ -74,6 +75,7 @@ import Control.Exception
     handle,
     throwTo,
   )
+import Control.Monad (when)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Reader
   ( MonadReader (ask),
@@ -98,8 +100,10 @@ import qualified Data.SBV as SBV
 import qualified Data.SBV.Control as SBVC
 import qualified Data.SBV.Dynamic as SBVD
 import qualified Data.SBV.Internals as SBVI
+import qualified Data.SBV.List as SBVL
 import qualified Data.SBV.Trans as SBVT
 import qualified Data.SBV.Trans.Control as SBVTC
+import qualified Data.SBV.Tuple as SBVTuple
 import qualified Data.Text as T
 import GHC.IO.Exception (ExitCode (ExitSuccess))
 import GHC.Stack (HasCallStack)
@@ -112,6 +116,7 @@ import Grisette.Internal.Backend.QuantifiedStack
     emptyQuantifiedSymbols,
     isQuantifiedSymbol,
     lookupQuantified,
+    nullQuantifiedSymbols,
   )
 import Grisette.Internal.Backend.SymBiMap
   ( SymBiMap,
@@ -152,7 +157,10 @@ import Grisette.Internal.Core.Data.Class.Solver
     SolvingFailure (SolvingError, Terminated, Unk, Unsat),
   )
 import Grisette.Internal.Core.Data.MemoUtils (htmemo)
-import Grisette.Internal.SymPrim.GeneralFun (substTerm)
+import Grisette.Internal.SymPrim.GeneralFun
+  ( substTerm,
+    type (-->) (GeneralFun),
+  )
 import Grisette.Internal.SymPrim.Prim.Model as PM
   ( Model,
   )
@@ -269,6 +277,14 @@ import Grisette.Internal.SymPrim.Prim.Term
     pattern SelectTerm,
     pattern StoreTerm,
     pattern ConstArrayTerm,
+    pattern SeqConsTerm,
+    pattern SeqAppendTerm,
+    pattern SeqLengthTerm,
+    pattern SeqFoldTerm,
+    pattern SeqFoldWithTerm,
+    pattern PairTerm,
+    pattern FirstTerm,
+    pattern SecondTerm,
   )
 import Grisette.Internal.SymPrim.SymBool (SymBool (SymBool))
 
@@ -536,10 +552,18 @@ lowerSinglePrimCached t' m' = do
         Term x ->
         m (QuantifiedStack -> SBVType x)
       goCached qs t@SupportedTerm = do
-        mp <- liftIO $ readIORef mapState
-        case lookupTerm (SomeTerm t) mp of
-          Just x -> return (\qst -> withPrim @x $ fromDyn (x qst) undefined)
-          Nothing -> goCachedImpl qs t
+        let mayReuse =
+              nullQuantifiedSymbols qs
+                || case t of
+                  SymTerm symbol -> not $ isQuantifiedSymbol symbol qs
+                  _ -> False
+        if mayReuse
+          then do
+            mp <- liftIO $ readIORef mapState
+            case lookupTerm (SomeTerm t) mp of
+              Just x -> return (\qst -> withPrim @x $ fromDyn (x qst) undefined)
+              Nothing -> goCachedImpl qs t
+          else goCachedImpl qs t
       goCachedImpl ::
         forall a.
         (SupportedPrim a) =>
@@ -556,9 +580,6 @@ lowerSinglePrimCached t' m' = do
                     Just v -> v
                     Nothing ->
                       error "BUG: Symbol not found in the quantified stack"
-            liftIO $
-              modifyIORef' mapState $
-                \m -> addBiMapIntermediate (SomeTerm t) retDyn m
             return $
               \x ->
                 fromDyn
@@ -585,9 +606,10 @@ lowerSinglePrimCached t' m' = do
             let substedTerm = substTerm ts (symTerm sb) HS.empty v
             r <- goCached (addQuantifiedSymbol sb qs) substedTerm
             let ret = sbvForall sb r
-            liftIO $
-              modifyIORef' mapState $
-                addBiMapIntermediate (SomeTerm t) (toDyn . ret)
+            when (nullQuantifiedSymbols qs) $
+              liftIO $
+                modifyIORef' mapState $
+                  addBiMapIntermediate (SomeTerm t) (toDyn . ret)
             return ret
       goCachedImpl qs t@(ExistsTerm (ts :: TypedConstantSymbol t1) v) =
         withNonFuncPrim @t1 $ do
@@ -599,19 +621,46 @@ lowerSinglePrimCached t' m' = do
             let substedTerm = substTerm ts (symTerm sb) HS.empty v
             r <- goCached (addQuantifiedSymbol sb qs) substedTerm
             let ret = sbvExists sb r
-            liftIO $
-              modifyIORef' mapState $
-                addBiMapIntermediate (SomeTerm t) (toDyn . ret)
+            when (nullQuantifiedSymbols qs) $
+              liftIO $
+                modifyIORef' mapState $
+                  addBiMapIntermediate (SomeTerm t) (toDyn . ret)
             return ret
       goCachedImpl qs t =
         withPrim @a $ do
           r <- goCachedIntermediate qs t
-          let memoed = htmemo r
-              {-# NOINLINE memoed #-}
-          liftIO $
-            modifyIORef' mapState $
-              addBiMapIntermediate (SomeTerm t) (toDyn . memoed)
-          return memoed
+          if nullQuantifiedSymbols qs
+            then do
+              let memoed = htmemo r
+                  {-# NOINLINE memoed #-}
+              liftIO $
+                modifyIORef' mapState $
+                  addBiMapIntermediate (SomeTerm t) (toDyn . memoed)
+              return memoed
+            else return r
+      goGeneralFunBinder ::
+        forall argument result.
+        SupportedNonFuncPrim argument =>
+        ( QuantifiedSymbols ->
+          Term result ->
+          m (QuantifiedStack -> SBVType result)
+        ) ->
+        QuantifiedSymbols ->
+        Term (argument --> result) ->
+        m (QuantifiedStack -> SBVType (argument --> result))
+      goGeneralFunBinder lowerResult qs function@SupportedTerm = case function of
+        ConTerm (GeneralFun binder (body@SupportedTerm)) ->
+          withNonFuncPrim @argument $ do
+            currentMap <- liftIO $ readIORef mapState
+            let (nextMap, scopedBinder) =
+                  attachNextQuantifiedSymbolInfo currentMap binder
+                scopedBody = substTerm binder (symTerm scopedBinder) HS.empty body
+            liftIO $ writeIORef mapState nextMap
+            loweredBody <-
+              lowerResult (addQuantifiedSymbol scopedBinder qs) scopedBody
+            pure $ \stack argument ->
+              loweredBody (addQuantified scopedBinder (toDyn argument) stack)
+        _ -> goCached qs function
       goCachedIntermediate ::
         forall a.
         (SupportedPrim a) =>
@@ -813,6 +862,88 @@ lowerSinglePrimCached t' m' = do
       goCachedIntermediate qs (ConstArrayTerm _ val) = withPrim @a $ do
         val' <- goCached qs val
         pure $ \qst -> SBV.constArray $ val' qst
+      goCachedIntermediate
+        qs
+        (SeqConsTerm (element :: Term element) sequence) =
+          withNonFuncPrim @element $ do
+            element' <- goCached qs element
+            sequence' <- goCached qs sequence
+            pure $ \qst -> element' qst SBVL..: sequence' qst
+      goCachedIntermediate
+        qs
+        (SeqAppendTerm (left :: Term [element]) right) =
+          withNonFuncPrim @element $ do
+            left' <- goCached qs left
+            right' <- goCached qs right
+            pure $ \qst -> left' qst SBVL.++ right' qst
+      goCachedIntermediate qs (SeqLengthTerm (sequence :: Term [element])) =
+        withNonFuncPrim @element $ do
+          sequence' <- goCached qs sequence
+          pure $ SBVL.length . sequence'
+      goCachedIntermediate
+        qs
+        (SeqFoldTerm (step :: Term (state --> element --> state)) initial sequence) =
+          withNonFuncPrim @state $ withNonFuncPrim @element $ do
+            step' <-
+              goGeneralFunBinder @state @(element --> state)
+                ( goGeneralFunBinder @element @state $
+                    \symbols term@SupportedTerm -> goCached symbols term
+                )
+                qs
+                step
+            initial' <- goCached qs initial
+            sequence' <- goCached qs sequence
+            pure $ \qst -> SBVL.foldl (step' qst) (initial' qst) (sequence' qst)
+      goCachedIntermediate
+        qs
+        ( SeqFoldWithTerm
+            (step :: Term (environment --> state --> element --> state))
+            environment
+            initial
+            sequence
+          ) =
+          withNonFuncPrim @environment $
+            withNonFuncPrim @state $
+              withNonFuncPrim @element $ do
+                step' <-
+                  goGeneralFunBinder @environment @(state --> element --> state)
+                    ( goGeneralFunBinder @state @(element --> state)
+                        ( goGeneralFunBinder @element @state $
+                            \symbols term@SupportedTerm -> goCached symbols term
+                        )
+                    )
+                    qs
+                    step
+                environment' <- goCached qs environment
+                initial' <- goCached qs initial
+                sequence' <- goCached qs sequence
+                pure $ \qst ->
+                  SBVL.foldl
+                    SBV.Closure
+                      { SBV.closureEnv = environment' qst,
+                        SBV.closureFun = step' qst
+                      }
+                    (initial' qst)
+                    (sequence' qst)
+      goCachedIntermediate
+        qs
+        (PairTerm (firstValue :: Term firstType) (secondValue :: Term secondType)) =
+          withNonFuncPrim @firstType $ withNonFuncPrim @secondType $ do
+            firstValue' <- goCached qs firstValue
+            secondValue' <- goCached qs secondValue
+            pure $ \qst -> SBVTuple.tuple (firstValue' qst, secondValue' qst)
+      goCachedIntermediate
+        qs
+        (FirstTerm (pairValue :: Term (firstType, secondType))) =
+          withNonFuncPrim @firstType $ withNonFuncPrim @secondType $ do
+            pairValue' <- goCached qs pairValue
+            pure $ SBVTuple.fst . pairValue'
+      goCachedIntermediate
+        qs
+        (SecondTerm (pairValue :: Term (firstType, secondType))) =
+          withNonFuncPrim @firstType $ withNonFuncPrim @secondType $ do
+            pairValue' <- goCached qs pairValue
+            pure $ SBVTuple.snd . pairValue'
       goCachedIntermediate _ ConTerm {} = error "Should not happen"
       goCachedIntermediate _ SymTerm {} = error "Should not happen"
       goCachedIntermediate _ ForallTerm {} = error "Should not happen"

@@ -33,6 +33,12 @@ module Grisette.Internal.SymPrim.GeneralFun
     generalSubstSomeTerm,
     substTerm,
     freshArgSymbol,
+    validateClosedSeqFold,
+    validateClosedSeqFoldWith,
+    checkClosedSeqFold,
+    checkClosedSeqFoldWith,
+    pevalClosedSeqFold,
+    pevalClosedSeqFoldWith,
   )
 where
 
@@ -45,9 +51,11 @@ import Control.DeepSeq (NFData (rnf))
 import Data.Bifunctor (Bifunctor (second))
 import qualified Data.HashSet as HS
 import Data.Hashable (Hashable (hashWithSalt))
-import Data.Maybe (fromJust)
+import Data.List (sortOn)
+import Data.Maybe (fromJust, mapMaybe)
 import qualified Data.SBV as SBV
 import qualified Data.SBV.Dynamic as SBVD
+import GHC.Stack (HasCallStack)
 import Grisette.Internal.Core.Data.Class.Function
   ( Apply (FunType, apply),
     Function ((#)),
@@ -64,6 +72,7 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
     LinkedRep (underlyingTerm, wrapTerm),
     NonFuncPrimConstraint,
     NonFuncSBVBaseType,
+    type (-->) (GeneralFun),
     PEvalApplyTerm (pevalApplyTerm, sbvApplyTerm),
     PEvalBVTerm (pevalBVConcatTerm, pevalBVExtendTerm, pevalBVSelectTerm),
     PEvalBitCastOrTerm (pevalBitCastOrTerm),
@@ -103,6 +112,14 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
     pevalSelectTerm,
     pevalStoreTerm,
     pevalConstArrayTerm,
+    pevalSeqConsTerm,
+    pevalSeqAppendTerm,
+    pevalSeqLengthTerm,
+    pevalSeqFoldTerm,
+    pevalSeqFoldWithTerm,
+    pevalPairTerm,
+    pevalFirstTerm,
+    pevalSecondTerm,
     SBVRep (SBVType),
     SomeTypedAnySymbol,
     SomeTypedConstantSymbol,
@@ -118,7 +135,7 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
       ),
     SupportedPrimConstraint (PrimConstraint),
     SymRep (SymType),
-    SymbolKind (AnyKind),
+    SymbolKind (AnyKind, ConstantKind),
     Term,
     TypedAnySymbol,
     TypedConstantSymbol,
@@ -138,6 +155,7 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
     pevalRemIntegralTerm,
     pevalRotateLeftTerm,
     pformatTerm,
+    castSomeTypedSymbol,
     someTypedSymbol,
     symTerm,
     translateTypeError,
@@ -195,9 +213,18 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
     pattern SelectTerm,
     pattern StoreTerm,
     pattern ConstArrayTerm,
+    pattern SeqConsTerm,
+    pattern SeqAppendTerm,
+    pattern SeqLengthTerm,
+    pattern SeqFoldTerm,
+    pattern SeqFoldWithTerm,
+    pattern PairTerm,
+    pattern FirstTerm,
+    pattern SecondTerm,
   )
 import Grisette.Internal.SymPrim.Prim.Pattern (pattern SubTerms)
 import Grisette.Internal.SymPrim.Prim.SomeTerm (SomeTerm (SomeTerm), someTerm)
+import Grisette.Internal.SymPrim.Prim.TermUtils (extractSymSomeTerm)
 import Language.Haskell.TH.Syntax (Lift (liftTyped))
 import Type.Reflection
   ( TypeRep,
@@ -225,17 +252,8 @@ import Unsafe.Coerce (unsafeCoerce)
 -- (+ 2 y)
 -- >>> f # "a"  -- "a" has the type SymInteger
 -- (+ 1 (+ a y))
-data (-->) a b where
-  GeneralFun ::
-    (SupportedNonFuncPrim a, SupportedPrim b) =>
-    TypedConstantSymbol a ->
-    Term b ->
-    a --> b
-
 instance (LinkedRep a sa, LinkedRep b sb) => Function (a --> b) sa sb where
   (GeneralFun s t) # x = wrapTerm $ substTerm s (underlyingTerm x) HS.empty t
-
-infixr 0 -->
 
 extractSymSomeTermIncludeBoundedVars ::
   SomeTerm -> HS.HashSet SomeTypedAnySymbol
@@ -266,6 +284,113 @@ extractSymSomeTermIncludeBoundedVars = htmemo go
     go (SomeTerm (ExistsTerm sym arg)) =
       HS.insert (someTypedSymbol $ fromJust $ castTypedSymbol sym) $ goTyped arg
     go (SomeTerm (SubTerms tms)) = mconcat <$> map go $ tms
+
+validateClosedSeqFold ::
+  (HasCallStack, SupportedPrim function) =>
+  Term function ->
+  Term function
+validateClosedSeqFold function =
+  either error id (checkClosedSeqFold function)
+
+validateClosedSeqFoldWith ::
+  (HasCallStack, SupportedPrim function) =>
+  Term function ->
+  Term function
+validateClosedSeqFoldWith function =
+  either error id (checkClosedSeqFoldWith function)
+
+checkClosedSeqFold ::
+  SupportedPrim function =>
+  Term function ->
+  Either String (Term function)
+checkClosedSeqFold = checkClosedSequenceFunction "foldSeq"
+
+checkClosedSeqFoldWith ::
+  SupportedPrim function =>
+  Term function ->
+  Either String (Term function)
+checkClosedSeqFoldWith = checkClosedSequenceFunction "foldSeqWith"
+
+pevalClosedSeqFold ::
+  ( HasCallStack,
+    SupportedNonFuncPrim state,
+    SupportedNonFuncPrim element,
+    SupportedPrim (state --> element --> state)
+  ) =>
+  Term (state --> element --> state) ->
+  Term state ->
+  Term [element] ->
+  Term state
+pevalClosedSeqFold step initial sequence =
+  let checked = validateClosedSeqFold step
+   in checked `seq` case sequence of
+        ConTerm elements -> foldConcreteSequence checked initial elements
+        _ -> pevalSeqFoldTerm checked initial sequence
+
+pevalClosedSeqFoldWith ::
+  forall environment state element.
+  ( HasCallStack,
+    SupportedNonFuncPrim environment,
+    SupportedNonFuncPrim state,
+    SupportedNonFuncPrim element,
+    SupportedPrim (environment --> state --> element --> state)
+  ) =>
+  Term (environment --> state --> element --> state) ->
+  Term environment ->
+  Term state ->
+  Term [element] ->
+  Term state
+pevalClosedSeqFoldWith step environment initial sequence =
+  let checked = validateClosedSeqFoldWith step
+   in checked `seq` case sequence of
+        ConTerm elements ->
+          withPrim @(environment --> state --> element --> state) $
+            foldConcreteSequence
+              (pevalApplyTerm checked environment)
+              initial
+              elements
+        _ -> pevalSeqFoldWithTerm checked environment initial sequence
+
+foldConcreteSequence ::
+  forall state element.
+  ( SupportedNonFuncPrim state,
+    SupportedNonFuncPrim element,
+    SupportedPrim (state --> element --> state)
+  ) =>
+  Term (state --> element --> state) ->
+  Term state ->
+  [element] ->
+  Term state
+foldConcreteSequence step =
+  withPrim @(state --> element --> state) $
+    foldl'
+      (\state element ->
+        pevalApplyTerm (pevalApplyTerm step state) (conTerm element)
+      )
+
+checkClosedSequenceFunction ::
+  forall function.
+  SupportedPrim function =>
+  String ->
+  Term function ->
+  Either String (Term function)
+checkClosedSequenceFunction operation function =
+  case extractSymSomeTerm @'AnyKind HS.empty (SomeTerm function) of
+    Nothing ->
+      Left $
+        "BUG: "
+          ++ operation
+          ++ " could not classify symbols in its step function"
+    Just symbols ->
+      case sortOn show (mapMaybe toCaptured (HS.toList symbols)) of
+        [] -> Right function
+        captured ->
+          Left $
+            operation
+              ++ " step function captures solver values: "
+              ++ unwords (show <$> captured)
+  where
+    toCaptured symbol = castSomeTypedSymbol @'ConstantKind symbol
 
 -- | Generate a fresh argument symbol that is not used as bounded or unbounded
 -- variables in the function body for a general symbolic function.
@@ -554,6 +679,33 @@ generalSubstSomeTerm subst initialBoundedSymbols = go initialMemo
       goTernary memo pevalStoreTerm arr key val
     goSome  memo _ (SomeTerm (ConstArrayTerm pkey val)) =
       goUnary memo (pevalConstArrayTerm pkey) val
+    goSome memo _ (SomeTerm (SeqConsTerm element sequence)) =
+      goBinary memo pevalSeqConsTerm element sequence
+    goSome memo _ (SomeTerm (SeqAppendTerm left right)) =
+      goBinary memo pevalSeqAppendTerm left right
+    goSome memo _ (SomeTerm (SeqLengthTerm sequence)) =
+      goUnary memo pevalSeqLengthTerm sequence
+    goSome memo _ (SomeTerm (SeqFoldTerm step initial sequence)) =
+      let folded =
+            pevalClosedSeqFold
+              (go memo step)
+              (go memo initial)
+              (go memo sequence)
+       in folded `seq` SomeTerm folded
+    goSome memo _ (SomeTerm (SeqFoldWithTerm step environment initial sequence)) =
+      let folded =
+            pevalClosedSeqFoldWith
+              (go memo step)
+              (go memo environment)
+              (go memo initial)
+              (go memo sequence)
+       in folded `seq` SomeTerm folded
+    goSome memo _ (SomeTerm (PairTerm firstValue secondValue)) =
+      goBinary memo pevalPairTerm firstValue secondValue
+    goSome memo _ (SomeTerm (FirstTerm pairValue)) =
+      goUnary memo pevalFirstTerm pairValue
+    goSome memo _ (SomeTerm (SecondTerm pairValue)) =
+      goUnary memo pevalSecondTerm pairValue
     goUnary memo f a = SomeTerm $ f (go memo a)
     goBinary memo f a b = SomeTerm $ f (go memo a) (go memo b)
     goTernary memo f a b c =

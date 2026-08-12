@@ -72,6 +72,14 @@ module Grisette.Internal.SymPrim.Prim.Internal.Term
     pevalSelectTerm,
     pevalStoreTerm,
     pevalConstArrayTerm,
+    pevalSeqConsTerm,
+    pevalSeqAppendTerm,
+    pevalSeqLengthTerm,
+    pevalSeqFoldTerm,
+    pevalSeqFoldWithTerm,
+    pevalPairTerm,
+    pevalFirstTerm,
+    pevalSecondTerm,
 
     -- * Typed symbols
     SymbolKind (..),
@@ -171,6 +179,14 @@ module Grisette.Internal.SymPrim.Prim.Internal.Term
     selectTerm,
     storeTerm,
     constArrayTerm,
+    seqConsTerm,
+    seqAppendTerm,
+    seqLengthTerm,
+    seqFoldTerm,
+    seqFoldWithTerm,
+    pairTerm,
+    firstTerm,
+    secondTerm,
 
     -- * Patterns
     pattern SupportedTerm,
@@ -229,6 +245,14 @@ module Grisette.Internal.SymPrim.Prim.Internal.Term
     pattern SelectTerm,
     pattern StoreTerm,
     pattern ConstArrayTerm,
+    pattern SeqConsTerm,
+    pattern SeqAppendTerm,
+    pattern SeqLengthTerm,
+    pattern SeqFoldTerm,
+    pattern SeqFoldWithTerm,
+    pattern PairTerm,
+    pattern FirstTerm,
+    pattern SecondTerm,
 
     -- * Support for boolean type
     trueTerm,
@@ -255,6 +279,9 @@ module Grisette.Internal.SymPrim.Prim.Internal.Term
     partitionCVArg,
     parseScalarSMTModelResult,
     bvIsNonZeroFromGEq1,
+
+    -- * General functions
+    type (-->)(..),
 
     -- * Partial evaluation
     PartialFun,
@@ -356,8 +383,10 @@ import Data.Proxy (Proxy (Proxy))
 import Data.SBV (BVIsNonZero)
 import qualified Data.SBV as SBV
 import qualified Data.SBV.Dynamic as SBVD
+import qualified Data.SBV.List as SBVL
 import qualified Data.SBV.Trans as SBVT
 import qualified Data.SBV.Trans.Control as SBVTC
+import qualified Data.SBV.Tuple as SBVTuple
 import qualified Data.Serialize as Cereal
 import Data.String (IsString (fromString))
 import Data.Type.Equality ((:~:) (Refl), type (:~~:) (HRefl))
@@ -448,6 +477,17 @@ import Type.Reflection
 import qualified Type.Reflection as R
 import Unsafe.Coerce (unsafeCoerce)
 
+-- | A general function body with one explicitly bound argument.
+-- Instances and construction live in "Grisette.Internal.SymPrim.GeneralFun".
+data (-->) a b where
+  GeneralFun ::
+    (SupportedNonFuncPrim a, SupportedPrim b) =>
+    TypedConstantSymbol a ->
+    Term b ->
+    a --> b
+
+infixr 0 -->
+
 -- $setup
 -- >>> import Grisette.Core
 -- >>> import Grisette.SymPrim
@@ -524,7 +564,6 @@ type NonFuncPrimConstraint a =
     SBV.Mergeable (SBVType a),
     SBV.SMTDefinable (SBVType a),
     SBV.Mergeable (SBVType a),
-    SBVT.SatModel (NonFuncSBVBaseType a),
     PrimConstraint a
   )
 
@@ -661,7 +700,9 @@ class
   sbvDistinct = SBV.distinct . toList
   parseSMTModelResult :: Int -> ([([SBVD.CV], SBVD.CV)], SBVD.CV) -> t
   default parseSMTModelResult ::
-    SupportedNonFuncPrim t =>
+    ( SupportedNonFuncPrim t,
+      SBVT.SatModel (NonFuncSBVBaseType t)
+    ) =>
     Int ->
     ([([SBVD.CV], SBVD.CV)], SBVD.CV) ->
     t
@@ -1776,6 +1817,61 @@ data Term t where
     Proxy k ->
     !(Term v) ->
     Term (Array k v)
+  SeqConsTerm' ::
+    SupportedNonFuncPrim a =>
+    {-# UNPACK #-} !CachedInfo ->
+    !(Term a) ->
+    !(Term [a]) ->
+    Term [a]
+  SeqAppendTerm' ::
+    SupportedNonFuncPrim a =>
+    {-# UNPACK #-} !CachedInfo ->
+    !(Term [a]) ->
+    !(Term [a]) ->
+    Term [a]
+  SeqLengthTerm' ::
+    SupportedNonFuncPrim a =>
+    {-# UNPACK #-} !CachedInfo ->
+    !(Term [a]) ->
+    Term Integer
+  SeqFoldTerm' ::
+    ( SupportedNonFuncPrim state,
+      SupportedNonFuncPrim element,
+      SupportedPrim (state --> element --> state)
+    ) =>
+    {-# UNPACK #-} !CachedInfo ->
+    !(Term (state --> element --> state)) ->
+    !(Term state) ->
+    !(Term [element]) ->
+    Term state
+  SeqFoldWithTerm' ::
+    ( SupportedNonFuncPrim environment,
+      SupportedNonFuncPrim state,
+      SupportedNonFuncPrim element,
+      SupportedPrim (environment --> state --> element --> state)
+    ) =>
+    {-# UNPACK #-} !CachedInfo ->
+    !(Term (environment --> state --> element --> state)) ->
+    !(Term environment) ->
+    !(Term state) ->
+    !(Term [element]) ->
+    Term state
+  PairTerm' ::
+    (SupportedNonFuncPrim a, SupportedNonFuncPrim b) =>
+    {-# UNPACK #-} !CachedInfo ->
+    !(Term a) ->
+    !(Term b) ->
+    Term (a, b)
+  FirstTerm' ::
+    (SupportedNonFuncPrim a, SupportedNonFuncPrim b) =>
+    {-# UNPACK #-} !CachedInfo ->
+    !(Term (a, b)) ->
+    Term a
+  SecondTerm' ::
+    (SupportedNonFuncPrim a, SupportedNonFuncPrim b) =>
+    {-# UNPACK #-} !CachedInfo ->
+    !(Term (a, b)) ->
+    Term b
 
 data SupportedPrimEvidence t where
   SupportedPrimEvidence :: (SupportedPrim t) => SupportedPrimEvidence t
@@ -2802,6 +2898,113 @@ pattern ConstArrayTerm pkey val <- ConstArrayTerm' _ pkey val
 {-# INLINE ConstArrayTerm #-}
 #endif
 
+pattern SeqConsTerm ::
+  forall ret.
+  () =>
+  forall a.
+  (SupportedNonFuncPrim a, ret ~ [a]) =>
+  Term a ->
+  Term [a] ->
+  Term ret
+pattern SeqConsTerm element sequence <- SeqConsTerm' _ element sequence
+  where
+    SeqConsTerm element sequence = pevalSeqConsTerm element sequence
+
+pattern SeqAppendTerm ::
+  forall ret.
+  () =>
+  forall a.
+  (SupportedNonFuncPrim a, ret ~ [a]) =>
+  Term [a] ->
+  Term [a] ->
+  Term ret
+pattern SeqAppendTerm left right <- SeqAppendTerm' _ left right
+  where
+    SeqAppendTerm left right = pevalSeqAppendTerm left right
+
+pattern SeqLengthTerm ::
+  forall ret.
+  () =>
+  forall a.
+  (SupportedNonFuncPrim a, ret ~ Integer) =>
+  Term [a] ->
+  Term ret
+pattern SeqLengthTerm sequence <- SeqLengthTerm' _ sequence
+  where
+    SeqLengthTerm sequence = pevalSeqLengthTerm sequence
+
+pattern SeqFoldTerm ::
+  forall ret.
+  () =>
+  forall state element.
+  ( SupportedNonFuncPrim state,
+    SupportedNonFuncPrim element,
+    SupportedPrim (state --> element --> state),
+    ret ~ state
+  ) =>
+  Term (state --> element --> state) ->
+  Term state ->
+  Term [element] ->
+  Term ret
+pattern SeqFoldTerm step initial sequence <- SeqFoldTerm' _ step initial sequence
+  where
+    SeqFoldTerm step initial sequence = pevalSeqFoldTerm step initial sequence
+
+pattern SeqFoldWithTerm ::
+  forall ret.
+  () =>
+  forall environment state element.
+  ( SupportedNonFuncPrim environment,
+    SupportedNonFuncPrim state,
+    SupportedNonFuncPrim element,
+    SupportedPrim (environment --> state --> element --> state),
+    ret ~ state
+  ) =>
+  Term (environment --> state --> element --> state) ->
+  Term environment ->
+  Term state ->
+  Term [element] ->
+  Term ret
+pattern SeqFoldWithTerm step environment initial sequence <-
+  SeqFoldWithTerm' _ step environment initial sequence
+  where
+    SeqFoldWithTerm step environment initial sequence =
+      pevalSeqFoldWithTerm step environment initial sequence
+
+pattern PairTerm ::
+  forall ret.
+  () =>
+  forall a b.
+  (SupportedNonFuncPrim a, SupportedNonFuncPrim b, ret ~ (a, b)) =>
+  Term a ->
+  Term b ->
+  Term ret
+pattern PairTerm firstValue secondValue <- PairTerm' _ firstValue secondValue
+  where
+    PairTerm firstValue secondValue = pevalPairTerm firstValue secondValue
+
+pattern FirstTerm ::
+  forall ret.
+  () =>
+  forall a b.
+  (SupportedNonFuncPrim a, SupportedNonFuncPrim b, ret ~ a) =>
+  Term (a, b) ->
+  Term ret
+pattern FirstTerm value <- FirstTerm' _ value
+  where
+    FirstTerm value = pevalFirstTerm value
+
+pattern SecondTerm ::
+  forall ret.
+  () =>
+  forall a b.
+  (SupportedNonFuncPrim a, SupportedNonFuncPrim b, ret ~ b) =>
+  Term (a, b) ->
+  Term ret
+pattern SecondTerm value <- SecondTerm' _ value
+  where
+    SecondTerm value = pevalSecondTerm value
+
 #if MIN_VERSION_base(4, 16, 4)
 {-# COMPLETE
   ConTerm,
@@ -2854,7 +3057,15 @@ pattern ConstArrayTerm pkey val <- ConstArrayTerm' _ pkey val
   ToFPTerm,
   SelectTerm,
   StoreTerm,
-  ConstArrayTerm
+  ConstArrayTerm,
+  SeqConsTerm,
+  SeqAppendTerm,
+  SeqLengthTerm,
+  SeqFoldTerm,
+  SeqFoldWithTerm,
+  PairTerm,
+  FirstTerm,
+  SecondTerm
   #-}
 #endif
 
@@ -2911,6 +3122,14 @@ termInfo (ToFPTerm' i _ _ _ _) = i
 termInfo (SelectTerm' i _ _) = i
 termInfo (StoreTerm' i _ _ _) = i
 termInfo (ConstArrayTerm' i _ _) = i
+termInfo (SeqConsTerm' i _ _) = i
+termInfo (SeqAppendTerm' i _ _) = i
+termInfo (SeqLengthTerm' i _) = i
+termInfo (SeqFoldTerm' i _ _ _) = i
+termInfo (SeqFoldWithTerm' i _ _ _ _) = i
+termInfo (PairTerm' i _ _) = i
+termInfo (FirstTerm' i _) = i
+termInfo (SecondTerm' i _) = i
 
 -- | Get the thread ID for a term.
 {-# INLINE termThreadId #-}
@@ -3036,6 +3255,14 @@ introSupportedPrimConstraint0 (SelectTerm' _ (_ :: Term arr) _) x = do
   withPrim @arr x
 introSupportedPrimConstraint0 StoreTerm' {} x = x
 introSupportedPrimConstraint0 ConstArrayTerm' {} x = x
+introSupportedPrimConstraint0 SeqConsTerm' {} x = x
+introSupportedPrimConstraint0 SeqAppendTerm' {} x = x
+introSupportedPrimConstraint0 SeqLengthTerm' {} x = x
+introSupportedPrimConstraint0 SeqFoldTerm' {} x = x
+introSupportedPrimConstraint0 SeqFoldWithTerm' {} x = x
+introSupportedPrimConstraint0 PairTerm' {} x = x
+introSupportedPrimConstraint0 FirstTerm' {} x = x
+introSupportedPrimConstraint0 SecondTerm' {} x = x
 
 -- | Introduce the 'SupportedPrim' constraint from a term.
 introSupportedPrimConstraint ::
@@ -3100,6 +3327,33 @@ pformatTerm (ToFPTerm r arg _ _) = "(to_fp " ++ pformatTerm r ++ " " ++ pformatT
 pformatTerm (SelectTerm arr key) = "(select " ++ pformatTerm arr ++ " " ++ pformatTerm key ++ ")"
 pformatTerm (StoreTerm arr key val) = "(store " ++ pformatTerm arr ++ " " ++ pformatTerm key ++ " " ++ pformatTerm val ++ ")"
 pformatTerm (ConstArrayTerm _ val) = "(const_array " ++ pformatTerm val ++ ")"
+pformatTerm (SeqConsTerm element sequence) =
+  "(seq.cons " ++ pformatTerm element ++ " " ++ pformatTerm sequence ++ ")"
+pformatTerm (SeqAppendTerm left right) =
+  "(seq.append " ++ pformatTerm left ++ " " ++ pformatTerm right ++ ")"
+pformatTerm (SeqLengthTerm sequence) = "(seq.length " ++ pformatTerm sequence ++ ")"
+pformatTerm (SeqFoldTerm step initial sequence) =
+  "(seq.foldl "
+    ++ pformatTerm step
+    ++ " "
+    ++ pformatTerm initial
+    ++ " "
+    ++ pformatTerm sequence
+    ++ ")"
+pformatTerm (SeqFoldWithTerm step environment initial sequence) =
+  "(seq.foldl-with "
+    ++ pformatTerm step
+    ++ " "
+    ++ pformatTerm environment
+    ++ " "
+    ++ pformatTerm initial
+    ++ " "
+    ++ pformatTerm sequence
+    ++ ")"
+pformatTerm (PairTerm firstValue secondValue) =
+  "(pair " ++ pformatTerm firstValue ++ " " ++ pformatTerm secondValue ++ ")"
+pformatTerm (FirstTerm value) = "(first " ++ pformatTerm value ++ ")"
+pformatTerm (SecondTerm value) = "(second " ++ pformatTerm value ++ ")"
 
 -- {-# INLINE pformatTerm #-}
 
@@ -3175,6 +3429,16 @@ instance Lift (Term t) where
   liftTyped (ConstArrayTerm (_ :: p k) t2) = do
     let pkey = [||Proxy||] :: CODE (Proxy k)
     [||constArrayTerm $$pkey t2||]
+  liftTyped (SeqConsTerm element sequence) = [||seqConsTerm element sequence||]
+  liftTyped (SeqAppendTerm left right) = [||seqAppendTerm left right||]
+  liftTyped (SeqLengthTerm sequence) = [||seqLengthTerm sequence||]
+  liftTyped (SeqFoldTerm step initial sequence) =
+    [||seqFoldTerm step initial sequence||]
+  liftTyped (SeqFoldWithTerm step environment initial sequence) =
+    [||seqFoldWithTerm step environment initial sequence||]
+  liftTyped (PairTerm firstValue secondValue) = [||pairTerm firstValue secondValue||]
+  liftTyped (FirstTerm value) = [||firstTerm value||]
+  liftTyped (SecondTerm value) = [||secondTerm value||]
 
 instance Show (Term ty) where
   show t@(ConTerm v) =
@@ -3683,6 +3947,32 @@ instance Show (Term ty) where
       ++ ", val="
       ++ show val
       ++ "}"
+  show t@(SeqConsTerm element sequence) =
+    "SeqConsTerm{tid=" ++ show (termThreadId t) ++ ", id=" ++ show (termId t)
+      ++ ", element=" ++ show element ++ ", sequence=" ++ show sequence ++ "}"
+  show t@(SeqAppendTerm left right) =
+    "SeqAppendTerm{tid=" ++ show (termThreadId t) ++ ", id=" ++ show (termId t)
+      ++ ", left=" ++ show left ++ ", right=" ++ show right ++ "}"
+  show t@(SeqLengthTerm sequence) =
+    "SeqLengthTerm{tid=" ++ show (termThreadId t) ++ ", id=" ++ show (termId t)
+      ++ ", sequence=" ++ show sequence ++ "}"
+  show t@(SeqFoldTerm step initial sequence) =
+    "SeqFoldTerm{tid=" ++ show (termThreadId t) ++ ", id=" ++ show (termId t)
+      ++ ", step=" ++ show step ++ ", initial=" ++ show initial
+      ++ ", sequence=" ++ show sequence ++ "}"
+  show t@(SeqFoldWithTerm step environment initial sequence) =
+    "SeqFoldWithTerm{tid=" ++ show (termThreadId t) ++ ", id=" ++ show (termId t)
+      ++ ", step=" ++ show step ++ ", environment=" ++ show environment
+      ++ ", initial=" ++ show initial ++ ", sequence=" ++ show sequence ++ "}"
+  show t@(PairTerm firstValue secondValue) =
+    "PairTerm{tid=" ++ show (termThreadId t) ++ ", id=" ++ show (termId t)
+      ++ ", first=" ++ show firstValue ++ ", second=" ++ show secondValue ++ "}"
+  show t@(FirstTerm value) =
+    "FirstTerm{tid=" ++ show (termThreadId t) ++ ", id=" ++ show (termId t)
+      ++ ", value=" ++ show value ++ "}"
+  show t@(SecondTerm value) =
+    "SecondTerm{tid=" ++ show (termThreadId t) ++ ", id=" ++ show (termId t)
+      ++ ", value=" ++ show value ++ "}"
 
 -- {-# INLINE show #-}
 
@@ -3920,6 +4210,53 @@ data UTerm t where
     Proxy k ->
     !(Term v) ->
     UTerm (Array k v)
+  USeqConsTerm ::
+    SupportedNonFuncPrim a =>
+    !(Term a) ->
+    !(Term [a]) ->
+    UTerm [a]
+  USeqAppendTerm ::
+    SupportedNonFuncPrim a =>
+    !(Term [a]) ->
+    !(Term [a]) ->
+    UTerm [a]
+  USeqLengthTerm ::
+    SupportedNonFuncPrim a =>
+    !(Term [a]) ->
+    UTerm Integer
+  USeqFoldTerm ::
+    ( SupportedNonFuncPrim state,
+      SupportedNonFuncPrim element,
+      SupportedPrim (state --> element --> state)
+    ) =>
+    !(Term (state --> element --> state)) ->
+    !(Term state) ->
+    !(Term [element]) ->
+    UTerm state
+  USeqFoldWithTerm ::
+    ( SupportedNonFuncPrim environment,
+      SupportedNonFuncPrim state,
+      SupportedNonFuncPrim element,
+      SupportedPrim (environment --> state --> element --> state)
+    ) =>
+    !(Term (environment --> state --> element --> state)) ->
+    !(Term environment) ->
+    !(Term state) ->
+    !(Term [element]) ->
+    UTerm state
+  UPairTerm ::
+    (SupportedNonFuncPrim a, SupportedNonFuncPrim b) =>
+    !(Term a) ->
+    !(Term b) ->
+    UTerm (a, b)
+  UFirstTerm ::
+    (SupportedNonFuncPrim a, SupportedNonFuncPrim b) =>
+    !(Term (a, b)) ->
+    UTerm a
+  USecondTerm ::
+    (SupportedNonFuncPrim a, SupportedNonFuncPrim b) =>
+    !(Term (a, b)) ->
+    UTerm b
 
 -- | Compare two t'TypedSymbol's for equality.
 eqHeteroSymbol :: forall ta a tb b. TypedSymbol ta a -> TypedSymbol tb b -> Bool
@@ -4200,6 +4537,38 @@ preHashConstArrayDescription :: HashId -> Digest
 preHashConstArrayDescription h1 = fromIntegral (53 `hashWithSalt` h1)
 {-# INLINE preHashConstArrayDescription #-}
 
+preHashSeqConsDescription :: HashId -> HashId -> Digest
+preHashSeqConsDescription h1 h2 = fromIntegral (54 `hashWithSalt` h1 `hashWithSalt` h2)
+
+preHashSeqAppendDescription :: HashId -> HashId -> Digest
+preHashSeqAppendDescription h1 h2 = fromIntegral (55 `hashWithSalt` h1 `hashWithSalt` h2)
+
+preHashSeqLengthDescription :: TypeHashId -> Digest
+preHashSeqLengthDescription = fromIntegral . hashWithSalt 56
+
+preHashSeqFoldDescription :: TypeHashId -> HashId -> HashId -> Digest
+preHashSeqFoldDescription step initial sequence =
+  fromIntegral (57 `hashWithSalt` step `hashWithSalt` initial `hashWithSalt` sequence)
+
+preHashSeqFoldWithDescription :: TypeHashId -> HashId -> HashId -> HashId -> Digest
+preHashSeqFoldWithDescription step environment initial sequence =
+  fromIntegral
+    ( 58
+        `hashWithSalt` step
+        `hashWithSalt` environment
+        `hashWithSalt` initial
+        `hashWithSalt` sequence
+    )
+
+preHashPairDescription :: HashId -> HashId -> Digest
+preHashPairDescription h1 h2 = fromIntegral (59 `hashWithSalt` h1 `hashWithSalt` h2)
+
+preHashFirstDescription :: TypeHashId -> Digest
+preHashFirstDescription = fromIntegral . hashWithSalt 60
+
+preHashSecondDescription :: TypeHashId -> Digest
+preHashSecondDescription = fromIntegral . hashWithSalt 61
+
 instance Interned (Term t) where
   type Uninterned (Term t) = UTerm t
   data Description (Term t) where
@@ -4464,6 +4833,46 @@ instance Interned (Term t) where
       {-# UNPACK #-} !Fingerprint ->
       {-# UNPACK #-} !HashId ->
       Description (Term v)
+    DSeqConsTerm ::
+      {-# UNPACK #-} !Digest ->
+      {-# UNPACK #-} !HashId ->
+      {-# UNPACK #-} !HashId ->
+      Description (Term [a])
+    DSeqAppendTerm ::
+      {-# UNPACK #-} !Digest ->
+      {-# UNPACK #-} !HashId ->
+      {-# UNPACK #-} !HashId ->
+      Description (Term [a])
+    DSeqLengthTerm ::
+      {-# UNPACK #-} !Digest ->
+      {-# UNPACK #-} !TypeHashId ->
+      Description (Term Integer)
+    DSeqFoldTerm ::
+      {-# UNPACK #-} !Digest ->
+      {-# UNPACK #-} !TypeHashId ->
+      {-# UNPACK #-} !HashId ->
+      {-# UNPACK #-} !HashId ->
+      Description (Term state)
+    DSeqFoldWithTerm ::
+      {-# UNPACK #-} !Digest ->
+      {-# UNPACK #-} !TypeHashId ->
+      {-# UNPACK #-} !HashId ->
+      {-# UNPACK #-} !HashId ->
+      {-# UNPACK #-} !HashId ->
+      Description (Term state)
+    DPairTerm ::
+      {-# UNPACK #-} !Digest ->
+      {-# UNPACK #-} !HashId ->
+      {-# UNPACK #-} !HashId ->
+      Description (Term (a, b))
+    DFirstTerm ::
+      {-# UNPACK #-} !Digest ->
+      {-# UNPACK #-} !TypeHashId ->
+      Description (Term a)
+    DSecondTerm ::
+      {-# UNPACK #-} !Digest ->
+      {-# UNPACK #-} !TypeHashId ->
+      Description (Term b)
 
   describe (UConTerm v) = DConTerm sameCon (preHashConDescription v) v
   describe ((USymTerm name) :: UTerm t) =
@@ -4791,6 +5200,61 @@ instance Interned (Term t) where
     let valHashId = termHashId val
     let digest = preHashConstArrayDescription valHashId
     DConstArrayTerm digest keyFingerprint valHashId
+  describe (USeqConsTerm element sequence) =
+    let elementHashId = termHashId element
+        sequenceHashId = termHashId sequence
+     in DSeqConsTerm
+          (preHashSeqConsDescription elementHashId sequenceHashId)
+          elementHashId
+          sequenceHashId
+  describe (USeqAppendTerm left right) =
+    let leftHashId = termHashId left
+        rightHashId = termHashId right
+     in DSeqAppendTerm
+          (preHashSeqAppendDescription leftHashId rightHashId)
+          leftHashId
+          rightHashId
+  describe (USeqLengthTerm sequence) =
+    let sequenceHashId = termTypeHashId sequence
+     in DSeqLengthTerm (preHashSeqLengthDescription sequenceHashId) sequenceHashId
+  describe (USeqFoldTerm step initial sequence) =
+    let stepHashId = termTypeHashId step
+        initialHashId = termHashId initial
+        sequenceHashId = termHashId sequence
+     in DSeqFoldTerm
+          (preHashSeqFoldDescription stepHashId initialHashId sequenceHashId)
+          stepHashId
+          initialHashId
+          sequenceHashId
+  describe (USeqFoldWithTerm step environment initial sequence) =
+    let stepHashId = termTypeHashId step
+        environmentHashId = termHashId environment
+        initialHashId = termHashId initial
+        sequenceHashId = termHashId sequence
+     in DSeqFoldWithTerm
+          ( preHashSeqFoldWithDescription
+              stepHashId
+              environmentHashId
+              initialHashId
+              sequenceHashId
+          )
+          stepHashId
+          environmentHashId
+          initialHashId
+          sequenceHashId
+  describe (UPairTerm firstValue secondValue) =
+    let firstHashId = termHashId firstValue
+        secondHashId = termHashId secondValue
+     in DPairTerm
+          (preHashPairDescription firstHashId secondHashId)
+          firstHashId
+          secondHashId
+  describe (UFirstTerm value) =
+    let valueHashId = termTypeHashId value
+     in DFirstTerm (preHashFirstDescription valueHashId) valueHashId
+  describe (USecondTerm value) =
+    let valueHashId = termTypeHashId value
+     in DSecondTerm (preHashSecondDescription valueHashId) valueHashId
 
   -- {-# INLINE describe #-}
 
@@ -4858,6 +5322,16 @@ instance Interned (Term t) where
       go (USelectTerm arr key) = SelectTerm' info arr key
       go (UStoreTerm arr key val) = StoreTerm' info arr key val
       go (UConstArrayTerm proxy val) = ConstArrayTerm' info proxy val
+      go (USeqConsTerm element sequence) = SeqConsTerm' info element sequence
+      go (USeqAppendTerm left right) = SeqAppendTerm' info left right
+      go (USeqLengthTerm sequence) = SeqLengthTerm' info sequence
+      go (USeqFoldTerm step initial sequence) =
+        SeqFoldTerm' info step initial sequence
+      go (USeqFoldWithTerm step environment initial sequence) =
+        SeqFoldWithTerm' info step environment initial sequence
+      go (UPairTerm firstValue secondValue) = PairTerm' info firstValue secondValue
+      go (UFirstTerm value) = FirstTerm' info value
+      go (USecondTerm value) = SecondTerm' info value
       {-# INLINE go #-}
 
   -- {-# INLINE identify #-}
@@ -4915,6 +5389,14 @@ instance Interned (Term t) where
   descriptionDigest (DSelectTerm h _ _) = h
   descriptionDigest (DStoreTerm h _ _ _) = h
   descriptionDigest (DConstArrayTerm h _ _) = h
+  descriptionDigest (DSeqConsTerm h _ _) = h
+  descriptionDigest (DSeqAppendTerm h _ _) = h
+  descriptionDigest (DSeqLengthTerm h _) = h
+  descriptionDigest (DSeqFoldTerm h _ _ _) = h
+  descriptionDigest (DSeqFoldWithTerm h _ _ _ _) = h
+  descriptionDigest (DPairTerm h _ _) = h
+  descriptionDigest (DFirstTerm h _) = h
+  descriptionDigest (DSecondTerm h _) = h
 
 -- {-# INLINE descriptionDigest #-}
 {-# NOINLINE goPhantomCon #-}
@@ -5151,6 +5633,21 @@ instance Eq (Description (Term t)) where
   DFromIntegralTerm _ li == DFromIntegralTerm _ ri = li == ri
   DFromFPOrTerm _ ld li lai == DFromFPOrTerm _ rd ri rai = eqHashId ld rd && eqHashId li ri && lai == rai
   DToFPTerm _ li lai == DToFPTerm _ ri rai = eqHashId li ri && lai == rai
+  DSelectTerm _ la lk == DSelectTerm _ ra rk = eqHashId la ra && eqHashId lk rk
+  DStoreTerm _ la lk lv == DStoreTerm _ ra rk rv =
+    eqHashId la ra && eqHashId lk rk && eqHashId lv rv
+  DConstArrayTerm _ lfp lv == DConstArrayTerm _ rfp rv =
+    lfp == rfp && eqHashId lv rv
+  DSeqConsTerm _ le ls == DSeqConsTerm _ re rs = eqHashId le re && eqHashId ls rs
+  DSeqAppendTerm _ ll lr == DSeqAppendTerm _ rl rr = eqHashId ll rl && eqHashId lr rr
+  DSeqLengthTerm _ ls == DSeqLengthTerm _ rs = ls == rs
+  DSeqFoldTerm _ lf li ls == DSeqFoldTerm _ rf ri rs =
+    lf == rf && eqHashId li ri && eqHashId ls rs
+  DSeqFoldWithTerm _ lf le li ls == DSeqFoldWithTerm _ rf re ri rs =
+    lf == rf && eqHashId le re && eqHashId li ri && eqHashId ls rs
+  DPairTerm _ lf ls == DPairTerm _ rf rs = eqHashId lf rf && eqHashId ls rs
+  DFirstTerm _ lv == DFirstTerm _ rv = lv == rv
+  DSecondTerm _ lv == DSecondTerm _ rv = lv == rv
   _ == _ = False
 
 -- {-# INLINE (==) #-}
@@ -5320,6 +5817,26 @@ fullReconstructTerm (StoreTerm arr key val) = do
 fullReconstructTerm (ConstArrayTerm pkey val) = do
   val' <- fullReconstructTerm val
   intern $ UConstArrayTerm pkey val'
+fullReconstructTerm (SeqConsTerm element sequence) =
+  fullReconstructTerm2 curThreadSeqConsTerm element sequence
+fullReconstructTerm (SeqAppendTerm left right) =
+  fullReconstructTerm2 curThreadSeqAppendTerm left right
+fullReconstructTerm (SeqLengthTerm sequence) =
+  fullReconstructTerm1 curThreadSeqLengthTerm sequence
+fullReconstructTerm (SeqFoldTerm step initial sequence) =
+  fullReconstructTerm3 curThreadSeqFoldTerm step initial sequence
+fullReconstructTerm (SeqFoldWithTerm step environment initial sequence) = do
+  step' <- fullReconstructTerm step
+  environment' <- fullReconstructTerm environment
+  initial' <- fullReconstructTerm initial
+  sequence' <- fullReconstructTerm sequence
+  curThreadSeqFoldWithTerm step' environment' initial' sequence'
+fullReconstructTerm (PairTerm firstValue secondValue) =
+  fullReconstructTerm2 curThreadPairTerm firstValue secondValue
+fullReconstructTerm (FirstTerm value) =
+  fullReconstructTerm1 curThreadFirstTerm value
+fullReconstructTerm (SecondTerm value) =
+  fullReconstructTerm1 curThreadSecondTerm value
 
 toCurThreadImpl :: forall t. WeakThreadId -> Term t -> IO (Term t)
 toCurThreadImpl tid t | termThreadId t == tid = return t
@@ -5767,6 +6284,58 @@ curThreadConstArrayTerm ::
   IO (Term (Array k v))
 curThreadConstArrayTerm pkey val = intern $ UConstArrayTerm pkey val
 {-# INLINE curThreadConstArrayTerm #-}
+
+curThreadSeqConsTerm ::
+  SupportedNonFuncPrim a => Term a -> Term [a] -> IO (Term [a])
+curThreadSeqConsTerm element sequence = intern $ USeqConsTerm element sequence
+
+curThreadSeqAppendTerm ::
+  SupportedNonFuncPrim a => Term [a] -> Term [a] -> IO (Term [a])
+curThreadSeqAppendTerm left right = intern $ USeqAppendTerm left right
+
+curThreadSeqLengthTerm ::
+  SupportedNonFuncPrim a => Term [a] -> IO (Term Integer)
+curThreadSeqLengthTerm sequence = intern $ USeqLengthTerm sequence
+
+curThreadSeqFoldTerm ::
+  ( SupportedNonFuncPrim state,
+    SupportedNonFuncPrim element,
+    SupportedPrim (state --> element --> state)
+  ) =>
+  Term (state --> element --> state) ->
+  Term state ->
+  Term [element] ->
+  IO (Term state)
+curThreadSeqFoldTerm step initial sequence = intern $ USeqFoldTerm step initial sequence
+
+curThreadSeqFoldWithTerm ::
+  ( SupportedNonFuncPrim environment,
+    SupportedNonFuncPrim state,
+    SupportedNonFuncPrim element,
+    SupportedPrim (environment --> state --> element --> state)
+  ) =>
+  Term (environment --> state --> element --> state) ->
+  Term environment ->
+  Term state ->
+  Term [element] ->
+  IO (Term state)
+curThreadSeqFoldWithTerm step environment initial sequence =
+  intern $ USeqFoldWithTerm step environment initial sequence
+
+curThreadPairTerm ::
+  (SupportedNonFuncPrim a, SupportedNonFuncPrim b) =>
+  Term a -> Term b -> IO (Term (a, b))
+curThreadPairTerm firstValue secondValue = intern $ UPairTerm firstValue secondValue
+
+curThreadFirstTerm ::
+  (SupportedNonFuncPrim a, SupportedNonFuncPrim b) =>
+  Term (a, b) -> IO (Term a)
+curThreadFirstTerm value = intern $ UFirstTerm value
+
+curThreadSecondTerm ::
+  (SupportedNonFuncPrim a, SupportedNonFuncPrim b) =>
+  Term (a, b) -> IO (Term b)
+curThreadSecondTerm value = intern $ USecondTerm value
 
 inCurThread1 ::
   forall a b.
@@ -6338,6 +6907,71 @@ constArrayTerm ::
   Term (Array k v)
 constArrayTerm pkey = unsafeInCurThread1 $ curThreadConstArrayTerm pkey
 {-# NOINLINE constArrayTerm #-}
+
+seqConsTerm ::
+  SupportedNonFuncPrim a => Term a -> Term [a] -> Term [a]
+seqConsTerm = unsafeInCurThread2 curThreadSeqConsTerm
+{-# NOINLINE seqConsTerm #-}
+
+seqAppendTerm ::
+  SupportedNonFuncPrim a => Term [a] -> Term [a] -> Term [a]
+seqAppendTerm = unsafeInCurThread2 curThreadSeqAppendTerm
+{-# NOINLINE seqAppendTerm #-}
+
+seqLengthTerm ::
+  SupportedNonFuncPrim a => Term [a] -> Term Integer
+seqLengthTerm = unsafeInCurThread1 curThreadSeqLengthTerm
+{-# NOINLINE seqLengthTerm #-}
+
+seqFoldTerm ::
+  ( SupportedNonFuncPrim state,
+    SupportedNonFuncPrim element,
+    SupportedPrim (state --> element --> state)
+  ) =>
+  Term (state --> element --> state) ->
+  Term state ->
+  Term [element] ->
+  Term state
+seqFoldTerm = unsafeInCurThread3 curThreadSeqFoldTerm
+{-# NOINLINE seqFoldTerm #-}
+
+seqFoldWithTerm ::
+  ( SupportedNonFuncPrim environment,
+    SupportedNonFuncPrim state,
+    SupportedNonFuncPrim element,
+    SupportedPrim (environment --> state --> element --> state)
+  ) =>
+  Term (environment --> state --> element --> state) ->
+  Term environment ->
+  Term state ->
+  Term [element] ->
+  Term state
+seqFoldWithTerm step environment initial sequence = unsafePerformIO $ do
+  thread <- myWeakThreadId
+  step' <- toCurThreadImpl thread step
+  environment' <- toCurThreadImpl thread environment
+  initial' <- toCurThreadImpl thread initial
+  sequence' <- toCurThreadImpl thread sequence
+  curThreadSeqFoldWithTerm step' environment' initial' sequence'
+{-# NOINLINE seqFoldWithTerm #-}
+
+pairTerm ::
+  (SupportedNonFuncPrim a, SupportedNonFuncPrim b) =>
+  Term a -> Term b -> Term (a, b)
+pairTerm = unsafeInCurThread2 curThreadPairTerm
+{-# NOINLINE pairTerm #-}
+
+firstTerm ::
+  (SupportedNonFuncPrim a, SupportedNonFuncPrim b) =>
+  Term (a, b) -> Term a
+firstTerm = unsafeInCurThread1 curThreadFirstTerm
+{-# NOINLINE firstTerm #-}
+
+secondTerm ::
+  (SupportedNonFuncPrim a, SupportedNonFuncPrim b) =>
+  Term (a, b) -> Term b
+secondTerm = unsafeInCurThread1 curThreadSecondTerm
+{-# NOINLINE secondTerm #-}
 
 -- Support for boolean type
 defaultValueForBool :: Bool
@@ -7306,6 +7940,9 @@ instance (KnownNat w, 1 <= w) => SupportedPrim (IntN w) where
       Left HRefl -> Just $ typedConstantSymbol $ unTypedSymbol s
       Right HRefl -> Just $ typedAnySymbol $ unTypedSymbol s
   funcDummyConstraint _ = SBV.sTrue
+  parseSMTModelResult _ input =
+    withNonFuncPrim @(IntN w) $
+      parseScalarSMTModelResult sbvToCon input
 
 -- | Construct the 'SBV.BVIsNonZero' constraint from the proof that the width is
 -- at least 1.
@@ -7363,6 +8000,9 @@ instance (KnownNat w, 1 <= w) => SupportedPrim (WordN w) where
       Left HRefl -> Just $ typedConstantSymbol $ unTypedSymbol s
       Right HRefl -> Just $ typedAnySymbol $ unTypedSymbol s
   funcDummyConstraint _ = SBV.sTrue
+  parseSMTModelResult _ input =
+    withNonFuncPrim @(WordN w) $
+      parseScalarSMTModelResult sbvToCon input
 
 instance (KnownNat w, 1 <= w) => NonFuncSBVRep (WordN w) where
   type NonFuncSBVBaseType (WordN w) = SBV.WordN w
@@ -7633,6 +8273,13 @@ pevalArrayDistinctTerm l
     hasInternedDup (x : xs) = any (== x) xs || hasInternedDup xs
 {-# INLINEABLE pevalArrayDistinctTerm #-}
 
+canonicalizeArrayModel ::
+  (Eq v, Hashable k) => SBV.ArrayModel k v -> Array k v
+canonicalizeArrayModel (SBV.ArrayModel entries def) =
+  Array
+    (HM.filter (/= def) . HM.fromList . reverse $ entries)
+    def
+
 instance SupportedPrimConstraint (Array k v) where
   type PrimConstraint (Array k v) =
     ( SupportedNonFuncPrim k
@@ -7671,6 +8318,34 @@ instance
     Left HRefl -> TypedSymbol . unTypedSymbol
     Right HRefl -> TypedSymbol . unTypedSymbol
   funcDummyConstraint _ = SBV.sTrue
+  parseSMTModelResult level input@(
+    [],
+    SBVD.CV
+      (SBVD.KArray actualKey actualValue)
+      (SBVD.CArray (SBV.ArrayModel entries def))) =
+      withNonFuncPrim @k $ withNonFuncPrim @v $
+        if
+          actualKey == SBV.kindOf (Proxy @(NonFuncSBVBaseType k))
+            && actualValue == SBV.kindOf (Proxy @(NonFuncSBVBaseType v))
+          then
+            let decodeKey cell =
+                  parseSMTModelResult
+                    (level + 1)
+                    ([], SBVD.CV actualKey cell) ::
+                    k
+                decodeValue cell =
+                  parseSMTModelResult
+                    (level + 1)
+                    ([], SBVD.CV actualValue cell) ::
+                    v
+                decoded =
+                  SBV.ArrayModel
+                    (fmap (bimap decodeKey decodeValue) entries)
+                    (decodeValue def)
+             in rnf decoded `seq` canonicalizeArrayModel decoded
+          else parseSMTModelResultError (typeRep @(Array k v)) input
+  parseSMTModelResult _ input =
+    parseSMTModelResultError (typeRep @(Array k v)) input
 
 instance
   ( SupportedNonFuncPrim k, Ord k, Typeable k, Hashable k, Show k
@@ -7685,14 +8360,206 @@ instance
   conNonFuncSBVTerm = conSBVTerm
   symNonFuncSBVTerm = withNonFuncPrim @(Array k v) sbvFresh
   withNonFuncPrim = withNonFuncPrim @k $ withNonFuncPrim @v $ id
-  sbvToCon (SBV.ArrayModel tbl def) = do
-    -- NOTE: We reverse the list as later elements should take precedence.
-    let def' = sbvToCon def
-    -- Canonicalize: drop overrides whose value equals the default, so a decoded
-    -- model array satisfies the same canonical invariant as 'const'/'store'
-    -- (see 'Grisette.Internal.SymPrim.Array.Array').
-    let tbl' = HM.filter (/= def') . HM.fromList . reverse . fmap (bimap sbvToCon sbvToCon) $ tbl
-    Array tbl' def'
+  sbvToCon (SBV.ArrayModel entries def) =
+    canonicalizeArrayModel $
+      SBV.ArrayModel
+        (fmap (bimap sbvToCon sbvToCon) entries)
+        (sbvToCon def)
+
+-- Solver-native finite sequences and binary products
+
+pevalSeqConsTerm ::
+  SupportedNonFuncPrim a => Term a -> Term [a] -> Term [a]
+pevalSeqConsTerm element sequence = case (element, sequence) of
+  (ConTerm elementValue, ConTerm sequenceValue) ->
+    conTerm (elementValue : sequenceValue)
+  _ -> seqConsTerm element sequence
+
+pevalSeqAppendTerm ::
+  SupportedNonFuncPrim a => Term [a] -> Term [a] -> Term [a]
+pevalSeqAppendTerm left right = case (left, right) of
+  (ConTerm [], _) -> right
+  (_, ConTerm []) -> left
+  (ConTerm leftValue, ConTerm rightValue) -> conTerm (leftValue ++ rightValue)
+  _ -> seqAppendTerm left right
+
+pevalSeqLengthTerm ::
+  SupportedNonFuncPrim a => Term [a] -> Term Integer
+pevalSeqLengthTerm (ConTerm sequence) = conTerm (fromIntegral (length sequence))
+pevalSeqLengthTerm sequence = seqLengthTerm sequence
+
+pevalSeqFoldTerm ::
+  ( SupportedNonFuncPrim state,
+    SupportedNonFuncPrim element,
+    SupportedPrim (state --> element --> state)
+  ) =>
+  Term (state --> element --> state) ->
+  Term state ->
+  Term [element] ->
+  Term state
+pevalSeqFoldTerm step initial sequence = seqFoldTerm step initial sequence
+
+pevalSeqFoldWithTerm ::
+  ( SupportedNonFuncPrim environment,
+    SupportedNonFuncPrim state,
+    SupportedNonFuncPrim element,
+    SupportedPrim (environment --> state --> element --> state)
+  ) =>
+  Term (environment --> state --> element --> state) ->
+  Term environment ->
+  Term state ->
+  Term [element] ->
+  Term state
+pevalSeqFoldWithTerm step environment initial sequence =
+  seqFoldWithTerm step environment initial sequence
+
+pevalPairTerm ::
+  (SupportedNonFuncPrim a, SupportedNonFuncPrim b) =>
+  Term a -> Term b -> Term (a, b)
+pevalPairTerm firstValue secondValue = case (firstValue, secondValue) of
+  (ConTerm firstConcrete, ConTerm secondConcrete) ->
+    conTerm (firstConcrete, secondConcrete)
+  _ -> pairTerm firstValue secondValue
+
+pevalFirstTerm ::
+  (SupportedNonFuncPrim a, SupportedNonFuncPrim b) =>
+  Term (a, b) -> Term a
+pevalFirstTerm (ConTerm (firstValue, _)) = conTerm firstValue
+pevalFirstTerm (PairTerm firstValue _) = firstValue
+pevalFirstTerm value = firstTerm value
+
+pevalSecondTerm ::
+  (SupportedNonFuncPrim a, SupportedNonFuncPrim b) =>
+  Term (a, b) -> Term b
+pevalSecondTerm (ConTerm (_, secondValue)) = conTerm secondValue
+pevalSecondTerm (PairTerm _ secondValue) = secondValue
+pevalSecondTerm value = secondTerm value
+
+instance SupportedNonFuncPrim a => SupportedPrimConstraint [a] where
+  type
+    PrimConstraint [a] =
+      (SupportedNonFuncPrim a, NonFuncPrimConstraint a)
+
+instance SupportedNonFuncPrim a => SBVRep [a] where
+  type SBVType [a] = SBV.SList (NonFuncSBVBaseType a)
+
+instance SupportedNonFuncPrim a => SupportedPrim [a] where
+  defaultValue = []
+  pevalITETerm = pevalITEBasicTerm
+  pevalEqTerm = pevalDefaultEqTerm
+  pevalDistinctTerm = pevalGeneralDistinct
+  sbvEq = withNonFuncPrim @a (SBV..==)
+  sbvDistinct = withNonFuncPrim @a $ SBV.distinct . toList
+  conSBVTerm = withNonFuncPrim @a $ SBVL.implode . fmap conNonFuncSBVTerm
+  symSBVName symbol _ = show symbol
+  symSBVTerm = withNonFuncPrim @a sbvFresh
+  withPrim = withNonFuncPrim @[a]
+  castTypedSymbol ::
+    forall knd' knd.
+    IsSymbolKind knd' =>
+    TypedSymbol knd [a] ->
+    Maybe (TypedSymbol knd' [a])
+  castTypedSymbol = pure . case decideSymbolKind @knd' of
+    Left HRefl -> TypedSymbol . unTypedSymbol
+    Right HRefl -> TypedSymbol . unTypedSymbol
+  funcDummyConstraint _ = SBV.sTrue
+  parseSMTModelResult level input@([], SBVD.CV (SBVD.KList actual) (SBVD.CList cells)) =
+    withNonFuncPrim @a $
+      if actual == SBV.kindOf (Proxy @(NonFuncSBVBaseType a))
+        then
+          let decoded =
+                fmap
+                  (\cell -> parseSMTModelResult (level + 1) ([], SBVD.CV actual cell) :: a)
+                  cells
+           in rnf decoded `seq` decoded
+        else parseSMTModelResultError (typeRep @[a]) input
+  parseSMTModelResult _ input = parseSMTModelResultError (typeRep @[a]) input
+
+instance SupportedNonFuncPrim a => NonFuncSBVRep [a] where
+  type NonFuncSBVBaseType [a] = [NonFuncSBVBaseType a]
+
+instance SupportedNonFuncPrim a => SupportedNonFuncPrim [a] where
+  conNonFuncSBVTerm = conSBVTerm
+  symNonFuncSBVTerm = withNonFuncPrim @[a] sbvFresh
+  withNonFuncPrim = withNonFuncPrim @a
+  sbvToCon = fmap sbvToCon
+
+instance
+  (SupportedNonFuncPrim a, SupportedNonFuncPrim b) =>
+  SupportedPrimConstraint (a, b)
+  where
+  type
+    PrimConstraint (a, b) =
+      ( SupportedNonFuncPrim a,
+        SupportedNonFuncPrim b,
+        NonFuncPrimConstraint a,
+        NonFuncPrimConstraint b
+      )
+
+instance
+  (SupportedNonFuncPrim a, SupportedNonFuncPrim b) =>
+  SBVRep (a, b)
+  where
+  type SBVType (a, b) = SBV.STuple (NonFuncSBVBaseType a) (NonFuncSBVBaseType b)
+
+instance
+  (SupportedNonFuncPrim a, SupportedNonFuncPrim b) =>
+  SupportedPrim (a, b)
+  where
+  defaultValue = (defaultValue, defaultValue)
+  pevalITETerm = pevalITEBasicTerm
+  pevalEqTerm = pevalDefaultEqTerm
+  pevalDistinctTerm = pevalGeneralDistinct
+  sbvEq = withNonFuncPrim @a $ withNonFuncPrim @b (SBV..==)
+  sbvDistinct =
+    withNonFuncPrim @a $ withNonFuncPrim @b $ SBV.distinct . toList
+  conSBVTerm (firstValue, secondValue) =
+    withNonFuncPrim @a $
+      withNonFuncPrim @b $
+        SBVTuple.tuple
+          (conNonFuncSBVTerm firstValue, conNonFuncSBVTerm secondValue)
+  symSBVName symbol _ = show symbol
+  symSBVTerm = withNonFuncPrim @a $ withNonFuncPrim @b sbvFresh
+  withPrim = withNonFuncPrim @(a, b)
+  castTypedSymbol ::
+    forall knd' knd.
+    IsSymbolKind knd' =>
+    TypedSymbol knd (a, b) ->
+    Maybe (TypedSymbol knd' (a, b))
+  castTypedSymbol = pure . case decideSymbolKind @knd' of
+    Left HRefl -> TypedSymbol . unTypedSymbol
+    Right HRefl -> TypedSymbol . unTypedSymbol
+  funcDummyConstraint _ = SBV.sTrue
+  parseSMTModelResult level input@([], SBVD.CV
+    (SBVD.KTuple [actualA, actualB])
+    (SBVD.CTuple [cellA, cellB])) =
+      withNonFuncPrim @a $ withNonFuncPrim @b $
+        if
+          actualA == SBV.kindOf (Proxy @(NonFuncSBVBaseType a))
+            && actualB == SBV.kindOf (Proxy @(NonFuncSBVBaseType b))
+          then
+            let decoded =
+                  ( parseSMTModelResult (level + 1) ([], SBVD.CV actualA cellA) :: a,
+                    parseSMTModelResult (level + 1) ([], SBVD.CV actualB cellB) :: b
+                  )
+             in rnf decoded `seq` decoded
+          else parseSMTModelResultError (typeRep @(a, b)) input
+  parseSMTModelResult _ input = parseSMTModelResultError (typeRep @(a, b)) input
+
+instance
+  (SupportedNonFuncPrim a, SupportedNonFuncPrim b) =>
+  NonFuncSBVRep (a, b)
+  where
+  type NonFuncSBVBaseType (a, b) = (NonFuncSBVBaseType a, NonFuncSBVBaseType b)
+
+instance
+  (SupportedNonFuncPrim a, SupportedNonFuncPrim b) =>
+  SupportedNonFuncPrim (a, b)
+  where
+  conNonFuncSBVTerm = conSBVTerm
+  symNonFuncSBVTerm = withNonFuncPrim @(a, b) sbvFresh
+  withNonFuncPrim r = withNonFuncPrim @a $ withNonFuncPrim @b r
+  sbvToCon = bimap sbvToCon sbvToCon
 
 -- Bitwise
 

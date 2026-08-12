@@ -95,6 +95,8 @@ import Grisette.Internal.SymPrim.IntBitwidth (intBitwidthQ)
 import Grisette.Internal.SymPrim.Prim.Term (LinkedRep, SupportedNonFuncPrim)
 import Grisette.Internal.SymPrim.Array (Array)
 import Grisette.Internal.SymPrim.SymArray (SymArray)
+import Grisette.Internal.SymPrim.SymPair (SymPair)
+import Grisette.Internal.SymPrim.SymSeq (SymSeq)
 import Grisette.Internal.SymPrim.SymUninterp (SymUninterp)
 import Grisette.Internal.SymPrim.Uninterp (Uninterp)
 import GHC.TypeLits (KnownSymbol)
@@ -228,6 +230,28 @@ instance
   toCon = conView
 
 instance ToCon (SymArray sk sv) (SymArray sk sv) where
+  toCon = Just
+
+instance
+  (SupportedNonFuncPrim ca, LinkedRep ca sa) =>
+  ToCon (SymSeq sa) [ca]
+  where
+  toCon = conView
+
+instance ToCon (SymSeq sa) (SymSeq sa) where
+  toCon = Just
+
+instance
+  ( SupportedNonFuncPrim ca,
+    SupportedNonFuncPrim cb,
+    LinkedRep ca sa,
+    LinkedRep cb sb
+  ) =>
+  ToCon (SymPair sa sb) (ca, cb)
+  where
+  toCon = conView
+
+instance ToCon (SymPair sa sb) (SymPair sa sb) where
   toCon = Just
 
 -- Uninterpreted sort: sym->con succeeds only for a concrete (model) identity;

@@ -17,7 +17,8 @@
 -- Stability   :   Experimental
 -- Portability :   GHC only
 module Grisette.Internal.SymPrim.Prim.TermUtils
-  ( extractTerm,
+  ( extractSymSomeTerm,
+    extractTerm,
     castTerm,
     someTermsSize,
     someTermSize,
@@ -36,9 +37,9 @@ import Data.Data (cast)
 import Data.Foldable (traverse_)
 import qualified Data.HashSet as HS
 import Grisette.Internal.Core.Data.MemoUtils (htmemo)
-import Grisette.Internal.SymPrim.GeneralFun (type (-->) (GeneralFun))
 import Grisette.Internal.SymPrim.Prim.Internal.Term
   ( IsSymbolKind (SymbolKindConstraint),
+    type (-->) (GeneralFun),
     SomeTypedConstantSymbol,
     SomeTypedSymbol (SomeTypedSymbol),
     SupportedPrim (castTypedSymbol, primTypeRep),
@@ -68,8 +69,8 @@ import Type.Reflection
 {-# NOINLINE extractSymSomeTerm #-}
 extractSymSomeTerm ::
   forall knd.
-  (IsSymbolKind knd) =>
-  HS.HashSet (SomeTypedConstantSymbol) ->
+  IsSymbolKind knd =>
+  HS.HashSet SomeTypedConstantSymbol ->
   SomeTerm ->
   Maybe (HS.HashSet (SomeTypedSymbol knd))
 extractSymSomeTerm initialBounded = go initialMemo initialBounded
@@ -86,19 +87,17 @@ extractSymSomeTerm initialBounded = go initialMemo initialBounded
       Maybe (HS.HashSet (SomeTypedSymbol knd))
     initialMemo = htmemo (go initialMemo initialBounded)
     {-# NOINLINE initialMemo #-}
-
     go ::
       ( SomeTerm ->
         Maybe (HS.HashSet (SomeTypedSymbol knd))
       ) ->
-      HS.HashSet (SomeTypedConstantSymbol) ->
+      HS.HashSet SomeTypedConstantSymbol ->
       SomeTerm ->
       Maybe (HS.HashSet (SomeTypedSymbol knd))
     go _ bs (SomeTerm (SymTerm (sym :: TypedAnySymbol a))) =
       case (castTypedSymbol sym, castTypedSymbol sym) of
         (Just sym', _) | HS.member (someTypedSymbol sym') bs -> return HS.empty
-        (_, Just sym') ->
-          return $ HS.singleton $ SomeTypedSymbol sym'
+        (_, Just sym') -> return $ HS.singleton $ SomeTypedSymbol sym'
         _ -> Nothing
     go _ bs (SomeTerm (ConTerm cv :: Term v)) =
       case (primTypeRep :: TypeRep v) of
@@ -125,7 +124,7 @@ extractSymSomeTerm initialBounded = go initialMemo initialBounded
     go memo _ (SomeTerm (SubTerms ts)) = combineAllSets $ map memo ts
     combineSet (Just a) (Just b) = Just $ HS.union a b
     combineSet _ _ = Nothing
-    combineAllSets = foldl1 combineSet
+    combineAllSets = foldr combineSet (Just HS.empty)
 
 -- | Extract all the symbols in a term.
 extractTerm ::

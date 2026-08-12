@@ -73,6 +73,14 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
     pattern SelectTerm,
     pattern StoreTerm,
     pattern ConstArrayTerm,
+    pattern SeqConsTerm,
+    pattern SeqAppendTerm,
+    pattern SeqLengthTerm,
+    pattern SeqFoldTerm,
+    pattern SeqFoldWithTerm,
+    pattern PairTerm,
+    pattern FirstTerm,
+    pattern SecondTerm,
   )
 import Grisette.Internal.SymPrim.Prim.SomeTerm (SomeTerm (SomeTerm))
 
@@ -130,6 +138,16 @@ subTermsViewPattern (ToFPTerm rd t1 _ _) = return [SomeTerm rd, SomeTerm t1]
 subTermsViewPattern (SelectTerm (t1 :: Term arr) t2) = withPrim @arr $ return [SomeTerm t1, SomeTerm t2]
 subTermsViewPattern (StoreTerm t1 t2 t3) = withPrim @a $ return [SomeTerm t1, SomeTerm t2, SomeTerm t3]
 subTermsViewPattern (ConstArrayTerm _ t1) = withPrim @a $ return [SomeTerm t1]
+subTermsViewPattern (SeqConsTerm t1 t2) = return [SomeTerm t1, SomeTerm t2]
+subTermsViewPattern (SeqAppendTerm t1 t2) = return [SomeTerm t1, SomeTerm t2]
+subTermsViewPattern (SeqLengthTerm t1) = return [SomeTerm t1]
+subTermsViewPattern (SeqFoldTerm step initial sequence) =
+  return [SomeTerm step, SomeTerm initial, SomeTerm sequence]
+subTermsViewPattern (SeqFoldWithTerm step environment initial sequence) =
+  return [SomeTerm step, SomeTerm environment, SomeTerm initial, SomeTerm sequence]
+subTermsViewPattern (PairTerm t1 t2) = return [SomeTerm t1, SomeTerm t2]
+subTermsViewPattern (FirstTerm t1) = return [SomeTerm t1]
+subTermsViewPattern (SecondTerm t1) = return [SomeTerm t1]
 
 -- | Extract all the subterms of a term.
 pattern SubTerms :: [SomeTerm] -> Term a
