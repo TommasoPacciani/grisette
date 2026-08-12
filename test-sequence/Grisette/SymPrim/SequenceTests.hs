@@ -25,6 +25,7 @@ import Grisette
   )
 import Grisette.Internal.Backend.Solving (z3)
 import Grisette.Internal.Core.Data.Class.Solver (SolvingFailure (Unsat))
+import Grisette.Internal.SymPrim.Array (Array)
 import Grisette.Internal.SymPrim.Prim.Term
   ( LinkedRep (wrapTerm),
     SupportedPrim (parseSMTModelResult),
@@ -63,6 +64,92 @@ sequenceTests =
           "foldSeqWith"
           20
           (U.foldSeqWith @'C (\scale acc x -> acc + scale * x) 2 0 [1 .. 4]),
+      testCase "native zip truncates unknown sequences and preserves array products" $ do
+        assertEqual
+          "concrete unequal lengths"
+          [(1, 4), (2, 5)]
+          (U.zipSeq @'C [1, 2, 3 :: Integer] [4, 5])
+        assertEqual
+          "concrete equal lengths"
+          [(1, 4), (2, 5), (3, 6)]
+          (U.zipSeq @'C [1, 2, 3 :: Integer] [4, 5, 6])
+        let left = "zipLeft" :: SymSeq SymInteger
+            right = "zipRight" :: SymSeq SymInteger
+            zipped = U.zipSeq @'S left right
+            integers =
+              foldr
+                (U.consSeq @'S . fromInteger)
+                U.nilSeq
+            solveZip rightValues expected = do
+              solved <-
+                solve z3 $
+                  (left .== integers [1, 2, 3])
+                    .&& (right .== integers rightValues)
+                    .&& (zipped .== symbolicPairs expected)
+                    .&& (U.lengthSeq @'S zipped .== fromIntegral (length expected))
+              case solved of
+                Left failure -> assertFailure $ "expected zipped sequence SAT: " ++ show failure
+                Right model ->
+                  assertEqual
+                    "exact zipped model"
+                    (Just expected)
+                    (toCon (evalSym False model zipped))
+        solveZip [4, 5] [(1, 4), (2, 5)]
+        solveZip [4, 5, 6] [(1, 4), (2, 5), (3, 6)]
+        solveZip [4, 5, 6, 7] [(1, 4), (2, 5), (3, 6)]
+        let roundTrip =
+              Binary.decode (Binary.encode zipped) ::
+                SymSeq (SymPair SymInteger SymInteger)
+        roundTripFailure <- solve z3 (symNot (roundTrip .== zipped))
+        case roundTripFailure of
+          Left Unsat -> pure ()
+          Left failure -> assertFailure $ "serialized zip solver failed: " ++ show failure
+          Right _ -> assertFailure "serialized native zip did not round-trip"
+        let arraySequence =
+              U.consSeq @'S
+                (A.const (7 :: SymInteger) :: SymArray SymInteger SymInteger)
+                U.nilSeq
+            indexSequence = U.consSeq @'S (3 :: SymInteger) U.nilSeq
+            arrayStep ::
+              SymInteger
+                -~> SymPair
+                  (SymArray SymInteger SymInteger)
+                  SymInteger
+                -~> SymInteger
+            arrayStep =
+              con $
+                ("arrayState" :: TypedConstantSymbol Integer)
+                  --> con
+                    ( ( "arrayElement" ::
+                          TypedConstantSymbol (Array Integer Integer, Integer)
+                      )
+                        --> ( ("arrayState" :: SymInteger)
+                                + A.select
+                                  ( U.first @'S
+                                      ( "arrayElement" ::
+                                          SymPair
+                                            (SymArray SymInteger SymInteger)
+                                            SymInteger
+                                      )
+                                  )
+                                  ( U.second @'S
+                                      ( "arrayElement" ::
+                                          SymPair
+                                            (SymArray SymInteger SymInteger)
+                                            SymInteger
+                                      )
+                                  )
+                            )
+                    )
+            arrayFold =
+              U.foldSeq @'S
+                arrayStep
+                0
+                (U.zipSeq @'S arraySequence indexSequence)
+        arraySolved <- solve z3 (arrayFold .== 7)
+        case arraySolved of
+          Left failure -> assertFailure $ "array-bearing zip failed: " ++ show failure
+          Right _ -> pure (),
       testCase "unknown four-pair sequence, symbolic environment, pair fold, and whole-value ITE" $ do
         let concrete = [(1, 2), (3, 4), (5, 6), (7, 8)] :: [(Integer, Integer)]
             expectedSequence = symbolicPairs concrete

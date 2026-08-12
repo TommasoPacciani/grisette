@@ -74,6 +74,7 @@ module Grisette.Internal.SymPrim.Prim.Internal.Term
     pevalConstArrayTerm,
     pevalSeqConsTerm,
     pevalSeqAppendTerm,
+    pevalSeqZipTerm,
     pevalSeqLengthTerm,
     pevalSeqFoldTerm,
     pevalSeqFoldWithTerm,
@@ -181,6 +182,7 @@ module Grisette.Internal.SymPrim.Prim.Internal.Term
     constArrayTerm,
     seqConsTerm,
     seqAppendTerm,
+    seqZipTerm,
     seqLengthTerm,
     seqFoldTerm,
     seqFoldWithTerm,
@@ -247,6 +249,7 @@ module Grisette.Internal.SymPrim.Prim.Internal.Term
     pattern ConstArrayTerm,
     pattern SeqConsTerm,
     pattern SeqAppendTerm,
+    pattern SeqZipTerm,
     pattern SeqLengthTerm,
     pattern SeqFoldTerm,
     pattern SeqFoldWithTerm,
@@ -1834,6 +1837,12 @@ data Term t where
     !(Term [a]) ->
     !(Term [a]) ->
     Term [a]
+  SeqZipTerm' ::
+    (SupportedNonFuncPrim a, SupportedNonFuncPrim b) =>
+    {-# UNPACK #-} !CachedInfo ->
+    !(Term [a]) ->
+    !(Term [b]) ->
+    Term [(a, b)]
   SeqLengthTerm' ::
     SupportedNonFuncPrim a =>
     {-# UNPACK #-} !CachedInfo ->
@@ -2927,6 +2936,18 @@ pattern SeqAppendTerm left right <- SeqAppendTerm' _ left right
   where
     SeqAppendTerm left right = pevalSeqAppendTerm left right
 
+pattern SeqZipTerm ::
+  forall ret.
+  () =>
+  forall a b.
+  (SupportedNonFuncPrim a, SupportedNonFuncPrim b, ret ~ [(a, b)]) =>
+  Term [a] ->
+  Term [b] ->
+  Term ret
+pattern SeqZipTerm left right <- SeqZipTerm' _ left right
+  where
+    SeqZipTerm left right = pevalSeqZipTerm left right
+
 pattern SeqLengthTerm ::
   forall ret.
   () =>
@@ -3065,6 +3086,7 @@ pattern SecondTerm value <- SecondTerm' _ value
   ConstArrayTerm,
   SeqConsTerm,
   SeqAppendTerm,
+  SeqZipTerm,
   SeqLengthTerm,
   SeqFoldTerm,
   SeqFoldWithTerm,
@@ -3129,6 +3151,7 @@ termInfo (StoreTerm' i _ _ _) = i
 termInfo (ConstArrayTerm' i _ _) = i
 termInfo (SeqConsTerm' i _ _) = i
 termInfo (SeqAppendTerm' i _ _) = i
+termInfo (SeqZipTerm' i _ _) = i
 termInfo (SeqLengthTerm' i _) = i
 termInfo (SeqFoldTerm' i _ _ _) = i
 termInfo (SeqFoldWithTerm' i _ _ _ _) = i
@@ -3262,6 +3285,7 @@ introSupportedPrimConstraint0 StoreTerm' {} x = x
 introSupportedPrimConstraint0 ConstArrayTerm' {} x = x
 introSupportedPrimConstraint0 SeqConsTerm' {} x = x
 introSupportedPrimConstraint0 SeqAppendTerm' {} x = x
+introSupportedPrimConstraint0 SeqZipTerm' {} x = x
 introSupportedPrimConstraint0 SeqLengthTerm' {} x = x
 introSupportedPrimConstraint0 SeqFoldTerm' {} x = x
 introSupportedPrimConstraint0 SeqFoldWithTerm' {} x = x
@@ -3336,6 +3360,8 @@ pformatTerm (SeqConsTerm element sequence) =
   "(seq.cons " ++ pformatTerm element ++ " " ++ pformatTerm sequence ++ ")"
 pformatTerm (SeqAppendTerm left right) =
   "(seq.append " ++ pformatTerm left ++ " " ++ pformatTerm right ++ ")"
+pformatTerm (SeqZipTerm left right) =
+  "(seq.zip " ++ pformatTerm left ++ " " ++ pformatTerm right ++ ")"
 pformatTerm (SeqLengthTerm sequence) = "(seq.length " ++ pformatTerm sequence ++ ")"
 pformatTerm (SeqFoldTerm step initial sequence) =
   "(seq.foldl "
@@ -3436,6 +3462,7 @@ instance Lift (Term t) where
     [||constArrayTerm $$pkey t2||]
   liftTyped (SeqConsTerm element sequence) = [||seqConsTerm element sequence||]
   liftTyped (SeqAppendTerm left right) = [||seqAppendTerm left right||]
+  liftTyped (SeqZipTerm left right) = [||seqZipTerm left right||]
   liftTyped (SeqLengthTerm sequence) = [||seqLengthTerm sequence||]
   liftTyped (SeqFoldTerm step initial sequence) =
     [||seqFoldTerm step initial sequence||]
@@ -3958,6 +3985,9 @@ instance Show (Term ty) where
   show t@(SeqAppendTerm left right) =
     "SeqAppendTerm{tid=" ++ show (termThreadId t) ++ ", id=" ++ show (termId t)
       ++ ", left=" ++ show left ++ ", right=" ++ show right ++ "}"
+  show t@(SeqZipTerm left right) =
+    "SeqZipTerm{tid=" ++ show (termThreadId t) ++ ", id=" ++ show (termId t)
+      ++ ", left=" ++ show left ++ ", right=" ++ show right ++ "}"
   show t@(SeqLengthTerm sequence) =
     "SeqLengthTerm{tid=" ++ show (termThreadId t) ++ ", id=" ++ show (termId t)
       ++ ", sequence=" ++ show sequence ++ "}"
@@ -4225,6 +4255,11 @@ data UTerm t where
     !(Term [a]) ->
     !(Term [a]) ->
     UTerm [a]
+  USeqZipTerm ::
+    (SupportedNonFuncPrim a, SupportedNonFuncPrim b) =>
+    !(Term [a]) ->
+    !(Term [b]) ->
+    UTerm [(a, b)]
   USeqLengthTerm ::
     SupportedNonFuncPrim a =>
     !(Term [a]) ->
@@ -4548,6 +4583,9 @@ preHashSeqConsDescription h1 h2 = fromIntegral (54 `hashWithSalt` h1 `hashWithSa
 preHashSeqAppendDescription :: HashId -> HashId -> Digest
 preHashSeqAppendDescription h1 h2 = fromIntegral (55 `hashWithSalt` h1 `hashWithSalt` h2)
 
+preHashSeqZipDescription :: HashId -> HashId -> Digest
+preHashSeqZipDescription h1 h2 = fromIntegral (62 `hashWithSalt` h1 `hashWithSalt` h2)
+
 preHashSeqLengthDescription :: TypeHashId -> Digest
 preHashSeqLengthDescription = fromIntegral . hashWithSalt 56
 
@@ -4848,6 +4886,11 @@ instance Interned (Term t) where
       {-# UNPACK #-} !HashId ->
       {-# UNPACK #-} !HashId ->
       Description (Term [a])
+    DSeqZipTerm ::
+      {-# UNPACK #-} !Digest ->
+      {-# UNPACK #-} !HashId ->
+      {-# UNPACK #-} !HashId ->
+      Description (Term [(a, b)])
     DSeqLengthTerm ::
       {-# UNPACK #-} !Digest ->
       {-# UNPACK #-} !TypeHashId ->
@@ -5219,6 +5262,13 @@ instance Interned (Term t) where
           (preHashSeqAppendDescription leftHashId rightHashId)
           leftHashId
           rightHashId
+  describe (USeqZipTerm left right) =
+    let leftHashId = termHashId left
+        rightHashId = termHashId right
+     in DSeqZipTerm
+          (preHashSeqZipDescription leftHashId rightHashId)
+          leftHashId
+          rightHashId
   describe (USeqLengthTerm sequence) =
     let sequenceHashId = termTypeHashId sequence
      in DSeqLengthTerm (preHashSeqLengthDescription sequenceHashId) sequenceHashId
@@ -5329,6 +5379,7 @@ instance Interned (Term t) where
       go (UConstArrayTerm proxy val) = ConstArrayTerm' info proxy val
       go (USeqConsTerm element sequence) = SeqConsTerm' info element sequence
       go (USeqAppendTerm left right) = SeqAppendTerm' info left right
+      go (USeqZipTerm left right) = SeqZipTerm' info left right
       go (USeqLengthTerm sequence) = SeqLengthTerm' info sequence
       go (USeqFoldTerm step initial sequence) =
         SeqFoldTerm' info step initial sequence
@@ -5396,6 +5447,7 @@ instance Interned (Term t) where
   descriptionDigest (DConstArrayTerm h _ _) = h
   descriptionDigest (DSeqConsTerm h _ _) = h
   descriptionDigest (DSeqAppendTerm h _ _) = h
+  descriptionDigest (DSeqZipTerm h _ _) = h
   descriptionDigest (DSeqLengthTerm h _) = h
   descriptionDigest (DSeqFoldTerm h _ _ _) = h
   descriptionDigest (DSeqFoldWithTerm h _ _ _ _) = h
@@ -5645,6 +5697,7 @@ instance Eq (Description (Term t)) where
     lfp == rfp && eqHashId lv rv
   DSeqConsTerm _ le ls == DSeqConsTerm _ re rs = eqHashId le re && eqHashId ls rs
   DSeqAppendTerm _ ll lr == DSeqAppendTerm _ rl rr = eqHashId ll rl && eqHashId lr rr
+  DSeqZipTerm _ ll lr == DSeqZipTerm _ rl rr = eqHashId ll rl && eqHashId lr rr
   DSeqLengthTerm _ ls == DSeqLengthTerm _ rs = ls == rs
   DSeqFoldTerm _ lf li ls == DSeqFoldTerm _ rf ri rs =
     lf == rf && eqHashId li ri && eqHashId ls rs
@@ -5826,6 +5879,8 @@ fullReconstructTerm (SeqConsTerm element sequence) =
   fullReconstructTerm2 curThreadSeqConsTerm element sequence
 fullReconstructTerm (SeqAppendTerm left right) =
   fullReconstructTerm2 curThreadSeqAppendTerm left right
+fullReconstructTerm (SeqZipTerm left right) =
+  fullReconstructTerm2 curThreadSeqZipTerm left right
 fullReconstructTerm (SeqLengthTerm sequence) =
   fullReconstructTerm1 curThreadSeqLengthTerm sequence
 fullReconstructTerm (SeqFoldTerm step initial sequence) =
@@ -6297,6 +6352,13 @@ curThreadSeqConsTerm element sequence = intern $ USeqConsTerm element sequence
 curThreadSeqAppendTerm ::
   SupportedNonFuncPrim a => Term [a] -> Term [a] -> IO (Term [a])
 curThreadSeqAppendTerm left right = intern $ USeqAppendTerm left right
+
+curThreadSeqZipTerm ::
+  (SupportedNonFuncPrim a, SupportedNonFuncPrim b) =>
+  Term [a] ->
+  Term [b] ->
+  IO (Term [(a, b)])
+curThreadSeqZipTerm left right = intern $ USeqZipTerm left right
 
 curThreadSeqLengthTerm ::
   SupportedNonFuncPrim a => Term [a] -> IO (Term Integer)
@@ -6922,6 +6984,14 @@ seqAppendTerm ::
   SupportedNonFuncPrim a => Term [a] -> Term [a] -> Term [a]
 seqAppendTerm = unsafeInCurThread2 curThreadSeqAppendTerm
 {-# NOINLINE seqAppendTerm #-}
+
+seqZipTerm ::
+  (SupportedNonFuncPrim a, SupportedNonFuncPrim b) =>
+  Term [a] ->
+  Term [b] ->
+  Term [(a, b)]
+seqZipTerm = unsafeInCurThread2 curThreadSeqZipTerm
+{-# NOINLINE seqZipTerm #-}
 
 seqLengthTerm ::
   SupportedNonFuncPrim a => Term [a] -> Term Integer
@@ -8496,6 +8566,14 @@ pevalSeqAppendTerm left right = case (left, right) of
   (_, ConTerm []) -> left
   (ConTerm leftValue, ConTerm rightValue) -> conTerm (leftValue ++ rightValue)
   _ -> seqAppendTerm left right
+
+pevalSeqZipTerm ::
+  (SupportedNonFuncPrim a, SupportedNonFuncPrim b) =>
+  Term [a] ->
+  Term [b] ->
+  Term [(a, b)]
+pevalSeqZipTerm (ConTerm left) (ConTerm right) = conTerm (zip left right)
+pevalSeqZipTerm left right = seqZipTerm left right
 
 pevalSeqLengthTerm ::
   SupportedNonFuncPrim a => Term [a] -> Term Integer

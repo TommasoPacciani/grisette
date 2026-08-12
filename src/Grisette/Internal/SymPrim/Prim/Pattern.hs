@@ -75,6 +75,7 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
     pattern ConstArrayTerm,
     pattern SeqConsTerm,
     pattern SeqAppendTerm,
+    pattern SeqZipTerm,
     pattern SeqLengthTerm,
     pattern SeqFoldTerm,
     pattern SeqFoldWithTerm,
@@ -140,6 +141,7 @@ subTermsViewPattern (StoreTerm t1 t2 t3) = withPrim @a $ return [SomeTerm t1, So
 subTermsViewPattern (ConstArrayTerm _ t1) = withPrim @a $ return [SomeTerm t1]
 subTermsViewPattern (SeqConsTerm t1 t2) = return [SomeTerm t1, SomeTerm t2]
 subTermsViewPattern (SeqAppendTerm t1 t2) = return [SomeTerm t1, SomeTerm t2]
+subTermsViewPattern (SeqZipTerm t1 t2) = return [SomeTerm t1, SomeTerm t2]
 subTermsViewPattern (SeqLengthTerm t1) = return [SomeTerm t1]
 subTermsViewPattern (SeqFoldTerm step initial sequence) =
   return [SomeTerm step, SomeTerm initial, SomeTerm sequence]

@@ -67,6 +67,14 @@ class UnifiedSeq (mode :: EvalModeTag) where
   consSeq :: SeqValue mode a => a -> GetSeq mode a -> GetSeq mode a
   appendSeq :: SeqValue mode a => GetSeq mode a -> GetSeq mode a -> GetSeq mode a
   lengthSeq :: SeqValue mode a => GetSeq mode a -> GetInteger mode
+  zipSeq ::
+    ( SeqValue mode a,
+      SeqValue mode b,
+      SeqValue mode (GetPair mode a b)
+    ) =>
+    GetSeq mode a ->
+    GetSeq mode b ->
+    GetSeq mode (GetPair mode a b)
   foldSeq ::
     (SeqValue mode state, SeqValue mode element) =>
     SeqStep mode state element ->
@@ -89,6 +97,7 @@ instance UnifiedSeq 'C where
   consSeq = (:)
   appendSeq = (P.++)
   lengthSeq values = P.fromIntegral (P.length values)
+  zipSeq = P.zip
   foldSeq = foldl'
   foldSeqWith step environment = foldl' (step environment)
 
@@ -97,6 +106,7 @@ instance UnifiedSeq 'S where
   consSeq = SSeq.cons
   appendSeq = SSeq.append
   lengthSeq = SSeq.length
+  zipSeq = SSeq.zip
   foldSeq = SSeq.fold
   foldSeqWith = SSeq.foldWith
 

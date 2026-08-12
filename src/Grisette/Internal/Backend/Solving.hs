@@ -279,6 +279,7 @@ import Grisette.Internal.SymPrim.Prim.Term
     pattern ConstArrayTerm,
     pattern SeqConsTerm,
     pattern SeqAppendTerm,
+    pattern SeqZipTerm,
     pattern SeqLengthTerm,
     pattern SeqFoldTerm,
     pattern SeqFoldWithTerm,
@@ -881,6 +882,16 @@ lowerSinglePrimCached t' m' = do
             left' <- goCached qs left
             right' <- goCached qs right
             pure $ \qst -> left' qst SBVL.++ right' qst
+      goCachedIntermediate
+        qs
+        ( SeqZipTerm
+            (left :: Term [leftElement])
+            (right :: Term [rightElement])
+          ) =
+          withNonFuncPrim @leftElement $ withNonFuncPrim @rightElement $ do
+            left' <- goCached qs left
+            right' <- goCached qs right
+            pure $ \qst -> SBVL.zip (left' qst) (right' qst)
       goCachedIntermediate qs (SeqLengthTerm (sequence :: Term [element])) =
         withNonFuncPrim @element $ do
           sequence' <- goCached qs sequence

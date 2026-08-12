@@ -14,6 +14,7 @@ module Grisette.Internal.SymPrim.SymSeq
     nil,
     cons,
     append,
+    zip,
     length,
     fold,
     foldWith,
@@ -48,6 +49,7 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
     conTerm,
     pevalSeqAppendTerm,
     pevalSeqConsTerm,
+    pevalSeqZipTerm,
     pevalSeqLengthTerm,
     pformatTerm,
     symTerm,
@@ -58,8 +60,9 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
 import Grisette.Internal.SymPrim.SymGeneralFun
   ( type (-~>) (SymGeneralFun),
   )
+import Grisette.Internal.SymPrim.SymPair (SymPair)
 import Language.Haskell.TH.Syntax (Lift)
-import Prelude hiding (fold, length)
+import Prelude hiding (fold, length, zip)
 
 newtype SymSeq a = SymSeq
   { underlyingSeqTerm :: Term [ConType a]
@@ -145,6 +148,18 @@ append ::
   SymSeq a
 append left right =
   wrapTerm $ pevalSeqAppendTerm (underlyingTerm left) (underlyingTerm right)
+
+zip ::
+  ( SupportedNonFuncPrim (ConType a),
+    SupportedNonFuncPrim (ConType b),
+    LinkedRep (ConType a) a,
+    LinkedRep (ConType b) b
+  ) =>
+  SymSeq a ->
+  SymSeq b ->
+  SymSeq (SymPair a b)
+zip left right =
+  wrapTerm $ pevalSeqZipTerm (underlyingTerm left) (underlyingTerm right)
 
 length ::
   ( SupportedNonFuncPrim (ConType a),

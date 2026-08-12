@@ -165,6 +165,7 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
     constArrayTerm,
     seqConsTerm,
     seqAppendTerm,
+    seqZipTerm,
     seqLengthTerm,
     seqFoldTerm,
     seqFoldWithTerm,
@@ -225,6 +226,7 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
     pattern ConstArrayTerm,
     pattern SeqConsTerm,
     pattern SeqAppendTerm,
+    pattern SeqZipTerm,
     pattern SeqLengthTerm,
     pattern SeqFoldTerm,
     pattern SeqFoldWithTerm,
@@ -1052,6 +1054,9 @@ firstTermTag = 57
 secondTermTag :: Word8
 secondTermTag = 58
 
+seqZipTermTag :: Word8
+seqZipTermTag = 59
+
 terminalTag :: Word8
 terminalTag = 255
 
@@ -1789,6 +1794,12 @@ statefulDeserializeSomeTerm = do
               Just (right' :: Term [element]) ->
                 pure $ Just (someTerm $ seqAppendTerm left' right', ktTmId)
               Nothing -> fail "statefulDeserializeSomeTerm: SeqAppend type mismatch"
+      | tag == seqZipTermTag -> do
+          left <- deserializeTerm
+          right <- deserializeTerm
+          withListTerm left $ \left' ->
+            withListTerm right $ \right' ->
+              pure $ Just (someTerm $ seqZipTerm left' right', ktTmId)
       | tag == seqLengthTermTag -> do
           sequence <- deserializeTerm
           withListTerm sequence $ \sequence' ->
@@ -2219,6 +2230,8 @@ serializeSingleSomeTerm (SomeTerm (tm :: Term t)) = do
           serializeBinary ktTmId seqConsTermTag element sequence
         SeqAppendTerm left right ->
           serializeBinary ktTmId seqAppendTermTag left right
+        SeqZipTerm left right ->
+          serializeBinary ktTmId seqZipTermTag left right
         SeqLengthTerm sequence ->
           serializeUnary ktTmId seqLengthTermTag sequence
         SeqFoldTerm step initial sequence ->
