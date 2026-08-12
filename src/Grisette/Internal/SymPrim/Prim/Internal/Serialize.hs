@@ -64,6 +64,14 @@ import Grisette.Internal.SymPrim.GeneralFun
     checkClosedSeqFoldWith,
     type (-->) (GeneralFun),
   )
+import Grisette.Internal.SymPrim.Nominal
+  ( KnownNominalDomain (nominalDomainSing),
+    Nominal,
+    NominalDomainRep,
+    SomeSNominalDomain (SomeSNominalDomain),
+    nominalDomainRep,
+    someSNominalDomain,
+  )
 import Grisette.Internal.SymPrim.Prim.Internal.Caches (Id)
 import Grisette.Internal.SymPrim.Prim.Internal.Instances.PEvalBitCastTerm ()
 import Grisette.Internal.SymPrim.Prim.Internal.Instances.PEvalDivModIntegralTerm ()
@@ -254,6 +262,7 @@ import Type.Reflection
   )
 
 data KnownNonFuncType where
+  UnitType :: KnownNonFuncType
   BoolType :: KnownNonFuncType
   IntegerType :: KnownNonFuncType
   WordNType :: (KnownNat n, 1 <= n) => Proxy n -> KnownNonFuncType
@@ -264,8 +273,14 @@ data KnownNonFuncType where
   ArrayType :: KnownNonFuncType -> KnownNonFuncType -> KnownNonFuncType
   ListType :: KnownNonFuncType -> KnownNonFuncType
   PairType :: KnownNonFuncType -> KnownNonFuncType -> KnownNonFuncType
+  NominalType ::
+    (KnownNominalDomain domain) =>
+    Proxy domain ->
+    KnownNonFuncType ->
+    KnownNonFuncType
 
 instance Eq KnownNonFuncType where
+  UnitType == UnitType = True
   BoolType == BoolType = True
   IntegerType == IntegerType = True
   WordNType p == WordNType q = natVal p == natVal q
@@ -276,9 +291,14 @@ instance Eq KnownNonFuncType where
   ArrayType lk lv == ArrayType rk rv = lk == rk && lv == rv
   ListType l == ListType r = l == r
   PairType la lb == PairType ra rb = la == ra && lb == rb
+  NominalType (_ :: Proxy left) lv == NominalType (_ :: Proxy right) rv =
+    nominalDomainRep (nominalDomainSing @left)
+      == nominalDomainRep (nominalDomainSing @right)
+      && lv == rv
   _ == _ = False
 
 instance Hashable KnownNonFuncType where
+  hashWithSalt s UnitType = s `hashWithSalt` (10 :: Int)
   hashWithSalt s BoolType = s `hashWithSalt` (0 :: Int)
   hashWithSalt s IntegerType = s `hashWithSalt` (1 :: Int)
   hashWithSalt s (WordNType p) =
@@ -298,6 +318,11 @@ instance Hashable KnownNonFuncType where
       `hashWithSalt` firstType
       `hashWithSalt` secondType
       `hashWithSalt` (9 :: Int)
+  hashWithSalt s (NominalType (_ :: Proxy domain) valueType) =
+    s
+      `hashWithSalt` (11 :: Int)
+      `hashWithSalt` (nominalDomainRep (nominalDomainSing @domain))
+      `hashWithSalt` valueType
 
 data KnownNonFuncTypeWitness where
   KnownNonFuncTypeWitness ::
@@ -312,6 +337,7 @@ data KnownNonFuncTypeWitness where
     KnownNonFuncTypeWitness
 
 witnessKnownNonFuncType :: KnownNonFuncType -> KnownNonFuncTypeWitness
+witnessKnownNonFuncType UnitType = KnownNonFuncTypeWitness (Proxy @())
 witnessKnownNonFuncType BoolType = KnownNonFuncTypeWitness (Proxy @Bool)
 witnessKnownNonFuncType IntegerType = KnownNonFuncTypeWitness (Proxy @Integer)
 witnessKnownNonFuncType (WordNType (Proxy :: Proxy n)) =
@@ -337,6 +363,10 @@ witnessKnownNonFuncType (PairType firstType secondType) = runIdentity $ do
   KnownNonFuncTypeWitness (_ :: Proxy secondType) <-
     pure $ witnessKnownNonFuncType secondType
   pure $ KnownNonFuncTypeWitness @(firstType, secondType) Proxy
+witnessKnownNonFuncType (NominalType (_ :: Proxy domain) valueType) =
+  case witnessKnownNonFuncType valueType of
+    KnownNonFuncTypeWitness (_ :: Proxy value) ->
+      KnownNonFuncTypeWitness @(Nominal domain value) Proxy
 
 data KnownType where
   NonFuncType :: KnownNonFuncType -> KnownType
@@ -542,6 +572,7 @@ witnessKnownType (GeneralFunType [a, b, c, d, e, f, g, h]) =
 witnessKnownType l = error $ "witnessKnownType: unsupported type: " <> show l
 
 instance Show KnownNonFuncType where
+  show UnitType = "()"
   show BoolType = "Bool"
   show IntegerType = "Integer"
   show (WordNType (_ :: p n)) = "WordN " <> show (natVal (Proxy @n))
@@ -557,6 +588,12 @@ instance Show KnownNonFuncType where
   show (ListType element) = "[" ++ show element ++ "]"
   show (PairType firstType secondType) =
     "(" ++ show firstType ++ ", " ++ show secondType ++ ")"
+  show (NominalType (_ :: Proxy domain) valueType) =
+    "Nominal "
+      ++ show (nominalDomainRep (nominalDomainSing @domain))
+      ++ " ("
+      ++ show valueType
+      ++ ")"
 
 instance Show KnownType where
   show (NonFuncType t) = show t
@@ -566,7 +603,8 @@ instance Show KnownType where
 knownNonFuncTypeMaybe ::
   forall a p. SupportedPrim a => p a -> Maybe KnownNonFuncType
 knownNonFuncTypeMaybe _ = withPrim @a $ case tr of
-  _ | isTy @Bool Proxy -> pure BoolType
+  _ | isTy @() Proxy -> pure UnitType
+    | isTy @Bool Proxy -> pure BoolType
     | isTy @Integer Proxy -> pure IntegerType
     | isTy @FPRoundingMode Proxy -> pure FPRoundingModeType
     | isTy @AlgReal Proxy -> pure AlgRealType
@@ -589,6 +627,9 @@ knownNonFuncTypeMaybe _ = withPrim @a $ case tr of
         PairType
           <$> knownNonFuncTypeMaybe @firstType Proxy
           <*> knownNonFuncTypeMaybe @secondType Proxy
+  App (App nominalR (_ :: TypeRep domain)) (_ :: TypeRep value)
+    | Just HRefl <- eqTypeRep nominalR $ typeRep @Nominal ->
+        NominalType (Proxy @domain) <$> knownNonFuncTypeMaybe @value Proxy
   _ -> Nothing
   where
     tr = typeRep @a
@@ -659,7 +700,10 @@ knownType proxy = do
 -- Array: 7
 -- List: 8
 -- Pair: 9
+-- Unit: 10
+-- Nominal: 11
 serializeKnownNonFuncType :: (MonadPut m) => KnownNonFuncType -> m ()
+serializeKnownNonFuncType UnitType = putWord8 10
 serializeKnownNonFuncType BoolType = putWord8 0
 serializeKnownNonFuncType IntegerType = putWord8 1
 serializeKnownNonFuncType (WordNType (Proxy :: Proxy n)) =
@@ -681,6 +725,10 @@ serializeKnownNonFuncType (PairType firstType secondType) = do
   putWord8 9
   serializeKnownNonFuncType firstType
   serializeKnownNonFuncType secondType
+serializeKnownNonFuncType (NominalType (_ :: Proxy domain) valueType) = do
+  putWord8 11
+  serialize $ nominalDomainRep (nominalDomainSing @domain)
+  serializeKnownNonFuncType valueType
 
 serializeKnownType :: (MonadPut m) => KnownType -> m ()
 serializeKnownType (NonFuncType t) = putWord8 0 >> serializeKnownNonFuncType t
@@ -726,6 +774,13 @@ deserializeKnownNonFuncType = do
       pure $ ArrayType keyT valT
     8 -> ListType <$> deserializeKnownNonFuncType
     9 -> PairType <$> deserializeKnownNonFuncType <*> deserializeKnownNonFuncType
+    10 -> pure UnitType
+    11 -> do
+      domainRep <- deserialize @NominalDomainRep
+      valueType <- deserializeKnownNonFuncType
+      case someSNominalDomain domainRep of
+        SomeSNominalDomain (_ :: proxy domain) ->
+          pure $ NominalType (Proxy @domain) valueType
     _ -> fail "deserializeKnownNonFuncType: Unknown type tag"
 
 deserializeKnownType :: (MonadGet m) => m KnownType
@@ -1196,23 +1251,26 @@ constructBitCastTerm (SomeTerm (t1 :: Term a)) retType =
   case witnessKnownType retType of
     KnownTypeWitness (_ :: Proxy b) -> do
       let tb = primTypeRep @b
-      withPrim @a $ withPrim @b $ case (eqTypeRep ta (typeRep @Bool), ta) of
-        (Just HRefl, _) -> case tb of
-          App (tw@(Con _) :: TypeRep w) (tn :: TypeRep n) ->
-            case ( eqTypeRep tw (typeRep @WordN),
-                   eqTypeRep tw (typeRep @IntN),
-                   eqTypeRep tn (typeRep @1)
-                 ) of
-              (Just HRefl, _, Just HRefl) -> someTerm (bitCastTerm t1 :: Term b)
-              (_, Just HRefl, Just HRefl) -> someTerm (bitCastTerm t1 :: Term b)
+      withPrim @a $ withPrim @b $
+        case nominalBitCast @a @b t1 ta tb of
+          Just result -> result
+          Nothing -> case (eqTypeRep ta (typeRep @Bool), ta) of
+            (Just HRefl, _) -> case tb of
+              App (tw@(Con _) :: TypeRep w) (tn :: TypeRep n) ->
+                case ( eqTypeRep tw (typeRep @WordN),
+                       eqTypeRep tw (typeRep @IntN),
+                       eqTypeRep tn (typeRep @1)
+                     ) of
+                  (Just HRefl, _, Just HRefl) -> someTerm (bitCastTerm t1 :: Term b)
+                  (_, Just HRefl, Just HRefl) -> someTerm (bitCastTerm t1 :: Term b)
+                  _ -> err
               _ -> err
-          _ -> err
-        (_, App (tw@(Con _) :: TypeRep w) (tn :: TypeRep n)) ->
-          case (eqTypeRep tw (typeRep @WordN), eqTypeRep tw (typeRep @IntN)) of
-            (Just HRefl, _) -> fromBV t1 tn tb (typeRep @IntN)
-            (_, Just HRefl) -> fromBV t1 tn tb (typeRep @WordN)
+            (_, App (tw@(Con _) :: TypeRep w) (tn :: TypeRep n)) ->
+              case (eqTypeRep tw (typeRep @WordN), eqTypeRep tw (typeRep @IntN)) of
+                (Just HRefl, _) -> fromBV t1 tn tb (typeRep @IntN)
+                (_, Just HRefl) -> fromBV t1 tn tb (typeRep @WordN)
+                _ -> err
             _ -> err
-        _ -> err
   where
     ta = primTypeRep @a
     err :: r
@@ -1221,6 +1279,26 @@ constructBitCastTerm (SomeTerm (t1 :: Term a)) retType =
         "constructBitCastTerm: unsupported type: "
           <> show ta
           <> show retType
+    nominalBitCast ::
+      forall source target.
+      (SupportedPrim source, SupportedPrim target) =>
+      Term source ->
+      TypeRep source ->
+      TypeRep target ->
+      Maybe SomeTerm
+    nominalBitCast source sourceType targetType =
+      withPrim @source $ withPrim @target $
+        case targetType of
+          App (App nominalR (_ :: TypeRep domain)) (valueR :: TypeRep value)
+            | Just HRefl <- eqTypeRep nominalR (typeRep @Nominal),
+              Just HRefl <- eqTypeRep sourceType valueR ->
+                Just $ someTerm (bitCastTerm source :: Term (Nominal domain value))
+          _ -> case sourceType of
+            App (App nominalR (_ :: TypeRep domain)) (valueR :: TypeRep value)
+              | Just HRefl <- eqTypeRep nominalR (typeRep @Nominal),
+                Just HRefl <- eqTypeRep targetType valueR ->
+                  Just $ someTerm (bitCastTerm source :: Term value)
+            _ -> Nothing
     fromBV ::
       forall bv n b bv2.
       ( forall n. (KnownNat n, 1 <= n) => PEvalBitCastTerm (bv n) (bv2 n),

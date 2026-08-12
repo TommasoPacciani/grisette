@@ -123,6 +123,7 @@ library
       Grisette.Internal.SymPrim.GeneralFun
       Grisette.Internal.SymPrim.IntBitwidth
       Grisette.Internal.SymPrim.ModelRep
+      Grisette.Internal.SymPrim.Nominal
       Grisette.Internal.SymPrim.Prim.Internal.Caches
       Grisette.Internal.SymPrim.Prim.Internal.Instances.PEvalBitCastTerm
       Grisette.Internal.SymPrim.Prim.Internal.Instances.PEvalDivModIntegralTerm
@@ -156,6 +157,7 @@ library
       Grisette.Internal.SymPrim.SymFP
       Grisette.Internal.SymPrim.SymGeneralFun
       Grisette.Internal.SymPrim.SymInteger
+      Grisette.Internal.SymPrim.SymNominal
       Grisette.Internal.SymPrim.SymPrim
       Grisette.Internal.SymPrim.SymTabularFun
       Grisette.Internal.SymPrim.SymUninterp
@@ -228,6 +230,7 @@ library
       Grisette.Internal.Unified.UnifiedSeq
       Grisette.Internal.Unified.UnifiedFun
       Grisette.Internal.Unified.UnifiedInteger
+      Grisette.Internal.Unified.UnifiedNominal
       Grisette.Internal.Unified.UnifiedPrim
       Grisette.Internal.Unified.Util
       Grisette.Internal.Utils.Derive

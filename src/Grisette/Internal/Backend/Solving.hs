@@ -587,7 +587,12 @@ lowerSinglePrimCached t' m' = do
                   (error "BUG: Symbol not found in the quantified stack")
           else withPrim @a $ do
             m <- liftIO $ readIORef mapState
-            let name = symSBVName ts (sizeBiMap m)
+            let ordinal = sizeBiMap m
+                name =
+                  "grisette.symbol."
+                    <> show ordinal
+                    <> "."
+                    <> symSBVName ts ordinal
             g <- symSBVTerm @a name
             liftIO $
               modifyIORef' accumulatedDummyConstraints $

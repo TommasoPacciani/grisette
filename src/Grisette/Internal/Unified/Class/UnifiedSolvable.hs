@@ -34,11 +34,14 @@ import qualified Grisette.Internal.Core.Data.Class.Solvable as Grisette
 import Grisette.Internal.SymPrim.AlgReal (AlgReal)
 import Grisette.Internal.SymPrim.BV (IntN, WordN)
 import Grisette.Internal.SymPrim.FP (FP, ValidFP)
+import Grisette.Internal.SymPrim.Nominal (KnownNominalDomain, Nominal)
+import Grisette.Internal.SymPrim.Prim.Term (SupportedNonFuncPrim)
 import Grisette.Internal.SymPrim.SymAlgReal (SymAlgReal)
 import Grisette.Internal.SymPrim.SymBV (SymIntN, SymWordN)
 import Grisette.Internal.SymPrim.SymBool (SymBool)
 import Grisette.Internal.SymPrim.SymFP (SymFP)
 import Grisette.Internal.SymPrim.SymInteger (SymInteger)
+import Grisette.Internal.SymPrim.SymNominal (SymNominal)
 import Grisette.Internal.Unified.EvalModeTag (EvalModeTag (C, S), IsConMode)
 import Grisette.Internal.Unified.Util (DecideEvalMode, withMode)
 
@@ -133,3 +136,21 @@ instance (ValidFP eb sb) => UnifiedSolvable 'C (FP eb sb) (FP eb sb) where
 
 instance (ValidFP eb sb) => UnifiedSolvable 'S (SymFP eb sb) (FP eb sb) where
   withBaseSolvable r = r
+
+instance
+  (KnownNominalDomain domain, SupportedNonFuncPrim value) =>
+  UnifiedSolvable
+    'C
+    (Nominal domain value)
+    (Nominal domain value)
+  where
+  withBaseSolvable result = result
+
+instance
+  (KnownNominalDomain domain, SupportedNonFuncPrim value) =>
+  UnifiedSolvable
+    'S
+    (SymNominal domain value)
+    (Nominal domain value)
+  where
+  withBaseSolvable result = result

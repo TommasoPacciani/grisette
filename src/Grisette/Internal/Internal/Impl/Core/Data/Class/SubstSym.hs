@@ -93,6 +93,11 @@ import Grisette.Internal.SymPrim.Array (Array)
 import Grisette.Internal.SymPrim.SymArray (SymArray (SymArray))
 import Grisette.Internal.SymPrim.SymPair (SymPair (SymPair))
 import Grisette.Internal.SymPrim.SymSeq (SymSeq (SymSeq))
+import Grisette.Internal.SymPrim.Nominal
+  ( KnownNominalDomain,
+    Nominal (Nominal),
+  )
+import Grisette.Internal.SymPrim.SymNominal (SymNominal (SymNominal))
 import Grisette.Internal.SymPrim.SymUninterp (SymUninterp (SymUninterp))
 import GHC.TypeLits (KnownSymbol)
 import Grisette.Internal.SymPrim.SymBV
@@ -222,6 +227,17 @@ instance
 instance (KnownSymbol n) => SubstSym (SymUninterp n) where
   substSym sym v (SymUninterp t) =
     SymUninterp $ substTerm sym (underlyingTerm v) HS.empty t
+
+instance
+  (KnownNominalDomain domain, SupportedNonFuncPrim value) =>
+  SubstSym (SymNominal domain value)
+  where
+  substSym sym value (SymNominal term) =
+    SymNominal $ substTerm sym (underlyingTerm value) HS.empty term
+
+instance (SubstSym value) => SubstSym (Nominal domain value) where
+  substSym symbol replacement (Nominal value) =
+    Nominal $ substSym symbol replacement value
 
 -- A concrete array contains no symbolic variables (the 'C-mode side of
 -- @GetArray@), so substitution is the identity.

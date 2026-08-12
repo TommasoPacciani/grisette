@@ -61,6 +61,7 @@ import Grisette.Internal.SymPrim.AlgReal (AlgReal)
 import Grisette.Internal.SymPrim.Array (Array)
 import Grisette.Internal.SymPrim.BV (IntN, WordN)
 import Grisette.Internal.SymPrim.FP (FP, FPRoundingMode, ValidFP)
+import Grisette.Internal.SymPrim.Nominal (Nominal (Nominal))
 import Grisette.Internal.TH.Derivation.Derive (derive)
 
 -- $setup
@@ -163,6 +164,10 @@ CONCRETE_ALLSYMS_BV(IntN)
 CONCRETE_ALLSYMS(AlgReal)
 CONCRETE_ALLSYMS((Array k v))
 #endif
+
+instance (AllSyms value) => AllSyms (Nominal domain value) where
+  allSymsS (Nominal value) = allSymsS value
+  {-# INLINE allSymsS #-}
 
 instance AllSyms (Proxy a) where
   allSymsS _ = id

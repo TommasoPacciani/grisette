@@ -419,6 +419,11 @@ import Grisette.Internal.Core.Data.Symbol
 import Grisette.Internal.SymPrim.AlgReal (AlgReal, fromSBVAlgReal, toSBVAlgReal)
 import Grisette.Internal.SymPrim.Array (Array (Array))
 import qualified Grisette.Internal.SymPrim.Array as Arr
+import Grisette.Internal.SymPrim.Nominal
+  ( KnownNominalDomain,
+    Nominal (Nominal),
+    unNominal,
+  )
 import Grisette.Internal.SymPrim.Uninterp (Uninterp (Uninterp), uninterpConSBVPrefix)
 import Grisette.Internal.SymPrim.BV (IntN, WordN)
 import Grisette.Internal.SymPrim.FP
@@ -7585,6 +7590,58 @@ pevalDefaultEqTerm l r
   | otherwise = eqTerm l r
 {-# INLINEABLE pevalDefaultEqTerm #-}
 
+instance SBVRep () where
+  type SBVType () = SBV.SBV ()
+
+instance SupportedPrimConstraint ()
+
+instance SupportedPrim () where
+  defaultValue = ()
+  pevalITETerm _ _ _ = conTerm ()
+  pevalEqTerm _ _ = trueTerm
+  pevalDistinctTerm (_ :| []) = trueTerm
+  pevalDistinctTerm _ = falseTerm
+  conSBVTerm = SBV.literal
+  symSBVName symbol _ = show symbol
+  symSBVTerm = sbvFresh
+  withPrim r = r
+  sbvIte _ _ _ = SBV.literal ()
+  sbvEq _ _ = SBV.sTrue
+  sbvDistinct (_ :| []) = SBV.sTrue
+  sbvDistinct _ = SBV.sFalse
+  parseSMTModelResult _ ([], SBVD.CV (SBVD.KTuple []) (SBVD.CTuple [])) = ()
+  parseSMTModelResult _ input =
+    parseSMTModelResultError (typeRep @()) input
+  castTypedSymbol ::
+    forall knd knd'.
+    (IsSymbolKind knd') =>
+    TypedSymbol knd () ->
+    Maybe (TypedSymbol knd' ())
+  castTypedSymbol (TypedSymbol symbol) =
+    case decideSymbolKind @knd' of
+      Left HRefl -> Just $ TypedSymbol symbol
+      Right HRefl -> Just $ TypedSymbol symbol
+  funcDummyConstraint _ = SBV.sTrue
+
+instance NonFuncSBVRep () where
+  type NonFuncSBVBaseType () = ()
+
+instance SupportedNonFuncPrim () where
+  conNonFuncSBVTerm = conSBVTerm
+  symNonFuncSBVTerm = symSBVTerm @()
+  withNonFuncPrim r = r
+  sbvToCon = id
+
+instance ConRep () where
+  type ConType () = ()
+
+instance SymRep () where
+  type SymType () = ()
+
+instance LinkedRep () () where
+  underlyingTerm () = conTerm ()
+  wrapTerm _ = ()
+
 instance SBVRep Bool where
   type SBVType Bool = SBV.SBV Bool
 
@@ -7801,6 +7858,63 @@ instance (KnownSymbol n) => SupportedNonFuncPrim (Uninterp n) where
   symNonFuncSBVTerm = symSBVTerm @(Uninterp n)
   withNonFuncPrim r = r
   sbvToCon = id
+
+-- Solver-erased nominal values reuse the underlying SMT sort exactly. The
+-- domain remains in the Haskell type, so differently named roles cannot mix.
+instance SBVRep (Nominal domain value) where
+  type SBVType (Nominal domain value) = SBVType value
+
+instance
+  (KnownNominalDomain domain, SupportedNonFuncPrim value) =>
+  SupportedPrimConstraint (Nominal domain value)
+  where
+  type PrimConstraint (Nominal domain value) =
+    ( KnownNominalDomain domain,
+      SupportedNonFuncPrim value,
+      NonFuncPrimConstraint value
+    )
+
+instance
+  (KnownNominalDomain domain, SupportedNonFuncPrim value) =>
+  SupportedPrim (Nominal domain value)
+  where
+  defaultValue = Nominal defaultValue
+  pevalITETerm = pevalITEBasicTerm
+  pevalEqTerm = pevalDefaultEqTerm
+  pevalDistinctTerm = pevalGeneralDistinct
+  conSBVTerm = conSBVTerm . unNominal
+  symSBVName symbol _ = show symbol
+  symSBVTerm = symNonFuncSBVTerm @value
+  withPrim result = withNonFuncPrim @value result
+  sbvIte = sbvIte @value
+  sbvEq = sbvEq @value
+  sbvDistinct = sbvDistinct @value
+  parseSMTModelResult index model = Nominal $ parseSMTModelResult @value index model
+  castTypedSymbol ::
+    forall kind kind'.
+    (IsSymbolKind kind') =>
+    TypedSymbol kind (Nominal domain value) ->
+    Maybe (TypedSymbol kind' (Nominal domain value))
+  castTypedSymbol symbol =
+    case decideSymbolKind @kind' of
+      Left HRefl -> Just $ typedConstantSymbol $ unTypedSymbol symbol
+      Right HRefl -> Just $ typedAnySymbol $ unTypedSymbol symbol
+  funcDummyConstraint = funcDummyConstraint @value
+
+instance
+  (KnownNominalDomain domain, SupportedNonFuncPrim value) =>
+  NonFuncSBVRep (Nominal domain value)
+  where
+  type NonFuncSBVBaseType (Nominal domain value) = NonFuncSBVBaseType value
+
+instance
+  (KnownNominalDomain domain, SupportedNonFuncPrim value) =>
+  SupportedNonFuncPrim (Nominal domain value)
+  where
+  conNonFuncSBVTerm = conNonFuncSBVTerm . unNominal
+  symNonFuncSBVTerm = symNonFuncSBVTerm @value
+  withNonFuncPrim result = withNonFuncPrim @value result
+  sbvToCon = Nominal . sbvToCon @value
 
 pevalITEBVTerm ::
   forall bv n.

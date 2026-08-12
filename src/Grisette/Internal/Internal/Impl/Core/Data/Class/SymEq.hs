@@ -99,6 +99,11 @@ import Grisette.Internal.TH.Derivation.Derive (derive)
 import Grisette.Internal.SymPrim.SymArray (SymArray)
 import Grisette.Internal.SymPrim.SymPair (SymPair)
 import Grisette.Internal.SymPrim.SymSeq (SymSeq)
+import Grisette.Internal.SymPrim.Nominal
+  ( KnownNominalDomain,
+    Nominal (Nominal),
+  )
+import Grisette.Internal.SymPrim.SymNominal (SymNominal)
 import Grisette.Internal.SymPrim.SymUninterp (SymUninterp)
 import GHC.TypeLits (KnownSymbol)
 
@@ -217,6 +222,17 @@ instance
   lhs .== rhs = wrapTerm $ pevalEqTerm (underlyingTerm lhs) (underlyingTerm rhs)
 
 instance (KnownSymbol n) => SymEq (SymUninterp n) where
+  lhs .== rhs = wrapTerm $ pevalEqTerm (underlyingTerm lhs) (underlyingTerm rhs)
+  {-# INLINE (.==) #-}
+
+instance (SymEq value) => SymEq (Nominal domain value) where
+  Nominal left .== Nominal right = left .== right
+  {-# INLINE (.==) #-}
+
+instance
+  (KnownNominalDomain domain, SupportedNonFuncPrim value) =>
+  SymEq (SymNominal domain value)
+  where
   lhs .== rhs = wrapTerm $ pevalEqTerm (underlyingTerm lhs) (underlyingTerm rhs)
   {-# INLINE (.==) #-}
 

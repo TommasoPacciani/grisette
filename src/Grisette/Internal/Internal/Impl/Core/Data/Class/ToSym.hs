@@ -96,6 +96,8 @@ import Grisette.Internal.SymPrim.Array (Array)
 import Grisette.Internal.SymPrim.SymArray (SymArray)
 import Grisette.Internal.SymPrim.SymPair (SymPair)
 import Grisette.Internal.SymPrim.SymSeq (SymSeq)
+import Grisette.Internal.SymPrim.Nominal (KnownNominalDomain, Nominal)
+import Grisette.Internal.SymPrim.SymNominal (SymNominal)
 import Grisette.Internal.SymPrim.SymUninterp (SymUninterp)
 import Grisette.Internal.SymPrim.Uninterp (Uninterp)
 import GHC.TypeLits (KnownSymbol)
@@ -266,6 +268,15 @@ instance (KnownSymbol n) => ToSym (Uninterp n) (SymUninterp n) where
   toSym = con
 
 instance ToSym (SymUninterp n) (SymUninterp n) where
+  toSym = id
+
+instance
+  (KnownNominalDomain domain, SupportedNonFuncPrim value) =>
+  ToSym (Nominal domain value) (SymNominal domain value)
+  where
+  toSym = con
+
+instance ToSym (SymNominal domain value) (SymNominal domain value) where
   toSym = id
 
 #define TOSYM_MACHINE_INTEGER(int, bv) \

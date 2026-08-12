@@ -6,6 +6,8 @@ module Grisette.SymPrim.SequenceTests (sequenceTests) where
 import Control.DeepSeq (NFData, force)
 import Control.Exception (ErrorCall, displayException, evaluate, try)
 import qualified Data.Binary as Binary
+import qualified Data.ByteString.Lazy as LazyByteString
+import Data.Int (Int64)
 import Data.List (foldl', isPrefixOf)
 import qualified Data.SBV.Dynamic as SBVD
 import Grisette
@@ -13,7 +15,7 @@ import Grisette
     Function ((#)),
     LogicalOp (symNot, (.&&)),
     SimpleMergeable (mrgIte),
-    Solvable (con),
+    Solvable (con, ssym),
     SymEq ((.==)),
     SymBool,
     SymInteger,
@@ -24,15 +26,27 @@ import Grisette
 import Grisette.Internal.Backend.Solving (z3)
 import Grisette.Internal.Core.Data.Class.Solver (SolvingFailure (Unsat))
 import Grisette.Internal.SymPrim.Prim.Term
-  ( SupportedPrim (parseSMTModelResult),
+  ( LinkedRep (wrapTerm),
+    SupportedPrim (parseSMTModelResult),
+    Term,
+    eqTerm,
+    pevalNotTerm,
+    ssymTerm,
   )
 import Grisette.SymPrim
-  ( SymPair,
+  ( SymArray,
+    Nominal,
+    NominalDomain (Domain),
+    SymPair,
+    SymNominal,
     SymSeq,
+    SymWordN32,
+    WordN32,
     type (=~>),
     type (-~>),
     (-->),
   )
+import qualified Grisette.SymPrim.SymArray as A
 import Grisette.Unified (EvalModeTag (C, S))
 import qualified Grisette.Unified as U
 import Test.Framework (Test, testGroup)
@@ -234,6 +248,226 @@ sequenceTests =
           "strict recursive decode"
           concrete
           (parseSMTModelResult @[(Integer, Integer)] 0 ([], value)),
+      testCase "unit model decoder accepts only the exact zero tuple" $ do
+        let unit = SBVD.CV (SBVD.KTuple []) (SBVD.CTuple [])
+            integer = SBVD.CV SBVD.KUnbounded (SBVD.CInteger 0)
+            wrongArity = SBVD.CV (SBVD.KTuple []) (SBVD.CTuple [SBVD.CInteger 0])
+        assertEqual "exact unit decode" () (parseSMTModelResult @() 0 ([], unit))
+        let serializedUnit = ssymTerm @() "serializedUnit"
+        assertEqual
+          "unit known-type round-trip"
+          serializedUnit
+          (Binary.decode (Binary.encode serializedUnit) :: Term ())
+        sequence_
+          [ assertDecoderFailure $ force $
+              parseSMTModelResult @() 0 ([([], unit)], unit),
+            assertDecoderFailure $ force $
+              parseSMTModelResult @() 0 ([([unit], unit)], unit),
+            assertDecoderFailure $ force $
+              parseSMTModelResult @() 0 ([], integer),
+            assertDecoderFailure $ force $
+              parseSMTModelResult @() 0 ([], wrongArity)
+          ],
+      testCase "symbolic unit disequality is unsatisfiable" $ do
+        let disequality =
+              wrapTerm
+                ( pevalNotTerm $
+                    eqTerm (ssymTerm @() "unitLeft") (ssymTerm @() "unitRight")
+                ) :: SymBool
+        solved <- solve z3 disequality
+        case solved of
+          Left Unsat -> pure ()
+          Left failure -> assertFailure $ "solver failed: " ++ show failure
+          Right _ -> assertFailure "distinct symbolic unit values were admitted",
+      testCase "a unit-keyed array is determined by its sole cell" $ do
+        let left = "unitLeftArray" :: SymArray () SymInteger
+            right = "unitRightArray" :: SymArray () SymInteger
+            counterexample =
+              (A.select left () .== A.select right ())
+                .&& symNot (left .== right)
+        solved <- solve z3 counterexample
+        case solved of
+          Left Unsat -> pure ()
+          Left failure -> assertFailure $ "solver failed: " ++ show failure
+          Right _ -> assertFailure "equal sole cells did not determine unit-keyed arrays",
+      testCase "structural nominal domains erase only at the solver boundary" $ do
+        let left =
+              ssym "grisette.uninterp.con.adversarial" ::
+                SymNominal
+                  ('Domain "p4runtime" '[ 'Domain "left" '[] ])
+                  WordN32
+            right =
+              ssym "grisette.uninterp.con.adversarial" ::
+                SymNominal
+                  ('Domain "p4runtime" '[ 'Domain "right" '[] ])
+                  WordN32
+            alternative =
+              ssym "alternativeNominal" ::
+                SymNominal
+                  ('Domain "p4runtime" '[ 'Domain "left" '[] ])
+                  WordN32
+            leftValue = U.nominalValue @'S left :: SymWordN32
+            rightValue = U.nominalValue @'S right :: SymWordN32
+            alternativeValue = U.nominalValue @'S alternative :: SymWordN32
+            leftSequence = U.consSeq @'S left U.nilSeq
+            step ::
+              SymWordN32
+                -~> SymNominal
+                  ('Domain "p4runtime" '[ 'Domain "left" '[] ])
+                  WordN32
+                -~> SymWordN32
+            step =
+              con $
+                ("nominalState" :: TypedConstantSymbol WordN32)
+                  --> con
+                    ( ( "nominalElement" ::
+                          TypedConstantSymbol
+                            ( Nominal
+                                ('Domain "p4runtime" '[ 'Domain "left" '[] ])
+                                WordN32
+                            )
+                      )
+                        --> ( ("nominalState" :: SymWordN32)
+                                + U.nominalValue
+                                  @'S
+                                  ( "nominalElement" ::
+                                      SymNominal
+                                        ( 'Domain
+                                            "p4runtime"
+                                            '[ 'Domain "left" '[] ]
+                                        )
+                                        WordN32
+                                  )
+                            )
+                    )
+            folded = U.foldSeq @'S step 0 leftSequence
+            nested = U.pair @'S leftSequence (U.pair @'S left right)
+            leftArray = "nominalArray" ::
+              SymArray
+                ( SymNominal
+                    ('Domain "p4runtime" '[ 'Domain "left" '[] ])
+                    WordN32
+                )
+                SymInteger
+            chooseNominal = "chooseNominal" :: SymBool
+            chosenNominal = mrgIte chooseNominal left alternative
+            chosenValue = U.nominalValue @'S chosenNominal :: SymWordN32
+            constraint =
+              (leftValue .== 1)
+                .&& (rightValue .== 2)
+                .&& (alternativeValue .== 3)
+                .&& (folded .== 1)
+                .&& chooseNominal
+                .&& (chosenValue .== 1)
+                .&& (A.select leftArray left .== 9)
+        solved <- solve z3 constraint
+        case solved of
+          Left failure -> assertFailure $ "expected distinct nominal symbols SAT: " ++ show failure
+          Right model -> do
+            assertEqual
+              "left nominal model"
+              (Just 1)
+              (U.nominalValue @'C <$> toCon (evalSym False model left))
+            assertEqual
+              "right nominal model"
+              (Just 2)
+              (U.nominalValue @'C <$> toCon (evalSym False model right))
+            assertEqual
+              "nested nominal product model"
+              (Just ([1], (1, 2)))
+              ( do
+                  (values, (leftResult, rightResult)) <-
+                    toCon (evalSym False model nested)
+                  pure
+                    ( U.nominalValue @'C <$> values,
+                      ( U.nominalValue @'C leftResult,
+                        U.nominalValue @'C rightResult
+                      )
+                    )
+              )
+        falseBranch <-
+          solve z3 $
+            (leftValue .== 1)
+              .&& (alternativeValue .== 3)
+              .&& symNot chooseNominal
+              .&& (chosenValue .== 3)
+        case falseBranch of
+          Left failure -> assertFailure $ "nominal false ITE branch failed: " ++ show failure
+          Right _ -> pure ()
+        let wrapped =
+              U.nominal @'S
+                ("wrappedNominal" :: SymWordN32) ::
+                SymNominal
+                  ('Domain "p4runtime" '[ 'Domain "left" '[] ])
+                  WordN32
+            wrappedRoundTrip = Binary.decode (Binary.encode wrapped)
+            unwrapped = U.nominalValue @'S left :: SymWordN32
+            unwrappedRoundTrip = Binary.decode (Binary.encode unwrapped)
+            nestedNominal =
+              U.nominal @'S
+                ( U.nominal @'S
+                    ("nestedNominal" :: SymWordN32) ::
+                    SymNominal ('Domain "inner" '[]) WordN32
+                ) ::
+                SymNominal
+                  ('Domain "outer" '[])
+                  (Nominal ('Domain "inner" '[]) WordN32)
+            nestedNominalRoundTrip =
+              Binary.decode (Binary.encode nestedNominal)
+        wrapMismatch <- solve z3 (symNot (wrappedRoundTrip .== wrapped))
+        unwrapMismatch <- solve z3 (symNot (unwrappedRoundTrip .== unwrapped))
+        nestedMismatch <-
+          solve z3 (symNot (nestedNominalRoundTrip .== nestedNominal))
+        case (wrapMismatch, unwrapMismatch, nestedMismatch) of
+          (Left Unsat, Left Unsat, Left Unsat) -> pure ()
+          (Left failure, _, _) ->
+            assertFailure $ "nominal wrap round-trip failed: " ++ show failure
+          (_, Left failure, _) ->
+            assertFailure $ "nominal unwrap round-trip failed: " ++ show failure
+          (_, _, Left failure) ->
+            assertFailure $ "nested nominal round-trip failed: " ++ show failure
+          _ -> assertFailure "serialized nominal casts changed their terms"
+        let encoded = Binary.encode wrapped
+            wrongDomain = Binary.decodeOrFail encoded ::
+              Either
+                (LazyByteString.ByteString, Int64, String)
+                ( LazyByteString.ByteString,
+                  Int64,
+                  SymNominal
+                    ('Domain "p4runtime" '[ 'Domain "right" '[] ])
+                    WordN32
+                )
+            wrongBase = Binary.decodeOrFail encoded ::
+              Either
+                (LazyByteString.ByteString, Int64, String)
+                ( LazyByteString.ByteString,
+                  Int64,
+                  SymNominal
+                    ('Domain "p4runtime" '[ 'Domain "left" '[] ])
+                    Integer
+                )
+        case (wrongDomain, wrongBase) of
+          (Left _, Left _) -> pure ()
+          (Right _, _) -> assertFailure "nominal term decoded at a different domain"
+          (_, Right _) -> assertFailure "nominal term decoded at a different recursive base",
+      testCase "wrapping one raw term in two domains preserves its identity" $ do
+        let raw = "sharedNominalValue" :: SymWordN32
+            left =
+              U.nominal @'S raw ::
+                SymNominal ('Domain "left" '[]) WordN32
+            right =
+              U.nominal @'S raw ::
+                SymNominal ('Domain "right" '[]) WordN32
+        solved <-
+          solve z3 $
+            symNot
+              ( (U.nominalValue @'S left :: SymWordN32)
+                  .== (U.nominalValue @'S right :: SymWordN32)
+              )
+        case solved of
+          Left Unsat -> pure ()
+          Left failure -> assertFailure $ "solver failed: " ++ show failure
+          Right _ -> assertFailure "nominal casts manufactured a second solver value",
       testCase "malformed list and pair models fail loudly" $ do
         let integer = SBVD.CV SBVD.KUnbounded (SBVD.CInteger 1)
             listOfIntegers =

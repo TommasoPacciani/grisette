@@ -21,11 +21,14 @@ import GHC.TypeLits (KnownNat, type (<=))
 import Grisette.Internal.SymPrim.AlgReal (AlgReal)
 import Grisette.Internal.SymPrim.BV (IntN, WordN)
 import Grisette.Internal.SymPrim.FP (FP, ValidFP)
+import Grisette.Internal.SymPrim.Nominal (KnownNominalDomain, Nominal)
+import Grisette.Internal.SymPrim.Prim.Term (SupportedNonFuncPrim)
 import Grisette.Internal.SymPrim.SymAlgReal (SymAlgReal)
 import Grisette.Internal.SymPrim.SymBV (SymIntN, SymWordN)
 import Grisette.Internal.SymPrim.SymBool (SymBool)
 import Grisette.Internal.SymPrim.SymFP (SymFP)
 import Grisette.Internal.SymPrim.SymInteger (SymInteger)
+import Grisette.Internal.SymPrim.SymNominal (SymNominal)
 
 -- | A class that gives the concrete type of a unified primitive type.
 class UnifiedConRep a where
@@ -106,3 +109,18 @@ instance (ValidFP eb sb) => UnifiedConRep (SymFP eb sb) where
 
 instance (ValidFP eb sb) => UnifiedSymRep (SymFP eb sb) where
   type SymType (SymFP eb sb) = SymFP eb sb
+
+instance UnifiedConRep (Nominal domain value) where
+  type ConType (Nominal domain value) = Nominal domain value
+
+instance
+  (KnownNominalDomain domain, SupportedNonFuncPrim value) =>
+  UnifiedSymRep (Nominal domain value)
+  where
+  type SymType (Nominal domain value) = SymNominal domain value
+
+instance UnifiedConRep (SymNominal domain value) where
+  type ConType (SymNominal domain value) = Nominal domain value
+
+instance UnifiedSymRep (SymNominal domain value) where
+  type SymType (SymNominal domain value) = SymNominal domain value

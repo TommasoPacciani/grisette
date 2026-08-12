@@ -195,6 +195,16 @@ module Grisette.Unified
     UnifiedSeq (..),
     UnifiedPair (..),
 
+    -- ** Solver-erased nominal values
+    NominalBase,
+    GetNominal,
+    NominalValue,
+    UnifiedNominal (..),
+    NominalDomain (..),
+    KnownNominalDomain,
+    Nominal,
+    SymNominal,
+
     -- ** Supplemental conversions
     UnifiedBVBVConversion,
     UnifiedBVFPConversion,
@@ -394,6 +404,18 @@ import Grisette.Internal.Unified.UnifiedInteger
   ( GetInteger,
     UnifiedInteger,
   )
+import Grisette.Internal.Unified.UnifiedNominal
+  ( GetNominal,
+    NominalBase,
+    NominalValue,
+    UnifiedNominal (..),
+  )
+import Grisette.Internal.SymPrim.Nominal
+  ( KnownNominalDomain,
+    Nominal,
+    NominalDomain (..),
+  )
+import Grisette.Internal.SymPrim.SymNominal (SymNominal)
 import Grisette.Internal.Unified.UnifiedPrim
   ( UnifiedBasicPrim,
     UnifiedPrim,

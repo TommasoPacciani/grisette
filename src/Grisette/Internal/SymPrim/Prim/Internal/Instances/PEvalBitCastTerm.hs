@@ -30,10 +30,15 @@ import Grisette.Internal.Core.Data.Class.BitCast
   )
 import Grisette.Internal.SymPrim.BV (IntN, WordN)
 import Grisette.Internal.SymPrim.FP (FP, ValidFP, withValidFPProofs)
+import Grisette.Internal.SymPrim.Nominal
+  ( KnownNominalDomain,
+    Nominal,
+  )
 import Grisette.Internal.SymPrim.Prim.Internal.Term
   ( PEvalBitCastOrTerm (pevalBitCastOrTerm, sbvBitCastOr),
     PEvalBitCastTerm (pevalBitCastTerm, sbvBitCast),
     SupportedPrim,
+    SupportedNonFuncPrim,
     Term,
     bitCastOrTerm,
     bitCastTerm,
@@ -66,6 +71,20 @@ pevalBitCastGeneral ::
   Term a ->
   Term b
 pevalBitCastGeneral = unaryUnfoldOnce doPevalBitCast bitCastTerm
+
+instance
+  (KnownNominalDomain domain, SupportedNonFuncPrim value) =>
+  PEvalBitCastTerm value (Nominal domain value)
+  where
+  pevalBitCastTerm = pevalBitCastGeneral
+  sbvBitCast = id
+
+instance
+  (KnownNominalDomain domain, SupportedNonFuncPrim value) =>
+  PEvalBitCastTerm (Nominal domain value) value
+  where
+  pevalBitCastTerm = pevalBitCastGeneral
+  sbvBitCast = id
 
 doPevalBitCastOr ::
   (PEvalBitCastOrTerm a b) =>

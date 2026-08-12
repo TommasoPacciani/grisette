@@ -95,6 +95,11 @@ import Grisette.Internal.SymPrim.SymAlgReal (SymAlgReal (SymAlgReal))
 import Grisette.Internal.SymPrim.SymArray (SymArray (SymArray))
 import Grisette.Internal.SymPrim.SymPair (SymPair (SymPair))
 import Grisette.Internal.SymPrim.SymSeq (SymSeq (SymSeq))
+import Grisette.Internal.SymPrim.Nominal
+  ( KnownNominalDomain,
+    Nominal (Nominal),
+  )
+import Grisette.Internal.SymPrim.SymNominal (SymNominal (SymNominal))
 import Grisette.Internal.SymPrim.SymUninterp (SymUninterp (SymUninterp))
 import GHC.TypeLits (KnownSymbol)
 import Grisette.Internal.SymPrim.SymBV
@@ -222,6 +227,15 @@ instance
 
 instance (KnownSymbol n) => EvalSym (SymUninterp n) where
   evalSym fill model (SymUninterp t) = SymUninterp $ evalTerm fill model HS.empty t
+
+instance
+  (KnownNominalDomain domain, SupportedNonFuncPrim value) =>
+  EvalSym (SymNominal domain value)
+  where
+  evalSym fill model (SymNominal t) = SymNominal $ evalTerm fill model HS.empty t
+
+instance (EvalSym value) => EvalSym (Nominal domain value) where
+  evalSym fill model (Nominal value) = Nominal $ evalSym fill model value
 
 derive
   [ ''(),

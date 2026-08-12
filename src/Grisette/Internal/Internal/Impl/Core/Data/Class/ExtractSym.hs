@@ -101,6 +101,11 @@ import Grisette.Internal.SymPrim.Array (Array)
 import Grisette.Internal.SymPrim.SymArray (SymArray (SymArray))
 import Grisette.Internal.SymPrim.SymPair (SymPair (SymPair))
 import Grisette.Internal.SymPrim.SymSeq (SymSeq (SymSeq))
+import Grisette.Internal.SymPrim.Nominal
+  ( KnownNominalDomain,
+    Nominal (Nominal),
+  )
+import Grisette.Internal.SymPrim.SymNominal (SymNominal (SymNominal))
 import Grisette.Internal.SymPrim.SymUninterp (SymUninterp (SymUninterp))
 import GHC.TypeLits (KnownSymbol)
 import Grisette.Internal.SymPrim.SymBV
@@ -272,6 +277,23 @@ instance (KnownSymbol n) => ExtractSym (SymUninterp n) where
     case decideSymbolKind @knd of
       Left HRefl -> SymbolSet <$> extractTerm HS.empty t
       Right HRefl -> SymbolSet <$> extractTerm HS.empty t
+
+instance
+  (KnownNominalDomain domain, SupportedNonFuncPrim value) =>
+  ExtractSym (SymNominal domain value)
+  where
+  extractSymMaybe ::
+    forall knd.
+    (IsSymbolKind knd) =>
+    SymNominal domain value ->
+    Maybe (SymbolSet knd)
+  extractSymMaybe (SymNominal term) =
+    case decideSymbolKind @knd of
+      Left HRefl -> SymbolSet <$> extractTerm HS.empty term
+      Right HRefl -> SymbolSet <$> extractTerm HS.empty term
+
+instance (ExtractSym value) => ExtractSym (Nominal domain value) where
+  extractSymMaybe (Nominal value) = extractSymMaybe value
 
 -- A concrete array contains no symbolic variables (the 'C-mode side of
 -- @GetArray@), so it exposes the empty symbol set.

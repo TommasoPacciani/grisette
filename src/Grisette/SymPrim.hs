@@ -293,6 +293,10 @@ module Grisette.SymPrim
     SymArray (..),
     SymSeq,
     SymPair,
+    NominalDomain (..),
+    KnownNominalDomain,
+    Nominal,
+    SymNominal,
     SymUninterp (..),
     Uninterp (..),
     pattern SelectTerm,
@@ -438,6 +442,12 @@ import Grisette.Internal.SymPrim.Prim.TermUtils
 import Grisette.Internal.SymPrim.SymArray (SymArray (..))
 import Grisette.Internal.SymPrim.SymPair (SymPair)
 import Grisette.Internal.SymPrim.SymSeq (SymSeq)
+import Grisette.Internal.SymPrim.Nominal
+  ( KnownNominalDomain,
+    Nominal,
+    NominalDomain (..),
+  )
+import Grisette.Internal.SymPrim.SymNominal (SymNominal)
 import Grisette.Internal.SymPrim.SymUninterp (SymUninterp (..))
 import Grisette.Internal.SymPrim.Uninterp (Uninterp (..))
 import Grisette.Internal.SymPrim.Quantifier

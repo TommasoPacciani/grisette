@@ -97,6 +97,7 @@ import Grisette.Internal.SymPrim.Prim.SomeTerm (SomeTerm (SomeTerm))
 import Grisette.Internal.SymPrim.Prim.Term
   ( ModelValue,
     SomeTypedSymbol (SomeTypedSymbol),
+    SupportedNonFuncPrim,
     TypedSymbol (unTypedSymbol),
     prettyPrintTerm,
   )
@@ -114,6 +115,11 @@ import Grisette.Internal.SymPrim.SymGeneralFun (type (-~>) (SymGeneralFun))
 import Grisette.Internal.SymPrim.SymInteger (SymInteger (SymInteger))
 import Grisette.Internal.SymPrim.SymPair (SymPair (SymPair))
 import Grisette.Internal.SymPrim.SymSeq (SymSeq (SymSeq))
+import Grisette.Internal.SymPrim.Nominal
+  ( KnownNominalDomain,
+    Nominal (Nominal),
+  )
+import Grisette.Internal.SymPrim.SymNominal (SymNominal (SymNominal))
 import Grisette.Internal.SymPrim.SymUninterp (SymUninterp (SymUninterp))
 import Grisette.Internal.SymPrim.SymTabularFun (type (=~>) (SymTabularFun))
 import Grisette.Internal.SymPrim.TabularFun (type (=->))
@@ -221,6 +227,15 @@ instance (ValidFP eb sb) => PPrint (SymFP eb sb) where
 
 instance (KnownSymbol n) => PPrint (SymUninterp n) where
   pformat (SymUninterp t) = prettyPrintTerm t
+
+instance
+  (KnownNominalDomain domain, SupportedNonFuncPrim value) =>
+  PPrint (SymNominal domain value)
+  where
+  pformat (SymNominal t) = prettyPrintTerm t
+
+instance (PPrint value) => PPrint (Nominal domain value) where
+  pformat (Nominal value) = pformat value
 
 derive
   [ ''(),
