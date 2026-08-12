@@ -32,6 +32,7 @@ import qualified Grisette.Internal.SymPrim.SymPair as SPair
 import Grisette.Internal.SymPrim.SymSeq (SymSeq)
 import qualified Grisette.Internal.SymPrim.SymSeq as SSeq
 import Grisette.Internal.Unified.EvalModeTag (EvalModeTag (C, S))
+import Grisette.Internal.Unified.UnifiedBool (UnifiedBool (GetBool))
 import Grisette.Internal.Unified.UnifiedInteger (GetInteger)
 import qualified Prelude as P
 
@@ -67,6 +68,12 @@ class UnifiedSeq (mode :: EvalModeTag) where
   consSeq :: SeqValue mode a => a -> GetSeq mode a -> GetSeq mode a
   appendSeq :: SeqValue mode a => GetSeq mode a -> GetSeq mode a -> GetSeq mode a
   lengthSeq :: SeqValue mode a => GetSeq mode a -> GetInteger mode
+  lookupSeq ::
+    SeqValue mode a =>
+    a ->
+    GetSeq mode a ->
+    GetInteger mode ->
+    GetPair mode (GetBool mode) a
   zipSeq ::
     ( SeqValue mode a,
       SeqValue mode b,
@@ -97,6 +104,13 @@ instance UnifiedSeq 'C where
   consSeq = (:)
   appendSeq = (P.++)
   lengthSeq values = P.fromIntegral (P.length values)
+  lookupSeq seed values index = go values index
+    where
+      go [] _ = (P.False, seed)
+      go (value : _) 0 = (P.True, value)
+      go (_ : rest) current
+        | current P.> 0 = go rest (current P.- 1)
+      go _ _ = (P.False, seed)
   zipSeq = P.zip
   foldSeq = foldl'
   foldSeqWith step environment = foldl' (step environment)
@@ -106,6 +120,7 @@ instance UnifiedSeq 'S where
   consSeq = SSeq.cons
   appendSeq = SSeq.append
   lengthSeq = SSeq.length
+  lookupSeq = SSeq.lookup
   zipSeq = SSeq.zip
   foldSeq = SSeq.fold
   foldSeqWith = SSeq.foldWith

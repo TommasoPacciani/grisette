@@ -77,6 +77,7 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
     pattern SeqAppendTerm,
     pattern SeqZipTerm,
     pattern SeqLengthTerm,
+    pattern SeqLookupTerm,
     pattern SeqFoldTerm,
     pattern SeqFoldWithTerm,
     pattern PairTerm,
@@ -143,6 +144,8 @@ subTermsViewPattern (SeqConsTerm t1 t2) = return [SomeTerm t1, SomeTerm t2]
 subTermsViewPattern (SeqAppendTerm t1 t2) = return [SomeTerm t1, SomeTerm t2]
 subTermsViewPattern (SeqZipTerm t1 t2) = return [SomeTerm t1, SomeTerm t2]
 subTermsViewPattern (SeqLengthTerm t1) = return [SomeTerm t1]
+subTermsViewPattern (SeqLookupTerm seed sequence index) =
+  return [SomeTerm seed, SomeTerm sequence, SomeTerm index]
 subTermsViewPattern (SeqFoldTerm step initial sequence) =
   return [SomeTerm step, SomeTerm initial, SomeTerm sequence]
 subTermsViewPattern (SeqFoldWithTerm step environment initial sequence) =

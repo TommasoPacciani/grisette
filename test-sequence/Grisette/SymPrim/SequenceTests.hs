@@ -64,6 +64,49 @@ sequenceTests =
           "foldSeqWith"
           20
           (U.foldSeqWith @'C (\scale acc x -> acc + scale * x) 2 0 [1 .. 4]),
+      testCase "checked sequence lookup guards the partial solver operation" $ do
+        assertEqual
+          "concrete in bounds"
+          (True, 20)
+          (U.lookupSeq @'C 99 [10, 20 :: Integer] 1)
+        assertEqual
+          "concrete negative"
+          (False, 99)
+          (U.lookupSeq @'C 99 [10, 20 :: Integer] (-1))
+        assertEqual
+          "concrete upper bound"
+          (False, 99)
+          (U.lookupSeq @'C 99 [10, 20 :: Integer] 2)
+        let values = "lookupValues" :: SymSeq SymInteger
+            index = "lookupIndex" :: SymInteger
+            lookedUp = U.lookupSeq @'S 99 values index
+            present = U.first @'S lookedUp
+            selected = U.second @'S lookedUp
+            expected =
+              U.consSeq @'S 10 $ U.consSeq @'S 20 U.nilSeq
+            roundTrip =
+              Binary.decode (Binary.encode lookedUp) ::
+                SymPair SymBool SymInteger
+            expectModel :: String -> Integer -> Bool -> Integer -> Assertion
+            expectModel label requested guard value = do
+              solved <-
+                solve z3 $
+                  (values .== expected)
+                    .&& (index .== con requested)
+                    .&& (present .== con guard)
+                    .&& (selected .== con value)
+                    .&& (roundTrip .== lookedUp)
+              case solved of
+                Left failure ->
+                  assertFailure $ label ++ " lookup failed: " ++ show failure
+                Right model ->
+                  assertEqual
+                    label
+                    (Just (guard, value))
+                    (toCon (evalSym False model lookedUp))
+        expectModel "symbolic in bounds" 1 True 20
+        expectModel "symbolic negative" (-1) False 99
+        expectModel "symbolic upper bound" 2 False 99,
       testCase "native zip truncates unknown sequences and preserves array products" $ do
         assertEqual
           "concrete unequal lengths"

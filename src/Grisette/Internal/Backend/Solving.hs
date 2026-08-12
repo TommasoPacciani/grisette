@@ -281,6 +281,7 @@ import Grisette.Internal.SymPrim.Prim.Term
     pattern SeqAppendTerm,
     pattern SeqZipTerm,
     pattern SeqLengthTerm,
+    pattern SeqLookupTerm,
     pattern SeqFoldTerm,
     pattern SeqFoldWithTerm,
     pattern PairTerm,
@@ -896,6 +897,26 @@ lowerSinglePrimCached t' m' = do
         withNonFuncPrim @element $ do
           sequence' <- goCached qs sequence
           pure $ SBVL.length . sequence'
+      goCachedIntermediate
+        qs
+        (SeqLookupTerm seed (sequence :: Term [element]) index) =
+          withNonFuncPrim @element $ do
+            seed' <- goCached qs seed
+            sequence' <- goCached qs sequence
+            index' <- goCached qs index
+            pure $ \qst ->
+              let seedValue = seed' qst
+                  sequenceValue = sequence' qst
+                  indexValue = index' qst
+                  present =
+                    (0 SBV..<= indexValue)
+                      SBV..&& (indexValue SBV..< SBVL.length sequenceValue)
+                  selected =
+                    SBV.ite
+                      present
+                      (SBVL.elemAt sequenceValue indexValue)
+                      seedValue
+               in SBVTuple.tuple (present, selected)
       goCachedIntermediate
         qs
         (SeqFoldTerm (step :: Term (state --> element --> state)) initial sequence) =

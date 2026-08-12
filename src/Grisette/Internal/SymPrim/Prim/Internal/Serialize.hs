@@ -167,6 +167,7 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
     seqAppendTerm,
     seqZipTerm,
     seqLengthTerm,
+    seqLookupTerm,
     seqFoldTerm,
     seqFoldWithTerm,
     pairTerm,
@@ -228,6 +229,7 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
     pattern SeqAppendTerm,
     pattern SeqZipTerm,
     pattern SeqLengthTerm,
+    pattern SeqLookupTerm,
     pattern SeqFoldTerm,
     pattern SeqFoldWithTerm,
     pattern PairTerm,
@@ -1057,6 +1059,9 @@ secondTermTag = 58
 seqZipTermTag :: Word8
 seqZipTermTag = 59
 
+seqLookupTermTag :: Word8
+seqLookupTermTag = 60
+
 terminalTag :: Word8
 terminalTag = 255
 
@@ -1804,6 +1809,25 @@ statefulDeserializeSomeTerm = do
           sequence <- deserializeTerm
           withListTerm sequence $ \sequence' ->
             pure $ Just (someTerm $ seqLengthTerm sequence', ktTmId)
+      | tag == seqLookupTermTag -> do
+          seed <- deserializeTerm
+          sequence <- deserializeTerm
+          index <- deserializeTerm
+          withNonFuncTerm seed $ \(seed' :: Term element) ->
+            withListTerm sequence $ \(sequence' :: Term [sequenceElement]) ->
+              case
+                  ( eqTypeRep (typeRep @element) (typeRep @sequenceElement),
+                    castSomeTerm @Integer index
+                  )
+                of
+                  (Just HRefl, Just index') ->
+                    pure $
+                      Just
+                        ( someTerm $ seqLookupTerm seed' sequence' index',
+                          ktTmId
+                        )
+                  _ ->
+                    fail "statefulDeserializeSomeTerm: SeqLookup type mismatch"
       | tag == seqFoldTermTag -> do
           step <- deserializeTerm
           initial <- deserializeTerm
@@ -2234,6 +2258,8 @@ serializeSingleSomeTerm (SomeTerm (tm :: Term t)) = do
           serializeBinary ktTmId seqZipTermTag left right
         SeqLengthTerm sequence ->
           serializeUnary ktTmId seqLengthTermTag sequence
+        SeqLookupTerm seed sequence index ->
+          serializeTernary ktTmId seqLookupTermTag seed sequence index
         SeqFoldTerm step initial sequence ->
           serializeTernary ktTmId seqFoldTermTag step initial sequence
         SeqFoldWithTerm step environment initial sequence ->
