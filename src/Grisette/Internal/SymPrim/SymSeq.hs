@@ -14,6 +14,7 @@ module Grisette.Internal.SymPrim.SymSeq
     nil,
     cons,
     append,
+    range,
     lookup,
     zip,
     length,
@@ -50,6 +51,7 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
     conTerm,
     pevalSeqAppendTerm,
     pevalSeqConsTerm,
+    pevalSeqRangeTerm,
     pevalSeqLookupTerm,
     pevalSeqZipTerm,
     pevalSeqLengthTerm,
@@ -152,6 +154,9 @@ append ::
   SymSeq a
 append left right =
   wrapTerm $ pevalSeqAppendTerm (underlyingTerm left) (underlyingTerm right)
+
+range :: SymInteger -> SymSeq SymInteger
+range = wrapTerm . pevalSeqRangeTerm . underlyingTerm
 
 lookup ::
   (SupportedNonFuncPrim (ConType a), LinkedRep (ConType a) a) =>

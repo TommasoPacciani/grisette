@@ -3,6 +3,7 @@
 
 module Grisette.SymPrim.SequenceTests (sequenceTests) where
 
+import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar)
 import Control.DeepSeq (NFData, force)
 import Control.Exception (ErrorCall, displayException, evaluate, try)
 import qualified Data.Binary as Binary
@@ -16,6 +17,7 @@ import Grisette
     LogicalOp (symNot, (.&&)),
     SimpleMergeable (mrgIte),
     Solvable (con, ssym),
+    SubstSym (substSym),
     SymEq ((.==)),
     SymBool,
     SymInteger,
@@ -27,12 +29,13 @@ import Grisette.Internal.Backend.Solving (z3)
 import Grisette.Internal.Core.Data.Class.Solver (SolvingFailure (Unsat))
 import Grisette.Internal.SymPrim.Array (Array)
 import Grisette.Internal.SymPrim.Prim.Term
-  ( LinkedRep (wrapTerm),
+  ( LinkedRep (underlyingTerm, wrapTerm),
     SupportedPrim (parseSMTModelResult),
     Term,
     eqTerm,
     pevalNotTerm,
     ssymTerm,
+    toCurThread,
   )
 import Grisette.SymPrim
   ( SymArray,
@@ -64,6 +67,83 @@ sequenceTests =
           "foldSeqWith"
           20
           (U.foldSeqWith @'C (\scale acc x -> acc + scale * x) 2 0 [1 .. 4]),
+      testCase "dense integer ranges stay native and preserve whole-term operations" $ do
+        assertEqual "concrete zero" [] (U.rangeSeq @'C 0)
+        assertEqual "concrete negative" [] (U.rangeSeq @'C (-3))
+        assertEqual "concrete positive" [0, 1, 2, 3] (U.rangeSeq @'C 4)
+        let extent = "rangeExtent" :: SymInteger
+            ranged = U.rangeSeq @'S extent
+            largeRange = U.rangeSeq @'S (100000 :: SymInteger)
+            candidate = "rangeCandidate" :: SymSeq SymInteger
+            expected =
+              foldr
+                (U.consSeq @'S . fromInteger)
+                U.nilSeq
+                [0, 1, 2, 3]
+            checkedLast = U.lookupSeq @'S (-1) ranged 3
+            checkedPastEnd = U.lookupSeq @'S (-1) ranged 4
+            roundTrip =
+              Binary.decode (Binary.encode ranged) ::
+                SymSeq SymInteger
+            substituted =
+              substSym
+                ("rangeExtent" :: TypedConstantSymbol Integer)
+                (4 :: SymInteger)
+                ranged
+            rangeFunction :: SymInteger -~> SymSeq SymInteger
+            rangeFunction =
+              con $
+                ("rangeArgument" :: TypedConstantSymbol Integer)
+                  --> U.rangeSeq @'S ("rangeArgument" :: SymInteger)
+        assertEqual "single native symbolic node" "(seq.range rangeExtent)" (show ranged)
+        assertEqual
+          "large concrete extent remains one native node"
+          "(seq.range 100000)"
+          (show largeRange)
+        assertEqual
+          "same range term is interned"
+          (underlyingTerm ranged)
+          (underlyingTerm (U.rangeSeq @'S extent))
+        assertEqual
+          "substitution rebuilds range"
+          "(seq.range 4)"
+          (show substituted)
+        assertEqual
+          "general function rebuilds range"
+          "(seq.range 4)"
+          (show (rangeFunction # (4 :: SymInteger)))
+        foreignRange <- newEmptyMVar
+        _ <- forkIO $ do
+          let value = U.rangeSeq @'S ("foreignRangeExtent" :: SymInteger)
+          term <- evaluate $ force (underlyingTerm value)
+          putMVar foreignRange term
+        reconstructed <- takeMVar foreignRange >>= toCurThread
+        assertEqual
+          "cross-thread reconstruction"
+          "(seq.range foreignRangeExtent)"
+          (show (wrapTerm reconstructed :: SymSeq SymInteger))
+        solved <-
+          solve z3 $
+            (extent .== 4)
+              .&& (candidate .== ranged)
+              .&& (ranged .== expected)
+              .&& (roundTrip .== ranged)
+              .&& (U.lengthSeq @'S ranged .== 4)
+              .&& (U.first @'S checkedLast .== con True)
+              .&& (U.second @'S checkedLast .== 3)
+              .&& (U.first @'S checkedPastEnd .== con False)
+              .&& (U.second @'S checkedPastEnd .== (-1))
+        case solved of
+          Left failure -> assertFailure $ "expected native range SAT: " ++ show failure
+          Right model -> do
+            assertEqual
+              "exact extent model"
+              (Just 4 :: Maybe Integer)
+              (toCon (evalSym False model extent))
+            assertEqual
+              "exact range model"
+              (Just [0, 1, 2, 3] :: Maybe [Integer])
+              (toCon (evalSym False model candidate)),
       testCase "checked sequence lookup guards the partial solver operation" $ do
         assertEqual
           "concrete in bounds"

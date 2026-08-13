@@ -116,6 +116,7 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
     pevalSeqAppendTerm,
     pevalSeqZipTerm,
     pevalSeqLengthTerm,
+    pevalSeqRangeTerm,
     pevalSeqLookupTerm,
     pevalSeqFoldTerm,
     pevalSeqFoldWithTerm,
@@ -219,6 +220,7 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
     pattern SeqAppendTerm,
     pattern SeqZipTerm,
     pattern SeqLengthTerm,
+    pattern SeqRangeTerm,
     pattern SeqLookupTerm,
     pattern SeqFoldTerm,
     pattern SeqFoldWithTerm,
@@ -691,6 +693,8 @@ generalSubstSomeTerm subst initialBoundedSymbols = go initialMemo
       goBinary memo pevalSeqZipTerm left right
     goSome memo _ (SomeTerm (SeqLengthTerm sequence)) =
       goUnary memo pevalSeqLengthTerm sequence
+    goSome memo _ (SomeTerm (SeqRangeTerm extent)) =
+      goUnary memo pevalSeqRangeTerm extent
     goSome memo _ (SomeTerm (SeqLookupTerm seed sequence index)) =
       goTernary memo pevalSeqLookupTerm seed sequence index
     goSome memo _ (SomeTerm (SeqFoldTerm step initial sequence)) =

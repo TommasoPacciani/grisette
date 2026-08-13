@@ -167,6 +167,7 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
     seqAppendTerm,
     seqZipTerm,
     seqLengthTerm,
+    seqRangeTerm,
     seqLookupTerm,
     seqFoldTerm,
     seqFoldWithTerm,
@@ -229,6 +230,7 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
     pattern SeqAppendTerm,
     pattern SeqZipTerm,
     pattern SeqLengthTerm,
+    pattern SeqRangeTerm,
     pattern SeqLookupTerm,
     pattern SeqFoldTerm,
     pattern SeqFoldWithTerm,
@@ -1062,6 +1064,9 @@ seqZipTermTag = 59
 seqLookupTermTag :: Word8
 seqLookupTermTag = 60
 
+seqRangeTermTag :: Word8
+seqRangeTermTag = 61
+
 terminalTag :: Word8
 terminalTag = 255
 
@@ -1809,6 +1814,12 @@ statefulDeserializeSomeTerm = do
           sequence <- deserializeTerm
           withListTerm sequence $ \sequence' ->
             pure $ Just (someTerm $ seqLengthTerm sequence', ktTmId)
+      | tag == seqRangeTermTag -> do
+          extent <- deserializeTerm
+          case castSomeTerm @Integer extent of
+            Just extent' ->
+              pure $ Just (someTerm $ seqRangeTerm extent', ktTmId)
+            Nothing -> fail "statefulDeserializeSomeTerm: SeqRange type mismatch"
       | tag == seqLookupTermTag -> do
           seed <- deserializeTerm
           sequence <- deserializeTerm
@@ -2258,6 +2269,8 @@ serializeSingleSomeTerm (SomeTerm (tm :: Term t)) = do
           serializeBinary ktTmId seqZipTermTag left right
         SeqLengthTerm sequence ->
           serializeUnary ktTmId seqLengthTermTag sequence
+        SeqRangeTerm extent ->
+          serializeUnary ktTmId seqRangeTermTag extent
         SeqLookupTerm seed sequence index ->
           serializeTernary ktTmId seqLookupTermTag seed sequence index
         SeqFoldTerm step initial sequence ->

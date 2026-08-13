@@ -281,6 +281,7 @@ import Grisette.Internal.SymPrim.Prim.Term
     pattern SeqAppendTerm,
     pattern SeqZipTerm,
     pattern SeqLengthTerm,
+    pattern SeqRangeTerm,
     pattern SeqLookupTerm,
     pattern SeqFoldTerm,
     pattern SeqFoldWithTerm,
@@ -897,6 +898,9 @@ lowerSinglePrimCached t' m' = do
         withNonFuncPrim @element $ do
           sequence' <- goCached qs sequence
           pure $ SBVL.length . sequence'
+      goCachedIntermediate qs (SeqRangeTerm extent) = do
+        extent' <- goCached qs extent
+        pure $ \qst -> SBVL.enumFromTo @Integer 0 (extent' qst - 1)
       goCachedIntermediate
         qs
         (SeqLookupTerm seed (sequence :: Term [element]) index) =

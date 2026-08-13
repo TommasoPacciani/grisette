@@ -68,6 +68,7 @@ class UnifiedSeq (mode :: EvalModeTag) where
   consSeq :: SeqValue mode a => a -> GetSeq mode a -> GetSeq mode a
   appendSeq :: SeqValue mode a => GetSeq mode a -> GetSeq mode a -> GetSeq mode a
   lengthSeq :: SeqValue mode a => GetSeq mode a -> GetInteger mode
+  rangeSeq :: GetInteger mode -> GetSeq mode (GetInteger mode)
   lookupSeq ::
     SeqValue mode a =>
     a ->
@@ -104,6 +105,7 @@ instance UnifiedSeq 'C where
   consSeq = (:)
   appendSeq = (P.++)
   lengthSeq values = P.fromIntegral (P.length values)
+  rangeSeq n = [0 .. n P.- 1]
   lookupSeq seed values index = go values index
     where
       go [] _ = (P.False, seed)
@@ -120,6 +122,7 @@ instance UnifiedSeq 'S where
   consSeq = SSeq.cons
   appendSeq = SSeq.append
   lengthSeq = SSeq.length
+  rangeSeq = SSeq.range
   lookupSeq = SSeq.lookup
   zipSeq = SSeq.zip
   foldSeq = SSeq.fold
