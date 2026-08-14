@@ -144,6 +144,79 @@ sequenceTests =
               "exact range model"
               (Just [0, 1, 2, 3] :: Maybe [Integer])
               (toCon (evalSym False model candidate)),
+      testCase "sequence tail is native, total, and stack-shaped" $ do
+        assertEqual "concrete empty" ([] :: [Integer]) (U.tailSeq @'C [])
+        assertEqual "concrete singleton" ([] :: [Integer]) (U.tailSeq @'C [7])
+        assertEqual "concrete drop head" [2, 3] (U.tailSeq @'C [1, 2, 3 :: Integer])
+        let stack = "tailStack" :: SymSeq SymInteger
+            pushed = U.consSeq @'S (11 :: SymInteger) stack
+            popped = U.tailSeq @'S pushed
+            symbolicTail = U.tailSeq @'S stack
+            roundTrip =
+              Binary.decode (Binary.encode symbolicTail) ::
+                SymSeq SymInteger
+            substituted =
+              substSym
+                ("tailStack" :: TypedConstantSymbol [Integer])
+                (foldr (U.consSeq @'S . fromInteger) U.nilSeq [4, 5, 6] ::
+                   SymSeq SymInteger)
+                symbolicTail
+            tailFunction :: SymSeq SymInteger -~> SymSeq SymInteger
+            tailFunction =
+              con $
+                ("tailArgument" :: TypedConstantSymbol [Integer])
+                  --> U.tailSeq @'S ("tailArgument" :: SymSeq SymInteger)
+        assertEqual
+          "push then pop cancels without a solver node"
+          (underlyingTerm stack)
+          (underlyingTerm popped)
+        assertEqual
+          "single native symbolic node"
+          "(seq.tail tailStack)"
+          (show symbolicTail)
+        assertEqual
+          "same tail term is interned"
+          (underlyingTerm symbolicTail)
+          (underlyingTerm (U.tailSeq @'S stack))
+        assertEqual
+          "substitution evaluates the tail"
+          (show (foldr (U.consSeq @'S . fromInteger) U.nilSeq [5, 6] ::
+                   SymSeq SymInteger))
+          (show substituted)
+        assertEqual
+          "general function rebuilds tail"
+          "(seq.tail tailArgument)"
+          (show (tailFunction # ("tailArgument" :: SymSeq SymInteger)))
+        solved <-
+          solve z3 $
+            ( stack
+                .== (foldr (U.consSeq @'S . fromInteger) U.nilSeq [1, 2, 3] ::
+                       SymSeq SymInteger)
+            )
+              .&& (roundTrip .== symbolicTail)
+              .&& (U.lengthSeq @'S symbolicTail .== 2)
+        case solved of
+          Left failure -> assertFailure $ "expected native tail SAT: " ++ show failure
+          Right model ->
+            assertEqual
+              "exact tail model"
+              (Just [2, 3] :: Maybe [Integer])
+              (toCon (evalSym False model symbolicTail)),
+      testCase "empty symbolic tail stays empty" $ do
+        emptyTail <-
+          solve z3 $
+            U.lengthSeq @'S (U.tailSeq @'S (U.nilSeq @'S @SymInteger)) .== 0
+        case emptyTail of
+          Left failure -> assertFailure $ "expected empty tail SAT: " ++ show failure
+          Right _ -> pure ()
+        negative <-
+          solve z3 $
+            U.lengthSeq @'S (U.tailSeq @'S ("negativeTail" :: SymSeq SymInteger))
+              .== (-1)
+        case negative of
+          Left Unsat -> pure ()
+          Left failure -> assertFailure $ "expected Unsat: " ++ show failure
+          Right _ -> assertFailure "tail length must never be negative",
       testCase "checked sequence lookup guards the partial solver operation" $ do
         assertEqual
           "concrete in bounds"

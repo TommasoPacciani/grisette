@@ -77,6 +77,7 @@ module Grisette.Internal.SymPrim.Prim.Internal.Term
     pevalSeqZipTerm,
     pevalSeqLengthTerm,
     pevalSeqRangeTerm,
+    pevalSeqTailTerm,
     pevalSeqLookupTerm,
     pevalSeqFoldTerm,
     pevalSeqFoldWithTerm,
@@ -187,6 +188,7 @@ module Grisette.Internal.SymPrim.Prim.Internal.Term
     seqZipTerm,
     seqLengthTerm,
     seqRangeTerm,
+    seqTailTerm,
     seqLookupTerm,
     seqFoldTerm,
     seqFoldWithTerm,
@@ -256,6 +258,7 @@ module Grisette.Internal.SymPrim.Prim.Internal.Term
     pattern SeqZipTerm,
     pattern SeqLengthTerm,
     pattern SeqRangeTerm,
+    pattern SeqTailTerm,
     pattern SeqLookupTerm,
     pattern SeqFoldTerm,
     pattern SeqFoldWithTerm,
@@ -1858,6 +1861,11 @@ data Term t where
     {-# UNPACK #-} !CachedInfo ->
     !(Term Integer) ->
     Term [Integer]
+  SeqTailTerm' ::
+    SupportedNonFuncPrim a =>
+    {-# UNPACK #-} !CachedInfo ->
+    !(Term [a]) ->
+    Term [a]
   SeqLookupTerm' ::
     SupportedNonFuncPrim a =>
     {-# UNPACK #-} !CachedInfo ->
@@ -2986,6 +2994,17 @@ pattern SeqRangeTerm extent <- SeqRangeTerm' _ extent
   where
     SeqRangeTerm extent = pevalSeqRangeTerm extent
 
+pattern SeqTailTerm ::
+  forall ret.
+  () =>
+  forall a.
+  (ret ~ [a], SupportedNonFuncPrim a) =>
+  Term [a] ->
+  Term ret
+pattern SeqTailTerm sequence <- SeqTailTerm' _ sequence
+  where
+    SeqTailTerm sequence = pevalSeqTailTerm sequence
+
 pattern SeqLookupTerm ::
   forall ret.
   () =>
@@ -3131,6 +3150,7 @@ pattern SecondTerm value <- SecondTerm' _ value
   SeqZipTerm,
   SeqLengthTerm,
   SeqRangeTerm,
+  SeqTailTerm,
   SeqLookupTerm,
   SeqFoldTerm,
   SeqFoldWithTerm,
@@ -3198,6 +3218,7 @@ termInfo (SeqAppendTerm' i _ _) = i
 termInfo (SeqZipTerm' i _ _) = i
 termInfo (SeqLengthTerm' i _) = i
 termInfo (SeqRangeTerm' i _) = i
+termInfo (SeqTailTerm' i _) = i
 termInfo (SeqLookupTerm' i _ _ _) = i
 termInfo (SeqFoldTerm' i _ _ _) = i
 termInfo (SeqFoldWithTerm' i _ _ _ _) = i
@@ -3334,6 +3355,7 @@ introSupportedPrimConstraint0 SeqAppendTerm' {} x = x
 introSupportedPrimConstraint0 SeqZipTerm' {} x = x
 introSupportedPrimConstraint0 SeqLengthTerm' {} x = x
 introSupportedPrimConstraint0 SeqRangeTerm' {} x = x
+introSupportedPrimConstraint0 SeqTailTerm' {} x = x
 introSupportedPrimConstraint0 SeqLookupTerm' {} x = x
 introSupportedPrimConstraint0 SeqFoldTerm' {} x = x
 introSupportedPrimConstraint0 SeqFoldWithTerm' {} x = x
@@ -3412,6 +3434,8 @@ pformatTerm (SeqZipTerm left right) =
   "(seq.zip " ++ pformatTerm left ++ " " ++ pformatTerm right ++ ")"
 pformatTerm (SeqLengthTerm sequence) = "(seq.length " ++ pformatTerm sequence ++ ")"
 pformatTerm (SeqRangeTerm extent) = "(seq.range " ++ pformatTerm extent ++ ")"
+pformatTerm (SeqTailTerm sequence) =
+  "(seq.tail " ++ pformatTerm sequence ++ ")"
 pformatTerm (SeqLookupTerm seed sequence index) =
   "(seq.lookup "
     ++ pformatTerm seed
@@ -3522,6 +3546,7 @@ instance Lift (Term t) where
   liftTyped (SeqZipTerm left right) = [||seqZipTerm left right||]
   liftTyped (SeqLengthTerm sequence) = [||seqLengthTerm sequence||]
   liftTyped (SeqRangeTerm extent) = [||seqRangeTerm extent||]
+  liftTyped (SeqTailTerm sequence) = [||seqTailTerm sequence||]
   liftTyped (SeqLookupTerm seed sequence index) =
     [||seqLookupTerm seed sequence index||]
   liftTyped (SeqFoldTerm step initial sequence) =
@@ -4054,6 +4079,9 @@ instance Show (Term ty) where
   show t@(SeqRangeTerm extent) =
     "SeqRangeTerm{tid=" ++ show (termThreadId t) ++ ", id=" ++ show (termId t)
       ++ ", extent=" ++ show extent ++ "}"
+  show t@(SeqTailTerm sequence) =
+    "SeqTailTerm{tid=" ++ show (termThreadId t) ++ ", id=" ++ show (termId t)
+      ++ ", sequence=" ++ show sequence ++ "}"
   show t@(SeqLookupTerm seed sequence index) =
     "SeqLookupTerm{tid=" ++ show (termThreadId t) ++ ", id=" ++ show (termId t)
       ++ ", seed=" ++ show seed ++ ", sequence=" ++ show sequence
@@ -4334,6 +4362,10 @@ data UTerm t where
   USeqRangeTerm ::
     !(Term Integer) ->
     UTerm [Integer]
+  USeqTailTerm ::
+    SupportedNonFuncPrim a =>
+    !(Term [a]) ->
+    UTerm [a]
   USeqLookupTerm ::
     SupportedNonFuncPrim a =>
     !(Term a) ->
@@ -4668,6 +4700,9 @@ preHashSeqLengthDescription = fromIntegral . hashWithSalt 56
 preHashSeqRangeDescription :: HashId -> Digest
 preHashSeqRangeDescription = fromIntegral . hashWithSalt 64
 
+preHashSeqTailDescription :: HashId -> Digest
+preHashSeqTailDescription = fromIntegral . hashWithSalt 65
+
 preHashSeqLookupDescription :: HashId -> HashId -> HashId -> Digest
 preHashSeqLookupDescription seed sequence index =
   fromIntegral
@@ -4983,6 +5018,10 @@ instance Interned (Term t) where
       {-# UNPACK #-} !Digest ->
       {-# UNPACK #-} !HashId ->
       Description (Term [Integer])
+    DSeqTailTerm ::
+      {-# UNPACK #-} !Digest ->
+      {-# UNPACK #-} !HashId ->
+      Description (Term [a])
     DSeqLookupTerm ::
       {-# UNPACK #-} !Digest ->
       {-# UNPACK #-} !HashId ->
@@ -5369,6 +5408,9 @@ instance Interned (Term t) where
   describe (USeqRangeTerm extent) =
     let extentHashId = termHashId extent
      in DSeqRangeTerm (preHashSeqRangeDescription extentHashId) extentHashId
+  describe (USeqTailTerm sequence) =
+    let sequenceHashId = termHashId sequence
+     in DSeqTailTerm (preHashSeqTailDescription sequenceHashId) sequenceHashId
   describe (USeqLookupTerm seed sequence index) =
     let seedHashId = termHashId seed
         sequenceHashId = termHashId sequence
@@ -5492,6 +5534,7 @@ instance Interned (Term t) where
       go (USeqZipTerm left right) = SeqZipTerm' info left right
       go (USeqLengthTerm sequence) = SeqLengthTerm' info sequence
       go (USeqRangeTerm extent) = SeqRangeTerm' info extent
+      go (USeqTailTerm sequence) = SeqTailTerm' info sequence
       go (USeqLookupTerm seed sequence index) =
         SeqLookupTerm' info seed sequence index
       go (USeqFoldTerm step initial sequence) =
@@ -5563,6 +5606,7 @@ instance Interned (Term t) where
   descriptionDigest (DSeqZipTerm h _ _) = h
   descriptionDigest (DSeqLengthTerm h _) = h
   descriptionDigest (DSeqRangeTerm h _) = h
+  descriptionDigest (DSeqTailTerm h _) = h
   descriptionDigest (DSeqLookupTerm h _ _ _) = h
   descriptionDigest (DSeqFoldTerm h _ _ _) = h
   descriptionDigest (DSeqFoldWithTerm h _ _ _ _) = h
@@ -5815,6 +5859,7 @@ instance Eq (Description (Term t)) where
   DSeqZipTerm _ ll lr == DSeqZipTerm _ rl rr = eqHashId ll rl && eqHashId lr rr
   DSeqLengthTerm _ ls == DSeqLengthTerm _ rs = ls == rs
   DSeqRangeTerm _ le == DSeqRangeTerm _ re = eqHashId le re
+  DSeqTailTerm _ ls == DSeqTailTerm _ rs = eqHashId ls rs
   DSeqLookupTerm _ lseed lsequence lindex
     == DSeqLookupTerm _ rseed rsequence rindex =
       eqHashId lseed rseed
@@ -6006,6 +6051,8 @@ fullReconstructTerm (SeqLengthTerm sequence) =
   fullReconstructTerm1 curThreadSeqLengthTerm sequence
 fullReconstructTerm (SeqRangeTerm extent) =
   fullReconstructTerm1 curThreadSeqRangeTerm extent
+fullReconstructTerm (SeqTailTerm sequence) =
+  fullReconstructTerm1 curThreadSeqTailTerm sequence
 fullReconstructTerm (SeqLookupTerm seed sequence index) =
   fullReconstructTerm3 curThreadSeqLookupTerm seed sequence index
 fullReconstructTerm (SeqFoldTerm step initial sequence) =
@@ -6491,6 +6538,10 @@ curThreadSeqLengthTerm sequence = intern $ USeqLengthTerm sequence
 
 curThreadSeqRangeTerm :: Term Integer -> IO (Term [Integer])
 curThreadSeqRangeTerm extent = intern $ USeqRangeTerm extent
+
+curThreadSeqTailTerm ::
+  SupportedNonFuncPrim a => Term [a] -> IO (Term [a])
+curThreadSeqTailTerm sequence = intern $ USeqTailTerm sequence
 
 curThreadSeqLookupTerm ::
   SupportedNonFuncPrim a =>
@@ -7138,6 +7189,11 @@ seqLengthTerm = unsafeInCurThread1 curThreadSeqLengthTerm
 seqRangeTerm :: Term Integer -> Term [Integer]
 seqRangeTerm = unsafeInCurThread1 curThreadSeqRangeTerm
 {-# NOINLINE seqRangeTerm #-}
+
+seqTailTerm ::
+  SupportedNonFuncPrim a => Term [a] -> Term [a]
+seqTailTerm = unsafeInCurThread1 curThreadSeqTailTerm
+{-# NOINLINE seqTailTerm #-}
 
 seqLookupTerm ::
   SupportedNonFuncPrim a =>
@@ -8732,6 +8788,14 @@ pevalSeqLengthTerm sequence = seqLengthTerm sequence
 
 pevalSeqRangeTerm :: Term Integer -> Term [Integer]
 pevalSeqRangeTerm = seqRangeTerm
+
+-- | Drop the first element.  The tail of an empty sequence is empty, so this is
+-- total in both modes and needs no seed.
+pevalSeqTailTerm ::
+  SupportedNonFuncPrim a => Term [a] -> Term [a]
+pevalSeqTailTerm (ConTerm sequence) = conTerm (drop 1 sequence)
+pevalSeqTailTerm (SeqConsTerm _ rest) = rest
+pevalSeqTailTerm sequence = seqTailTerm sequence
 
 pevalSeqLookupTerm ::
   SupportedNonFuncPrim a =>

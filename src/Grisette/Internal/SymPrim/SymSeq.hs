@@ -15,6 +15,7 @@ module Grisette.Internal.SymPrim.SymSeq
     cons,
     append,
     range,
+    tail,
     lookup,
     zip,
     length,
@@ -52,6 +53,7 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
     pevalSeqAppendTerm,
     pevalSeqConsTerm,
     pevalSeqRangeTerm,
+    pevalSeqTailTerm,
     pevalSeqLookupTerm,
     pevalSeqZipTerm,
     pevalSeqLengthTerm,
@@ -68,7 +70,7 @@ import Grisette.Internal.SymPrim.SymPair (SymPair)
 import Grisette.Internal.SymPrim.SymBool (SymBool)
 import Grisette.Internal.SymPrim.SymInteger (SymInteger)
 import Language.Haskell.TH.Syntax (Lift)
-import Prelude hiding (fold, length, lookup, zip)
+import Prelude hiding (fold, length, lookup, tail, zip)
 
 newtype SymSeq a = SymSeq
   { underlyingSeqTerm :: Term [ConType a]
@@ -157,6 +159,13 @@ append left right =
 
 range :: SymInteger -> SymSeq SymInteger
 range = wrapTerm . pevalSeqRangeTerm . underlyingTerm
+
+-- | Drop the first element; the tail of an empty sequence is empty.
+tail ::
+  (SupportedNonFuncPrim (ConType a), LinkedRep (ConType a) a) =>
+  SymSeq a ->
+  SymSeq a
+tail = wrapTerm . pevalSeqTailTerm . underlyingTerm
 
 lookup ::
   (SupportedNonFuncPrim (ConType a), LinkedRep (ConType a) a) =>
