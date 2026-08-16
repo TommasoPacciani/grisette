@@ -192,6 +192,8 @@ module Grisette.Unified
     SeqValue,
     SeqStep,
     SeqStepWith,
+    SeqStepValue,
+    SeqStepWithValue,
     UnifiedSeq (..),
     UnifiedPair (..),
 
@@ -380,7 +382,9 @@ import Grisette.Internal.Unified.UnifiedSeq
   ( GetPair,
     GetSeq,
     SeqStep,
+    SeqStepValue,
     SeqStepWith,
+    SeqStepWithValue,
     SeqValue,
     SolverValue,
     UnifiedPair (..),
