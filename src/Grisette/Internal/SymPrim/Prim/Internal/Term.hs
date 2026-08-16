@@ -132,6 +132,7 @@ module Grisette.Internal.SymPrim.Prim.Internal.Term
     symTerm,
     ssymTerm,
     isymTerm,
+    bsymTerm,
     forallTerm,
     existsTerm,
     notTerm,
@@ -426,7 +427,7 @@ import Grisette.Internal.Core.Data.Class.IEEEFP
   )
 import Grisette.Internal.Core.Data.Symbol
   ( Identifier,
-    Symbol (IndexedSymbol, SimpleSymbol),
+    Symbol (BoundSymbol, IndexedSymbol, SimpleSymbol),
   )
 import Grisette.Internal.SymPrim.AlgReal (AlgReal, fromSBVAlgReal, toSBVAlgReal)
 import Grisette.Internal.SymPrim.Array (Array (Array))
@@ -6122,6 +6123,13 @@ curThreadIsymTerm str idx =
   curThreadSymTerm @AnyKind $ TypedSymbol $ IndexedSymbol str idx
 {-# INLINE curThreadIsymTerm #-}
 
+-- | Construct and internalizing a 'SymTerm' for a binder in the library-private
+-- namespace.  Only the internal modules and their tests can name a binder.
+curThreadBsymTerm :: (SupportedPrim t) => Identifier -> Int -> IO (Term t)
+curThreadBsymTerm str idx =
+  curThreadSymTerm @AnyKind $ TypedSymbol $ BoundSymbol str idx
+{-# INLINE curThreadBsymTerm #-}
+
 -- | Construct and internalizing a 'NotTerm'.
 curThreadNotTerm :: Term Bool -> IO (Term Bool)
 curThreadNotTerm = intern . UNotTerm
@@ -6694,6 +6702,11 @@ ssymTerm = unsafePerformIO . curThreadSsymTerm
 isymTerm :: (SupportedPrim t) => Identifier -> Int -> Term t
 isymTerm ident index = unsafePerformIO $ curThreadIsymTerm ident index
 {-# NOINLINE isymTerm #-}
+
+-- | Construct and internalizing a 'SymTerm' for a private binder.
+bsymTerm :: (SupportedPrim t) => Identifier -> Int -> Term t
+bsymTerm ident index = unsafePerformIO $ curThreadBsymTerm ident index
+{-# NOINLINE bsymTerm #-}
 
 -- | Construct and internalizing a 'NotTerm'.
 notTerm :: Term Bool -> Term Bool

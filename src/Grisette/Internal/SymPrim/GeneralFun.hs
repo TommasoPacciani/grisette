@@ -62,7 +62,7 @@ import Grisette.Internal.Core.Data.Class.Function
   )
 import Grisette.Internal.Core.Data.MemoUtils (htmemo)
 import Grisette.Internal.Core.Data.Symbol
-  ( Symbol (IndexedSymbol),
+  ( Symbol (BoundSymbol),
   )
 import Grisette.Internal.SymPrim.FunInstanceGen (supportedPrimFunUpTo)
 import Grisette.Internal.SymPrim.Prim.Internal.Instances.PEvalFP ()
@@ -404,12 +404,25 @@ checkClosedSequenceFunction operation function =
 -- variables in the function body for a general symbolic function.
 freshArgSymbol ::
   forall a. (SupportedNonFuncPrim a) => [SomeTerm] -> TypedConstantSymbol a
-freshArgSymbol terms = typedConstantSymbol $ go 0
+freshArgSymbol = freshArgSymbolAvoiding HS.empty
+
+-- | 'freshArgSymbol' that also avoids an explicit symbol set.  Substitution uses
+-- it to rename a binder away from the symbols the substitution introduces.
+freshArgSymbolAvoiding ::
+  forall a.
+  (SupportedNonFuncPrim a) =>
+  HS.HashSet SomeTypedAnySymbol ->
+  [SomeTerm] ->
+  TypedConstantSymbol a
+freshArgSymbolAvoiding avoided terms = typedConstantSymbol $ go 0
   where
-    allSymbols = mconcat $ extractSymSomeTermIncludeBoundedVars <$> terms
+    allSymbols =
+      HS.union avoided $
+        mconcat $
+          extractSymSomeTermIncludeBoundedVars <$> terms
     go :: Int -> Symbol
     go n =
-      let currentSymbol = IndexedSymbol "arg" n
+      let currentSymbol = BoundSymbol "arg" n
           currentTypedSymbol =
             someTypedSymbol (typedAnySymbol currentSymbol :: TypedAnySymbol a)
        in if HS.member currentTypedSymbol allSymbols
@@ -512,7 +525,7 @@ parseGeneralFunSMTModelResult ::
   ([([SBVD.CV], SBVD.CV)], SBVD.CV) ->
   a --> b
 parseGeneralFunSMTModelResult level (l, s) =
-  let sym = typedConstantSymbol $ IndexedSymbol "arg" level
+  let sym = typedConstantSymbol $ BoundSymbol "arg" level
       funs =
         second
           ( \r ->
@@ -534,16 +547,46 @@ parseGeneralFunSMTModelResult level (l, s) =
           funs
    in buildGeneralFun sym body
 
--- | General procedure for substituting symbols in a term.
 {-# NOINLINE generalSubstSomeTerm #-}
+-- | General procedure for substituting symbols in a term.
+--
+-- The second argument is every symbol the substitution can introduce.  A binder
+-- whose symbol is in that set is renamed before the substitution descends under
+-- it, so a replacement term is never captured: substituting @w := arg\@1@ into
+-- @\\arg\@1. arg\@1 + w@ denotes @\\z. z + arg\@1@, not @\\z. z + z@.  Callers that
+-- introduce nothing (model evaluation replaces symbols with concrete values)
+-- pass an empty set and pay nothing.
 generalSubstSomeTerm ::
   forall v.
   (forall a. TypedSymbol 'AnyKind a -> Term a) ->
+  HS.HashSet SomeTypedAnySymbol ->
   HS.HashSet SomeTypedConstantSymbol ->
   Term v ->
   Term v
-generalSubstSomeTerm subst initialBoundedSymbols = go initialMemo
+generalSubstSomeTerm subst introducedSymbols initialBoundedSymbols = go initialMemo
   where
+    -- Rename a binder that the substitution would otherwise capture.  The
+    -- replacement name avoids everything the body mentions, bound occurrences
+    -- included, so renaming it in cannot capture anything either.  A symbol whose
+    -- kind cast fails is renamed rather than skipped: renaming is always sound,
+    -- skipping would not be.
+    avoidCapture ::
+      forall a b.
+      (SupportedPrim b) =>
+      TypedConstantSymbol a ->
+      Term b ->
+      (TypedConstantSymbol a, Term b)
+    avoidCapture sym@SupportedTypedSymbol body
+      | collides =
+          let renamed = freshArgSymbolAvoiding introducedSymbols [SomeTerm body]
+           in (renamed, substTerm sym (symTerm renamed) HS.empty body)
+      | otherwise = (sym, body)
+      where
+        collides =
+          maybe
+            True
+            (\anySymbol -> HS.member (someTypedSymbol (anySymbol :: TypedAnySymbol a)) introducedSymbols)
+            (castTypedSymbol sym)
     go :: forall a. (SomeTerm -> SomeTerm) -> Term a -> Term a
     go memo a = case memo $ someTerm a of
       SomeTerm v -> unsafeCoerce v
@@ -561,14 +604,15 @@ generalSubstSomeTerm subst initialBoundedSymbols = go initialMemo
           case eqTypeRep gf (typeRep @(-->)) of
             Just HRefl -> case cv of
               GeneralFun sym (tm :: Term r) ->
-                let newmemo =
+                let (sym', tm') = avoidCapture sym tm
+                    newmemo =
                       htmemo
                         ( goSome
                             newmemo
-                            (HS.union (HS.singleton (someTypedSymbol sym)) bs)
+                            (HS.union (HS.singleton (someTypedSymbol sym')) bs)
                         )
                     {-# NOINLINE newmemo #-}
-                 in SomeTerm $ conTerm $ GeneralFun sym (go newmemo tm)
+                 in SomeTerm $ conTerm $ GeneralFun sym' (go newmemo tm')
             Nothing -> c
         _ -> c
     goSome _ bs c@(SomeTerm ((SymTerm sym) :: Term a)) =
@@ -576,15 +620,17 @@ generalSubstSomeTerm subst initialBoundedSymbols = go initialMemo
         Just sym' | HS.member (someTypedSymbol sym') bs -> c
         _ -> SomeTerm $ subst sym
     goSome _ bs (SomeTerm (ForallTerm tsym b)) =
-      let newmemo =
-            htmemo (goSome newmemo (HS.insert (someTypedSymbol tsym) bs))
+      let (tsym', b') = avoidCapture tsym b
+          newmemo =
+            htmemo (goSome newmemo (HS.insert (someTypedSymbol tsym') bs))
           {-# NOINLINE newmemo #-}
-       in goUnary newmemo (forallTerm tsym) b
+       in goUnary newmemo (forallTerm tsym') b'
     goSome _ bs (SomeTerm (ExistsTerm tsym b)) =
-      let newmemo =
-            htmemo (goSome newmemo (HS.insert (someTypedSymbol tsym) bs))
+      let (tsym', b') = avoidCapture tsym b
+          newmemo =
+            htmemo (goSome newmemo (HS.insert (someTypedSymbol tsym') bs))
           {-# NOINLINE newmemo #-}
-       in goUnary newmemo (existsTerm tsym) b
+       in goUnary newmemo (existsTerm tsym') b'
     goSome memo _ (SomeTerm (NotTerm arg)) =
       goUnary memo pevalNotTerm arg
     goSome memo _ (SomeTerm (OrTerm arg1 arg2)) =
@@ -736,13 +782,15 @@ substTerm ::
   HS.HashSet SomeTypedConstantSymbol ->
   Term b ->
   Term b
-substTerm sym@SupportedTypedSymbol a =
+substTerm sym@SupportedTypedSymbol a boundedSymbols =
   generalSubstSomeTerm
     ( \t ->
         if eqHeteroSymbol sym t
           then unsafeCoerce a
           else symTerm t
     )
+    (extractSymSomeTermIncludeBoundedVars (SomeTerm a))
+    boundedSymbols
 
 supportedPrimFunUpTo
   [|buildGeneralFun (typedConstantSymbol "a") (conTerm defaultValue)|]

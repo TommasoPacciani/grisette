@@ -304,7 +304,7 @@ module Grisette.Core
     showsSExprWithParens,
     fileLocation,
     Identifier (..),
-    Symbol (..),
+    Symbol (SimpleSymbol, IndexedSymbol),
     identifier,
     AsMetadata (..),
     pattern Metadata,
@@ -1858,7 +1858,7 @@ import Grisette.Internal.Core.Data.SExpr
 import Grisette.Internal.Core.Data.Symbol
   ( AsMetadata (..),
     Identifier (..),
-    Symbol (..),
+    Symbol (SimpleSymbol, IndexedSymbol),
     identifier,
     indexed,
     mapIdentifier,

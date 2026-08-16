@@ -14,16 +14,16 @@ import Grisette
     Solvable (con),
     SymbolSetRep (buildSymbolSet),
     TypedAnySymbol,
-    indexed,
     typedConstantSymbol,
     (-->),
     type (-->),
   )
+import Grisette.Internal.Core.Data.Symbol (bound)
 import Grisette.Internal.SymPrim.GeneralFun (type (-->) (GeneralFun))
 import Grisette.Internal.SymPrim.Prim.Internal.Term
   ( PEvalNumTerm (pevalAddNumTerm),
+    bsymTerm,
     conTerm,
-    isymTerm,
     iteTerm,
     ssymTerm,
   )
@@ -68,22 +68,22 @@ generalFunTests =
             let x :: Integer --> Integer --> Integer =
                   "a" --> con ("b" --> "a" + "b" + "c")
             let expected =
-                  GeneralFun (typedConstantSymbol $ indexed "arg" 2) $
+                  GeneralFun (typedConstantSymbol $ bound "arg" 2) $
                     conTerm $
-                      GeneralFun (typedConstantSymbol $ indexed "arg" 1) $
+                      GeneralFun (typedConstantSymbol $ bound "arg" 1) $
                         iteTerm
                           (ssymTerm "x")
                           ( pevalAddNumTerm
                               ( pevalAddNumTerm
-                                  (isymTerm "arg" 2)
-                                  (isymTerm "arg" 1)
+                                  (bsymTerm "arg" 2)
+                                  (bsymTerm "arg" 1)
                               )
                               (ssymTerm "b")
                           )
                           ( pevalAddNumTerm
                               ( pevalAddNumTerm
-                                  (isymTerm "arg" 2)
-                                  (isymTerm "arg" 1)
+                                  (bsymTerm "arg" 2)
+                                  (bsymTerm "arg" 1)
                               )
                               (ssymTerm "c")
                           )
@@ -94,22 +94,22 @@ generalFunTests =
             let x :: Integer --> Integer --> Integer =
                   "b" --> con ("a" --> "a" + "b" + "c")
             let expected =
-                  GeneralFun (typedConstantSymbol $ indexed "arg" 2) $
+                  GeneralFun (typedConstantSymbol $ bound "arg" 2) $
                     conTerm $
-                      GeneralFun (typedConstantSymbol $ indexed "arg" 1) $
+                      GeneralFun (typedConstantSymbol $ bound "arg" 1) $
                         iteTerm
                           (ssymTerm "x")
                           ( pevalAddNumTerm
                               ( pevalAddNumTerm
-                                  (isymTerm "arg" 2)
-                                  (isymTerm "arg" 1)
+                                  (bsymTerm "arg" 2)
+                                  (bsymTerm "arg" 1)
                               )
                               (ssymTerm "c")
                           )
                           ( pevalAddNumTerm
                               ( pevalAddNumTerm
-                                  (isymTerm "arg" 1)
-                                  (isymTerm "arg" 2)
+                                  (bsymTerm "arg" 1)
+                                  (bsymTerm "arg" 2)
                               )
                               (ssymTerm "c")
                           )

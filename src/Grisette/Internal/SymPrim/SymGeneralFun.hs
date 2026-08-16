@@ -85,7 +85,7 @@ import Language.Haskell.TH.Syntax (Lift (liftTyped))
 --
 -- >>> f' = con ("a" --> "a" + 1) :: SymInteger -~> SymInteger
 -- >>> f'
--- \(arg@0 :: Integer) -> (+ 1 arg@0)
+-- \(arg!0 :: Integer) -> (+ 1 arg!0)
 -- >>> f = (f' #)
 -- >>> f 1
 -- 2
@@ -111,7 +111,7 @@ infixr 0 -~>
 --
 -- >>> f = "a" --> "a" + 1 :: Integer --> Integer
 -- >>> f
--- \(arg@0 :: Integer) -> (+ 1 arg@0)
+-- \(arg!0 :: Integer) -> (+ 1 arg!0)
 --
 -- This general symbolic function needs to be applied to symbolic values:
 --

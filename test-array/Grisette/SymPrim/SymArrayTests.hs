@@ -30,6 +30,7 @@ module Grisette.SymPrim.SymArrayTests (symArrayTests) where
 import qualified Data.HashMap.Strict as HM
 import Data.Hashable (hash)
 import qualified Data.SBV as SBV
+import qualified Data.SBV.Dynamic as SBVD
 import Data.Word (Word8)
 import GHC.Generics (Generic)
 import GHC.Stack (HasCallStack)
@@ -57,6 +58,7 @@ import Grisette
 import Grisette.Internal.Backend.Solving (z3)
 import Grisette.Internal.Core.Data.Class.Solver (SolvingFailure (Unsat))
 import Grisette.Internal.SymPrim.Array (Array (Array))
+import Grisette.Internal.SymPrim.Prim.Term (SupportedPrim (parseSMTModelResult))
 import qualified Grisette.Internal.SymPrim.Array as Arr
 -- Exercise the public re-exports: the type from the umbrella module and the
 -- operations from the dedicated public module (imported qualified).
@@ -163,7 +165,31 @@ concreteCanonicalEq :: Test
 concreteCanonicalEq =
   testGroup
     "concrete canonical equality (Array, 'C-mode carrier)"
-    [ testCase "storing the default value is a structural no-op" $
+    [ testCase "an array model decodes with the first entry for a repeated key" $ do
+        -- SBV's writeArray conses onto the entry list and a read takes the first
+        -- match, so an earlier entry shadows a later one for the same key.  The
+        -- decoder must agree, and nothing else observes the choice.
+        let raw entries =
+              SBVD.CV
+                (SBVD.KArray SBVD.KUnbounded SBVD.KUnbounded)
+                ( SBVD.CArray
+                    (SBV.ArrayModel entries (SBVD.CInteger 7))
+                )
+            decoded entries =
+              parseSMTModelResult @(Array Integer Integer) 0 ([], raw entries)
+            shadowed =
+              [ (SBVD.CInteger 1, SBVD.CInteger 20),
+                (SBVD.CInteger 1, SBVD.CInteger 10)
+              ]
+        assertEqual
+          "the shadowing entry wins"
+          20
+          (Arr.select (decoded shadowed) 1)
+        assertEqual
+          "an unmapped key reads the default"
+          7
+          (Arr.select (decoded shadowed) 2),
+      testCase "storing the default value is a structural no-op" $
         assertEqual
           "store (const 0) 5 0 == const 0"
           (Arr.const 0 :: Array Int Int)

@@ -14,6 +14,8 @@ module Grisette.Internal.Unified.UnifiedSeq
     SeqValue,
     SeqStep,
     SeqStepWith,
+    SeqStepValue,
+    SeqStepWithValue,
     UnifiedSeq (..),
     UnifiedPair (..),
   )
@@ -23,10 +25,11 @@ import Data.Foldable (foldl')
 import Data.Kind (Constraint)
 import Grisette.Internal.SymPrim.Prim.Term
   ( ConRep (ConType),
+    SupportedPrim,
+    type (-->),
     LinkedRep,
     SupportedNonFuncPrim,
   )
-import Grisette.Internal.SymPrim.SymGeneralFun (type (-~>))
 import Grisette.Internal.SymPrim.SymPair (SymPair)
 import qualified Grisette.Internal.SymPrim.SymPair as SPair
 import Grisette.Internal.SymPrim.SymSeq (SymSeq)
@@ -53,15 +56,47 @@ type family SeqValue (mode :: EvalModeTag) a :: Constraint where
   SeqValue 'C _a = ()
   SeqValue 'S a = SolverValue a
 
-type family SeqStep (mode :: EvalModeTag) state element where
-  SeqStep 'C state element = state -> element -> state
-  SeqStep 'S state element = state -~> element -~> state
+-- | What a mode needs in order to turn a fold step into what its fold consumes.
+--
+-- Concrete evaluation applies the step directly and needs nothing.  Symbolic
+-- evaluation abstracts it into a closed function term, which needs that term's
+-- sort to be supported.
+type family SeqStepValue (mode :: EvalModeTag) state element :: Constraint where
+  SeqStepValue 'C _state _element = ()
+  SeqStepValue 'S state element =
+    ( SupportedPrim (ConType element --> ConType state),
+      SupportedPrim (ConType state --> ConType element --> ConType state)
+    )
 
-type family SeqStepWith (mode :: EvalModeTag) environment state element where
-  SeqStepWith 'C environment state element =
-    environment -> state -> element -> state
-  SeqStepWith 'S environment state element =
-    environment -~> state -~> element -~> state
+-- | 'SeqStepValue' for a step that also reads an environment.
+type family SeqStepWithValue
+  (mode :: EvalModeTag) environment state element :: Constraint where
+  SeqStepWithValue 'C _environment _state _element = ()
+  SeqStepWithValue 'S environment state element =
+    ( SupportedPrim (ConType element --> ConType state),
+      SupportedPrim (ConType state --> ConType element --> ConType state),
+      SupportedPrim
+        ( ConType environment
+            --> ConType state
+            --> ConType element
+            --> ConType state
+        )
+    )
+
+-- | One fold step, as an ordinary function over the mode's values.
+--
+-- Not mode-indexed, and it carries no mode parameter: the step is the same
+-- function in both modes.  The solver-native fold needs a closed function term,
+-- but building that term is 'SSeq.foldHost''s job, not the caller's; a
+-- mode-indexed step type would make every caller author one step for concrete
+-- evaluation and a second for symbolic evaluation, and two authored programs can
+-- disagree.  What does remain mode-indexed is the evidence the term construction
+-- needs, as 'SeqStepValue' and 'SeqStepWithValue'.
+type SeqStep state element = state -> element -> state
+
+-- | 'SeqStep' with an environment the step reads on every element.
+type SeqStepWith environment state element =
+  environment -> state -> element -> state
 
 class UnifiedSeq (mode :: EvalModeTag) where
   nilSeq :: SeqValue mode a => GetSeq mode a
@@ -85,17 +120,21 @@ class UnifiedSeq (mode :: EvalModeTag) where
     GetSeq mode b ->
     GetSeq mode (GetPair mode a b)
   foldSeq ::
-    (SeqValue mode state, SeqValue mode element) =>
-    SeqStep mode state element ->
+    ( SeqValue mode state,
+      SeqValue mode element,
+      SeqStepValue mode state element
+    ) =>
+    SeqStep state element ->
     state ->
     GetSeq mode element ->
     state
   foldSeqWith ::
     ( SeqValue mode environment,
       SeqValue mode state,
-      SeqValue mode element
+      SeqValue mode element,
+      SeqStepWithValue mode environment state element
     ) =>
-    SeqStepWith mode environment state element ->
+    SeqStepWith environment state element ->
     environment ->
     state ->
     GetSeq mode element ->
@@ -128,8 +167,8 @@ instance UnifiedSeq 'S where
   tailSeq = SSeq.tail
   lookupSeq = SSeq.lookup
   zipSeq = SSeq.zip
-  foldSeq = SSeq.fold
-  foldSeqWith = SSeq.foldWith
+  foldSeq = SSeq.foldHost
+  foldSeqWith = SSeq.foldWithHost
 
 class UnifiedPair (mode :: EvalModeTag) where
   pair ::

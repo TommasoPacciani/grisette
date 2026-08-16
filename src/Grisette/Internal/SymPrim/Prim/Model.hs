@@ -411,6 +411,9 @@ evalTerm fillDefault (Model ma) =
           Just dy ->
             conTerm (unsafeFromModelValue @a dy)
     )
+    -- Model evaluation replaces a symbol with a concrete value or with itself,
+    -- so it introduces no symbol a binder could capture.
+    S.empty
 
 -- |
 -- A type used for building a model by hand.

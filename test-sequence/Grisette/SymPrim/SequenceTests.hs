@@ -6,19 +6,23 @@ module Grisette.SymPrim.SequenceTests (sequenceTests) where
 import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar)
 import Control.DeepSeq (NFData, force)
 import Control.Exception (ErrorCall, displayException, evaluate, try)
+import Control.Monad (forM_)
 import qualified Data.Binary as Binary
 import qualified Data.ByteString.Lazy as LazyByteString
 import Data.Int (Int64)
 import Data.List (foldl', isPrefixOf)
+import Data.String (fromString)
 import qualified Data.SBV.Dynamic as SBVD
 import Grisette
-  ( EvalSym (evalSym),
+  ( AsKey (AsKey),
+    EvalSym (evalSym),
     Function ((#)),
     LogicalOp (symNot, (.&&)),
     SimpleMergeable (mrgIte),
-    Solvable (con, ssym),
+    Solvable (con, isym, ssym),
     SubstSym (substSym),
     SymEq ((.==)),
+    SymOrd ((.>)),
     SymBool,
     SymInteger,
     ToCon (toCon),
@@ -26,6 +30,7 @@ import Grisette
     solve,
   )
 import Grisette.Internal.Backend.Solving (z3)
+import Grisette.Internal.SymPrim.Quantifier (forallSym)
 import Grisette.Internal.Core.Data.Class.Solver (SolvingFailure (Unsat))
 import Grisette.Internal.SymPrim.Array (Array)
 import Grisette.Internal.SymPrim.Prim.Term
@@ -37,6 +42,8 @@ import Grisette.Internal.SymPrim.Prim.Term
     ssymTerm,
     toCurThread,
   )
+import Grisette.Internal.SymPrim.Prim.Term (typedConstantSymbol)
+import Grisette.Internal.Core.Data.Symbol (Symbol (IndexedSymbol))
 import Grisette.SymPrim
   ( SymArray,
     Nominal,
@@ -307,36 +314,14 @@ sequenceTests =
                 U.nilSeq
             indexSequence = U.consSeq @'S (3 :: SymInteger) U.nilSeq
             arrayStep ::
+              SymInteger ->
+              SymPair (SymArray SymInteger SymInteger) SymInteger ->
               SymInteger
-                -~> SymPair
-                  (SymArray SymInteger SymInteger)
-                  SymInteger
-                -~> SymInteger
-            arrayStep =
-              con $
-                ("arrayState" :: TypedConstantSymbol Integer)
-                  --> con
-                    ( ( "arrayElement" ::
-                          TypedConstantSymbol (Array Integer Integer, Integer)
-                      )
-                        --> ( ("arrayState" :: SymInteger)
-                                + A.select
-                                  ( U.first @'S
-                                      ( "arrayElement" ::
-                                          SymPair
-                                            (SymArray SymInteger SymInteger)
-                                            SymInteger
-                                      )
-                                  )
-                                  ( U.second @'S
-                                      ( "arrayElement" ::
-                                          SymPair
-                                            (SymArray SymInteger SymInteger)
-                                            SymInteger
-                                      )
-                                  )
-                            )
-                    )
+            arrayStep arrayState arrayElement =
+              arrayState
+                + A.select
+                  (U.first @'S arrayElement)
+                  (U.second @'S arrayElement)
             arrayFold =
               U.foldSeq @'S
                 arrayStep
@@ -355,31 +340,16 @@ sequenceTests =
             choose = "choose" :: SymBool
             initial = U.pair @'S (0 :: SymInteger) (0 :: SymInteger)
             step ::
-              SymInteger
-                -~> SymPair SymInteger SymInteger
-                -~> SymPair SymInteger SymInteger
-                -~> SymPair SymInteger SymInteger
-            step =
-              con $
-                ("environmentArg" :: TypedConstantSymbol Integer)
-                  --> con
-                    ( ("stateArg" :: TypedConstantSymbol (Integer, Integer))
-                        --> con
-                          ( ("elementArg" :: TypedConstantSymbol (Integer, Integer))
-                              --> U.pair @'S
-                                ( U.first @'S
-                                    ("stateArg" :: SymPair SymInteger SymInteger)
-                                    + U.first @'S
-                                      ("elementArg" :: SymPair SymInteger SymInteger)
-                                )
-                                ( U.second @'S
-                                    ("stateArg" :: SymPair SymInteger SymInteger)
-                                    + ("environmentArg" :: SymInteger)
-                                      * U.second @'S
-                                        ("elementArg" :: SymPair SymInteger SymInteger)
-                                )
-                          )
-                    )
+              SymInteger ->
+              SymPair SymInteger SymInteger ->
+              SymPair SymInteger SymInteger ->
+              SymPair SymInteger SymInteger
+            step environmentArg stateArg elementArg =
+              U.pair @'S
+                (U.first @'S stateArg + U.first @'S elementArg)
+                ( U.second @'S stateArg
+                    + environmentArg * U.second @'S elementArg
+                )
             folded = U.foldSeqWith @'S step environment initial candidate
             alternativeSequence = symbolicPairs [(-1, -2)]
             alternativePair = U.pair @'S 99 100
@@ -458,33 +428,14 @@ sequenceTests =
             assertFailure $ "expected false ITE branch SAT: " ++ show failure,
       testCase "closed folds accept explicit environment and global UFs" $ do
         let environmentStep ::
-              SymInteger -~> SymInteger -~> SymInteger -~> SymInteger
-            environmentStep =
-              con $
-                ("environment" :: TypedConstantSymbol Integer)
-                  --> con
-                    ( ("state" :: TypedConstantSymbol Integer)
-                        --> con
-                          ( ("element" :: TypedConstantSymbol Integer)
-                              --> ( ("environment" :: SymInteger)
-                                      + ("state" :: SymInteger)
-                                      + ("element" :: SymInteger)
-                                  )
-                          )
-                    )
+              SymInteger -> SymInteger -> SymInteger -> SymInteger
+            environmentStep environment state element =
+              environment + state + element
             generalUF = "generalUF" :: SymInteger -~> SymInteger
             tabularUF = "tabularUF" :: SymInteger =~> SymInteger
-            ufStep :: SymInteger -~> SymInteger -~> SymInteger
-            ufStep =
-              con $
-                ("state" :: TypedConstantSymbol Integer)
-                  --> con
-                    ( ("element" :: TypedConstantSymbol Integer)
-                        --> ( ("state" :: SymInteger)
-                                + generalUF # ("element" :: SymInteger)
-                                + tabularUF # ("element" :: SymInteger)
-                            )
-                    )
+            ufStep :: SymInteger -> SymInteger -> SymInteger
+            ufStep state element =
+              state + generalUF # element + tabularUF # element
             one = U.consSeq @'S (1 :: SymInteger) U.nilSeq
         _ <- evaluate (U.foldSeqWith @'S environmentStep ("env" :: SymInteger) 0 one)
         _ <- evaluate (U.foldSeq @'S ufStep 0 one)
@@ -496,17 +447,8 @@ sequenceTests =
           ),
       testCase "captured scalar solver values are rejected before folding nil" $ do
         let hidden = "hidden" :: SymInteger
-            capturedStep :: SymInteger -~> SymInteger -~> SymInteger
-            capturedStep =
-              con $
-                ("state" :: TypedConstantSymbol Integer)
-                  --> con
-                    ( ("element" :: TypedConstantSymbol Integer)
-                        --> ( ("state" :: SymInteger)
-                                + ("element" :: SymInteger)
-                                + hidden
-                            )
-                    )
+            capturedStep :: SymInteger -> SymInteger -> SymInteger
+            capturedStep state element = state + element + hidden
         result <-
           try @ErrorCall $
             evaluate (U.foldSeq @'S capturedStep 0 (U.nilSeq @'S @SymInteger))
@@ -518,6 +460,153 @@ sequenceTests =
                   `isPrefixOf` displayException exception
               )
           Right _ -> assertFailure "foldSeq accepted a captured solver value",
+      testCase "a global named like the fold's own binder is still a capture" $ do
+        -- The abstraction picks binder names that avoid every name the step's body
+        -- uses.  A fixed binder name would bind this global instead, turning a
+        -- capture that must be reported into a silently wrong fold.
+        let shadowed = ssym "grisette.foldSeq.state" :: SymInteger
+            shadowingStep :: SymInteger -> SymInteger -> SymInteger
+            shadowingStep state element = state + element + shadowed
+            shadowedWith = ssym "grisette.foldSeqWith.state" :: SymInteger
+            shadowingStepWith ::
+              SymInteger -> SymInteger -> SymInteger -> SymInteger
+            shadowingStepWith environment state element =
+              environment + state + element + shadowedWith
+        folded <-
+          try @ErrorCall $
+            evaluate (U.foldSeq @'S shadowingStep 0 (U.nilSeq @'S @SymInteger))
+        case folded of
+          Left exception ->
+            assertBool
+              "capture diagnostic for a binder-named global"
+              ( "foldSeq step function captures solver values:"
+                  `isPrefixOf` displayException exception
+              )
+          Right _ ->
+            assertFailure "foldSeq captured a global named like its own binder"
+        foldedWith <-
+          try @ErrorCall $
+            evaluate
+              ( U.foldSeqWith @'S
+                  shadowingStepWith
+                  1
+                  0
+                  (U.nilSeq @'S @SymInteger)
+              )
+        case foldedWith of
+          Left exception ->
+            assertBool
+              "capture diagnostic for a binder-named global with environment"
+              ( "foldSeqWith step function captures solver values:"
+                  `isPrefixOf` displayException exception
+              )
+          Right _ ->
+            assertFailure
+              "foldSeqWith captured a global named like its own binder",
+      testCase "substituting under a quantifier does not capture its binder" $ do
+        -- Function binders live in a namespace the public API cannot write, so a
+        -- replacement can no longer collide with one.  Quantifier binders are
+        -- still caller-chosen, so they are where capture avoidance is observable:
+        -- (forall q. q > w)[w := q] means (forall q'. q' > q), not (forall q. q > q).
+        let quantified =
+              forallSym ("q" :: SymInteger) (("q" :: SymInteger) .> "w")
+            replaced =
+              substSym
+                (typedConstantSymbol "w" :: TypedConstantSymbol Integer)
+                ("q" :: SymInteger)
+                quantified
+            captured = forallSym ("q" :: SymInteger) (("q" :: SymInteger) .> "q")
+        assertBool
+          ("the quantified binder must be renamed, got " ++ show replaced)
+          (AsKey replaced /= AsKey captured)
+        solved <- solve z3 (symNot replaced)
+        case solved of
+          Right _ -> pure ()
+          Left failure ->
+            assertFailure
+              ( "a renamed quantifier leaves a satisfiable negation, got "
+                  ++ show failure
+              ),
+      testCase "no name lets a step smuggle a captured solver value past the check" $ do
+        -- A step is an arbitrary Haskell function: it may inspect the identity of
+        -- what it is handed and return a different expression on a later call, so
+        -- examining one application's output cannot establish closedness.  What
+        -- makes the check sound is that the step cannot name a binder, so every
+        -- guess below stays free and is reported.
+        let names =
+              [ "arg",
+                "arg@0",
+                "arg!0",
+                "foldSeq.state",
+                "foldSeq.element",
+                "grisette.foldSeq.state"
+              ]
+            -- Every shape a caller can write: a plain symbol, and an indexed one
+            -- at the indices an abstraction is likely to allocate.
+            guesses =
+              [ (name, ssym (fromString name) :: SymInteger)
+                | name <- names
+              ]
+                ++ [ (name ++ "@" ++ show index, isym (fromString name) index)
+                     | name <- names,
+                       index <- [0 .. 3 :: Int]
+                   ]
+            inspecting :: SymInteger -> SymInteger -> SymInteger -> SymInteger
+            inspecting hidden state _ =
+              if AsKey state == AsKey hidden then hidden else state + hidden
+        forM_ guesses $ \(name, hidden) -> do
+          outcome <-
+            try @ErrorCall $
+              evaluate
+                ( U.foldSeq @'S
+                    (inspecting hidden)
+                    0
+                    (U.nilSeq @'S @SymInteger)
+                )
+          case outcome of
+            Left exception ->
+              assertBool
+                ("capture diagnostic for " ++ name)
+                ( "foldSeq step function captures solver values:"
+                    `isPrefixOf` displayException exception
+                )
+            Right _ ->
+              assertFailure
+                ("a step capturing " ++ show name ++ " was accepted"),
+      testCase "a step closing over an enclosing fold's argument is rejected" $ do
+        -- Each abstraction allocates its own binder, so an inner step that closes
+        -- over the outer argument leaves it free and is reported.  A shared binder
+        -- name would instead rebind it to the inner argument, silently.
+        let nested :: SymInteger -> SymInteger -> SymInteger
+            nested outerState _ =
+              U.foldSeq @'S
+                (\innerState _ -> innerState + outerState)
+                0
+                (U.nilSeq @'S @SymInteger)
+        outcome <-
+          try @ErrorCall $
+            evaluate (U.foldSeq @'S nested 0 (U.nilSeq @'S @SymInteger))
+        case outcome of
+          Left exception ->
+            assertBool
+              ("capture diagnostic, got " ++ displayException exception)
+              ( "foldSeq step function captures solver values:"
+                  `isPrefixOf` displayException exception
+              )
+          Right _ ->
+            assertFailure "an inner step captured the enclosing fold's argument",
+      testCase "an enclosing value reaches an inner fold through the environment" $ do
+        -- The sanctioned way to use an enclosing value: pass it as the fold's
+        -- environment, which is an argument of the fold and not part of the step.
+        let nested :: SymInteger -> SymInteger -> SymInteger
+            nested outerState _ =
+              U.foldSeqWith @'S
+                (\environment innerState _ -> innerState + environment)
+                outerState
+                0
+                (U.consSeq @'S 1 (U.nilSeq @'S @SymInteger))
+            folded = U.foldSeq @'S nested 5 (U.consSeq @'S 2 U.nilSeq)
+        assertEqual "the environment carries the outer state" (AsKey 5) (AsKey folded),
       testCase "raw nested pair sequence model decoder is exact" $ do
         let concrete = [(1, 2), (3, 4), (5, 6), (7, 8)] :: [(Integer, Integer)]
             cell (firstValue, secondValue) =
@@ -594,35 +683,13 @@ sequenceTests =
             alternativeValue = U.nominalValue @'S alternative :: SymWordN32
             leftSequence = U.consSeq @'S left U.nilSeq
             step ::
+              SymWordN32 ->
+              SymNominal
+                ('Domain "p4runtime" '[ 'Domain "left" '[] ])
+                WordN32 ->
               SymWordN32
-                -~> SymNominal
-                  ('Domain "p4runtime" '[ 'Domain "left" '[] ])
-                  WordN32
-                -~> SymWordN32
-            step =
-              con $
-                ("nominalState" :: TypedConstantSymbol WordN32)
-                  --> con
-                    ( ( "nominalElement" ::
-                          TypedConstantSymbol
-                            ( Nominal
-                                ('Domain "p4runtime" '[ 'Domain "left" '[] ])
-                                WordN32
-                            )
-                      )
-                        --> ( ("nominalState" :: SymWordN32)
-                                + U.nominalValue
-                                  @'S
-                                  ( "nominalElement" ::
-                                      SymNominal
-                                        ( 'Domain
-                                            "p4runtime"
-                                            '[ 'Domain "left" '[] ]
-                                        )
-                                        WordN32
-                                  )
-                            )
-                    )
+            step nominalState nominalElement =
+              nominalState + U.nominalValue @'S nominalElement
             folded = U.foldSeq @'S step 0 leftSequence
             nested = U.pair @'S leftSequence (U.pair @'S left right)
             leftArray = "nominalArray" ::

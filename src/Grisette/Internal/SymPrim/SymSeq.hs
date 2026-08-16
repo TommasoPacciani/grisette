@@ -21,6 +21,8 @@ module Grisette.Internal.SymPrim.SymSeq
     length,
     fold,
     foldWith,
+    foldHost,
+    foldWithHost,
   )
 where
 
@@ -38,15 +40,20 @@ import Grisette.Internal.Internal.Decl.SymPrim.AllSyms
   ( AllSyms (allSymsS),
     SomeSym (SomeSym),
   )
+import Grisette.Internal.Core.Data.Symbol (freshBoundSymbol)
 import Grisette.Internal.SymPrim.GeneralFun
-  ( pevalClosedSeqFold,
+  ( buildGeneralFun,
+    pevalClosedSeqFold,
     pevalClosedSeqFoldWith,
+    type (-->),
   )
+import System.IO.Unsafe (unsafePerformIO)
 import Grisette.Internal.SymPrim.Prim.Internal.Serialize ()
 import Grisette.Internal.SymPrim.Prim.Internal.Term
   ( ConRep (ConType),
     LinkedRep (underlyingTerm, wrapTerm),
     SupportedNonFuncPrim,
+    SupportedPrim,
     SymRep (SymType),
     Term,
     conTerm,
@@ -240,3 +247,112 @@ foldWith (SymGeneralFun (stepTerm@SupportedTerm)) environment initial sequence =
           (underlyingTerm initial)
           (underlyingTerm sequence)
    in folded `seq` wrapTerm folded
+
+-- | Fold a symbolic sequence with a step given as an ordinary Haskell function
+-- over symbolic values.
+--
+-- The solver-native fold needs its step as a closed function /term/, which
+-- previously forced every caller to build @sym --> sym --> body@ by hand and
+-- therefore to write one step for concrete evaluation and a second, separately
+-- authored step for symbolic evaluation.  Two authored steps are two programs, so
+-- they can disagree.  Abstracting the caller's function over fresh bound symbols
+-- here means one step serves both modes.
+--
+-- The step is applied to bound variables only, so a step that reaches out to a
+-- solver value from its enclosing scope produces a non-closed term; that is
+-- rejected by 'pevalClosedSeqFold', exactly as a hand-built step would be.
+foldHost ::
+  forall state element.
+  ( SupportedNonFuncPrim (ConType state),
+    SupportedNonFuncPrim (ConType element),
+    SupportedPrim (ConType element --> ConType state),
+    SupportedPrim (ConType state --> ConType element --> ConType state),
+    LinkedRep (ConType state) state,
+    LinkedRep (ConType element) element
+  ) =>
+  (state -> element -> state) ->
+  state ->
+  SymSeq element ->
+  state
+foldHost step initial sequence = unsafePerformIO $ do
+  -- The step is an arbitrary Haskell function, so it cannot be inspected; it can
+  -- only be applied and its result examined.  Two properties make that sound.
+  -- The arguments are bound to symbols in a namespace the public API cannot
+  -- construct, so a symbol the step returns is either one it was handed or one
+  -- that stays free and is reported by the closure check below.  And each
+  -- allocation is distinct, so an enclosing abstraction's binder can never be
+  -- rebound here: a step closing over an enclosing fold's state leaves it free and
+  -- is rejected instead of silently reading this fold's argument.
+  stateSymbol <- typedConstantSymbol <$> freshBoundSymbol "foldSeq.state"
+  elementSymbol <- typedConstantSymbol <$> freshBoundSymbol "foldSeq.element"
+  let body =
+        underlyingTerm
+          ( step
+              (wrapTerm (symTerm stateSymbol))
+              (wrapTerm (symTerm elementSymbol))
+          )
+      stepTerm =
+        conTerm
+          ( buildGeneralFun
+              stateSymbol
+              (conTerm (buildGeneralFun elementSymbol body))
+          )
+      folded =
+        pevalClosedSeqFold
+          stepTerm
+          (underlyingTerm initial)
+          (underlyingTerm sequence)
+  folded `seq` return (wrapTerm folded)
+{-# NOINLINE foldHost #-}
+
+-- | 'foldHost' with an environment the step reads on every element.
+foldWithHost ::
+  forall environment state element.
+  ( SupportedNonFuncPrim (ConType environment),
+    SupportedNonFuncPrim (ConType state),
+    SupportedNonFuncPrim (ConType element),
+    SupportedPrim (ConType element --> ConType state),
+    SupportedPrim (ConType state --> ConType element --> ConType state),
+    SupportedPrim
+      (ConType environment --> ConType state --> ConType element --> ConType state),
+    LinkedRep (ConType environment) environment,
+    LinkedRep (ConType state) state,
+    LinkedRep (ConType element) element
+  ) =>
+  (environment -> state -> element -> state) ->
+  environment ->
+  state ->
+  SymSeq element ->
+  state
+foldWithHost step environment initial sequence = unsafePerformIO $ do
+  -- See 'foldHost' for why the binders are private and freshly allocated.
+  environmentSymbol <-
+    typedConstantSymbol <$> freshBoundSymbol "foldSeqWith.environment"
+  stateSymbol <- typedConstantSymbol <$> freshBoundSymbol "foldSeqWith.state"
+  elementSymbol <- typedConstantSymbol <$> freshBoundSymbol "foldSeqWith.element"
+  let body =
+        underlyingTerm
+          ( step
+              (wrapTerm (symTerm environmentSymbol))
+              (wrapTerm (symTerm stateSymbol))
+              (wrapTerm (symTerm elementSymbol))
+          )
+      stepTerm =
+        conTerm
+          ( buildGeneralFun
+              environmentSymbol
+              ( conTerm
+                  ( buildGeneralFun
+                      stateSymbol
+                      (conTerm (buildGeneralFun elementSymbol body))
+                  )
+              )
+          )
+      folded =
+        pevalClosedSeqFoldWith
+          stepTerm
+          (underlyingTerm environment)
+          (underlyingTerm initial)
+          (underlyingTerm sequence)
+  folded `seq` return (wrapTerm folded)
+{-# NOINLINE foldWithHost #-}

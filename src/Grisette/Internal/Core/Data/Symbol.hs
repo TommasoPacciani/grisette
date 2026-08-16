@@ -32,6 +32,8 @@ module Grisette.Internal.Core.Data.Symbol
     Symbol (..),
     simple,
     indexed,
+    bound,
+    freshBoundSymbol,
     symbolIdentifier,
     mapIdentifier,
     AsMetadata (..),
@@ -166,6 +168,22 @@ identifierCount :: IORef Int
 identifierCount = unsafePerformIO $ newIORef 0
 {-# NOINLINE identifierCount #-}
 
+boundSymbolCount :: IORef Int
+boundSymbolCount = unsafePerformIO $ newIORef 0
+{-# NOINLINE boundSymbolCount #-}
+
+-- | Allocate a fresh binder in the library-private namespace.
+--
+-- Distinct allocations are distinct symbols, so an abstraction can never bind a
+-- binder belonging to an enclosing abstraction: a term mentioning one stays free
+-- and is reported rather than silently rebound.  The counter does not make term
+-- construction non-deterministic, because an abstraction renames its binder to a
+-- name derived from the body before the term escapes.
+freshBoundSymbol :: String -> IO Symbol
+freshBoundSymbol ident = do
+  i <- atomicModifyIORef' boundSymbolCount (\x -> (x + 1, x))
+  return $ BoundSymbol (Identifier (T.pack ident) (List [])) i
+
 -- | Get a globally unique identifier within the 'IO' monad.
 uniqueIdentifier :: T.Text -> IO Identifier
 uniqueIdentifier ident = do
@@ -181,6 +199,13 @@ uniqueIdentifier ident = do
 data Symbol where
   SimpleSymbol :: Identifier -> Symbol
   IndexedSymbol :: Identifier -> Int -> Symbol
+  -- | A binder the library introduces when it abstracts a term into a closed
+  -- function.  This constructor is deliberately absent from the public API, so no
+  -- term a caller can build mentions a binder.  That is what makes closure
+  -- checking of an abstracted Haskell function sound: a step can only return a
+  -- binder it was handed, and any other symbol it returns stays free and is
+  -- reported.
+  BoundSymbol :: Identifier -> Int -> Symbol
   deriving (Eq, Ord, Generic, Lift, NFData, Serial)
 
 instance Cereal.Serialize Symbol where
@@ -194,21 +219,26 @@ instance Binary.Binary Symbol where
 instance Hashable Symbol where
   hashWithSalt s (SimpleSymbol i) = hashWithSalt s i
   hashWithSalt s (IndexedSymbol i idx) = s `hashWithSalt` i `hashWithSalt` idx
+  hashWithSalt s (BoundSymbol i idx) =
+    s `hashWithSalt` (1 :: Int) `hashWithSalt` i `hashWithSalt` idx
   {-# INLINE hashWithSalt #-}
 
 -- | Get the identifier of a symbol.
 symbolIdentifier :: Symbol -> Identifier
 symbolIdentifier (SimpleSymbol i) = i
 symbolIdentifier (IndexedSymbol i _) = i
+symbolIdentifier (BoundSymbol i _) = i
 
 -- | Modify the identifier of a symbol.
 mapIdentifier :: (Identifier -> Identifier) -> Symbol -> Symbol
 mapIdentifier f (SimpleSymbol i) = SimpleSymbol (f i)
 mapIdentifier f (IndexedSymbol i idx) = IndexedSymbol (f i) idx
+mapIdentifier f (BoundSymbol i idx) = BoundSymbol (f i) idx
 
 instance Show Symbol where
   show (SimpleSymbol i) = show i
   show (IndexedSymbol i idx) = show i ++ "@" ++ show idx
+  show (BoundSymbol i idx) = show i ++ "!" ++ show idx
 
 instance IsString Symbol where
   fromString = SimpleSymbol . fromString
@@ -220,3 +250,8 @@ simple = SimpleSymbol
 -- | Create an indexed symbol.
 indexed :: Identifier -> Int -> Symbol
 indexed = IndexedSymbol
+
+-- | Construct a binder in the library-private namespace.  Reachable only from the
+-- internal modules; the public API cannot name a binder.
+bound :: Identifier -> Int -> Symbol
+bound = BoundSymbol
