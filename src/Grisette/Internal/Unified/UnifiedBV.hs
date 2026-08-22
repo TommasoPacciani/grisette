@@ -11,6 +11,7 @@
 module Grisette.Internal.Unified.UnifiedBV
   ( UnifiedBV,
     UnifiedBVImpl (GetIntN, GetWordN),
+    AllUnifiedSizedBV,
     AllUnifiedBV,
     SafeUnifiedBV,
     SafeUnifiedSomeBV,

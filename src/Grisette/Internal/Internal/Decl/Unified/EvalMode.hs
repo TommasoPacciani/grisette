@@ -1,3 +1,4 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -7,7 +8,9 @@
 {-# LANGUAGE MonoLocalBinds #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE QuantifiedConstraints #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE UndecidableSuperClasses #-}
 
@@ -20,8 +23,11 @@
 -- Stability   :   Experimental
 -- Portability :   GHC only
 module Grisette.Internal.Internal.Decl.Unified.EvalMode
-  ( EvalModeBase,
+  ( EvalModeCore,
+    EvalModeBase,
     EvalModeInteger,
+    EvalModeIntegerBase,
+    EvalModeSizedBV (..),
     EvalModeBV,
     EvalModeFP,
     EvalModeAlgReal,
@@ -33,6 +39,8 @@ where
 
 import Data.List (nub)
 import Data.Maybe (mapMaybe)
+import GHC.TypeNats (KnownNat, type (<=))
+import Grisette.Internal.Core.Data.Class.BitVector (SizedBV)
 import Grisette.Internal.Core.Data.Class.TryMerge (TryMerge)
 import Grisette.Internal.Internal.Decl.Unified.BVFPConversion
   ( AllUnifiedBVFPConversion,
@@ -40,12 +48,19 @@ import Grisette.Internal.Internal.Decl.Unified.BVFPConversion
 import Grisette.Internal.Internal.Decl.Unified.FPFPConversion
   ( AllUnifiedFPFPConversion,
   )
-import Grisette.Internal.Internal.Decl.Unified.UnifiedBV (AllUnifiedBV)
+import Grisette.Internal.Internal.Decl.Unified.UnifiedBV
+  ( AllUnifiedBV,
+    UnifiedBV,
+    UnifiedBVImpl (GetIntN, GetWordN),
+  )
 import Grisette.Internal.Internal.Decl.Unified.UnifiedBool
   ( UnifiedBool (GetBool),
   )
 import Grisette.Internal.Internal.Decl.Unified.UnifiedFP (AllUnifiedFP)
-import Grisette.Internal.Unified.BVBVConversion (AllUnifiedBVBVConversion)
+import Grisette.Internal.Unified.BVBVConversion
+  ( AllUnifiedBVBVConversion,
+    UnifiedBVBVConversion,
+  )
 import Grisette.Internal.Unified.Class.UnifiedSimpleMergeable (UnifiedBranching)
 import Grisette.Internal.Unified.EvalModeTag (EvalModeTag (C, S))
 import Grisette.Internal.Unified.Theories
@@ -58,7 +73,10 @@ import Grisette.Internal.Unified.UnifiedFun
   ( genUnifiedFunInstance,
     unifiedFunInstanceName,
   )
-import Grisette.Internal.Unified.UnifiedInteger (UnifiedInteger)
+import Grisette.Internal.Unified.UnifiedInteger
+  ( UnifiedInteger,
+    UnifiedIntegerBase,
+  )
 import Grisette.Internal.Unified.UnifiedPrim (UnifiedBasicPrim)
 import Grisette.Internal.Unified.Util (DecideEvalMode)
 import Language.Haskell.TH
@@ -76,25 +94,68 @@ import Language.Haskell.TH
     varT,
   )
 
+-- | The scalar operations shared by concrete and symbolic evaluation, without
+-- the quantified dictionaries for @GetData mode value@.  This is deliberately
+-- a constraint synonym rather than a methodless superclass dictionary: users
+-- receive the three required dictionaries directly and GHC has no evidence
+-- chain to expand repeatedly.
+type EvalModeCore (mode :: EvalModeTag) =
+  ( DecideEvalMode mode,
+    UnifiedBool mode,
+    UnifiedBasicPrim mode (GetBool mode)
+  )
+
 -- | Provide the constraint that the mode is a valid evaluation mode, and
 -- provides the support for 'GetBool' and 'Grisette.Internal.Unified.GetData'.
 --
 -- For compilers prior to GHC 9.2.1, see the notes for 'EvalModeAll'.
 class
-  ( DecideEvalMode mode,
-    UnifiedBool mode,
-    UnifiedBasicPrim mode (GetBool mode),
+  ( EvalModeCore mode,
     AllUnifiedData mode,
     UnifiedDataBase mode
   ) =>
   EvalModeBase mode
+
+-- | Introduce the evidence for one statically sized bit-vector operation at a
+-- time. Keeping these implications behind continuation methods prevents every
+-- consumer of the mode constraint from materializing the full quantified
+-- superclass closure during type checking.
+class
+  ( SizedBV (GetWordN mode),
+    SizedBV (GetIntN mode)
+  ) =>
+  EvalModeSizedBV mode
+  where
+  -- | Supply the unified operations for one positive width.
+  withBaseBV ::
+    forall n r.
+    (KnownNat n, 1 <= n) =>
+    (UnifiedBV mode n => r) ->
+    r
+
+  -- | Supply conversion evidence for one pair of positive widths.
+  withBaseBVBVConversion ::
+    forall n0 n1 r.
+    (KnownNat n0, 1 <= n0, KnownNat n1, 1 <= n1) =>
+    (UnifiedBVBVConversion mode n0 n1 => r) ->
+    r
 
 -- | Provide the support for 'Grisette.Internal.Unified.GetIntN',
 -- 'Grisette.Internal.Unified.GetWordN', 'Grisette.Internal.Unified.GetSomeIntN', and
 -- 'Grisette.Internal.Unified.GetSomeWordN'.
 --
 -- For compilers prior to GHC 9.2.1, see the notes for 'EvalModeAll'.
-class (AllUnifiedBV mode, AllUnifiedBVBVConversion mode) => EvalModeBV mode
+class
+  ( AllUnifiedBV mode,
+    AllUnifiedBVBVConversion mode,
+    EvalModeSizedBV mode
+  ) =>
+  EvalModeBV mode
+
+-- | Provide the pure carrier and primitive operations for
+-- 'Grisette.Internal.Unified.GetInteger', excluding safe operations quantified
+-- over arbitrary monads.
+type EvalModeIntegerBase = UnifiedIntegerBase
 
 -- | Provide the support for 'Grisette.Internal.Unified.GetInteger'.
 --

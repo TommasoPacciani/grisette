@@ -55,6 +55,7 @@ import Grisette.Internal.TH.Derivation.Common
     extraConstraint,
     isVarUsedInFields,
     specializeResult,
+    wrapEvalModeConstraintBody,
   )
 import Grisette.Internal.TH.Derivation.UnaryOpCommon
   ( FieldFunExp,
@@ -372,8 +373,8 @@ constructVarPats conInfo = do
   conP (constructorName conInfo) $ capture <$> [0 .. length fields - 1]
 
 genMergingInfoFunClause' ::
-  [(Type, Kind)] -> Name -> ConstructorInfo -> Q Clause
-genMergingInfoFunClause' argTypes conInfoName con = do
+  (Q Exp -> Q Exp) -> [(Type, Kind)] -> Name -> ConstructorInfo -> Q Clause
+genMergingInfoFunClause' wrapBody argTypes conInfoName con = do
   let conVars = constructorVars con
   capturedVarTyReps <-
     traverse (\bndr -> [|typeRep @($(varT $ tvName bndr))|]) conVars
@@ -451,8 +452,8 @@ genMergingInfoFunClause' argTypes conInfoName con = do
             _ -> fail $ "fieldStrategyExp: unsupported type: " <> show ty
   fieldStrategyExps <- traverse fieldStrategyExp fields
   let infoExp = foldl AppE infoExpWithTypeReps fieldStrategyExps
-  -- fail $ show infoExp
-  return $ Clause (strategyPats ++ [varPat]) (NormalB infoExp) []
+  wrappedInfoExp <- wrapBody $ return infoExp
+  return $ Clause (strategyPats ++ [varPat]) (NormalB wrappedInfoExp) []
 
 mergeableFieldFunExp :: [Name] -> FieldFunExp
 mergeableFieldFunExp unaryOpFunNames argToFunPat _ = go
@@ -541,12 +542,12 @@ newtype MergeableNoExistentialConfig = MergeableNoExistentialConfig
 
 instance UnaryOpFunConfig MergeableNoExistentialConfig where
   genUnaryOpFun
-    _
+    deriveConfig
     MergeableNoExistentialConfig {..}
     funNames
     n
     _
-    _
+    keptVars
     argTypes
     _
     constructors = do
@@ -639,12 +640,14 @@ instance UnaryOpFunConfig MergeableNoExistentialConfig where
             SortedStrategy $idxFun $auxFun
             |]
       let instanceFunName = funNames !! n
+      wrappedFunExp <-
+        wrapEvalModeConstraintBody deriveConfig keptVars $ return funExp
       return $
         FunD
           instanceFunName
           [ Clause
               funPats
-              (NormalB funExp)
+              (NormalB wrappedFunExp)
               []
           ]
 
@@ -722,8 +725,9 @@ genMergeable' deriveConfig (MergingInfoResult infoName conInfoNames) typName n =
             <> (if n /= 0 then show n else "")
             <> mangledName
   let mergingInfoFunSigD = SigD mergingInfoFunName mergingInfoFunType
+  let wrapBody = wrapEvalModeConstraintBody deriveConfig keptVars
   clauses <-
-    traverse (uncurry (genMergingInfoFunClause' argVars)) $
+    traverse (uncurry (genMergingInfoFunClause' wrapBody argVars)) $
       zip conInfoNames constructors
   let mergingInfoFunDec = FunD mergingInfoFunName clauses
 

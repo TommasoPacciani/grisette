@@ -30,6 +30,8 @@
 module Grisette.Internal.SymPrim.GeneralFun
   ( type (-->) (..),
     buildGeneralFun,
+    buildGeneralFun2,
+    buildGeneralFun3,
     generalSubstSomeTerm,
     substTerm,
     freshArgSymbol,
@@ -265,10 +267,17 @@ instance (LinkedRep a sa, LinkedRep b sb) => Function (a --> b) sa sb where
 
 extractSymSomeTermIncludeBoundedVars ::
   SomeTerm -> HS.HashSet SomeTypedAnySymbol
-extractSymSomeTermIncludeBoundedVars = htmemo go
+extractSymSomeTermIncludeBoundedVars = memoizedGo
   where
+    -- Terms are hash-consed DAGs.  Recursive calls must pass through the same
+    -- memo table; memoizing only the root expands shared subgraphs as trees and
+    -- makes binder selection exponential in the depth of a shared expression.
+    memoizedGo :: SomeTerm -> HS.HashSet SomeTypedAnySymbol
+    memoizedGo = htmemo go
+    {-# NOINLINE memoizedGo #-}
+
     goTyped :: Term a -> HS.HashSet SomeTypedAnySymbol
-    goTyped = go . someTerm
+    goTyped = memoizedGo . someTerm
 
     go :: SomeTerm -> HS.HashSet SomeTypedAnySymbol
     go (SomeTerm (SymTerm (sym :: TypedAnySymbol a))) =
@@ -284,14 +293,14 @@ extractSymSomeTermIncludeBoundedVars = htmemo go
                     ( HS.singleton
                         (someTypedSymbol $ fromJust $ castTypedSymbol tsym)
                     )
-                    $ go (SomeTerm tm)
+                    $ memoizedGo (SomeTerm tm)
             Nothing -> HS.empty
         _ -> HS.empty
     go (SomeTerm (ForallTerm sym arg)) =
       HS.insert (someTypedSymbol $ fromJust $ castTypedSymbol sym) $ goTyped arg
     go (SomeTerm (ExistsTerm sym arg)) =
       HS.insert (someTypedSymbol $ fromJust $ castTypedSymbol sym) $ goTyped arg
-    go (SomeTerm (SubTerms tms)) = mconcat <$> map go $ tms
+    go (SomeTerm (SubTerms tms)) = mconcat <$> map memoizedGo $ tms
 
 validateClosedSeqFold ::
   (HasCallStack, SupportedPrim function) =>
@@ -429,6 +438,25 @@ freshArgSymbolAvoiding avoided terms = typedConstantSymbol $ go 0
             then go (n + 1)
             else currentSymbol
 
+-- | Generate a fresh argument symbol from an already collected symbol set.
+-- Multi-argument abstraction uses this helper so a hash-consed body is walked
+-- once, rather than once for every nested binder.
+freshArgSymbolFromSymbols ::
+  forall a.
+  (SupportedNonFuncPrim a) =>
+  HS.HashSet SomeTypedAnySymbol ->
+  TypedConstantSymbol a
+freshArgSymbolFromSymbols allSymbols = typedConstantSymbol $ go 0
+  where
+    go :: Int -> Symbol
+    go n =
+      let currentSymbol = BoundSymbol "arg" n
+          currentTypedSymbol =
+            someTypedSymbol (typedAnySymbol currentSymbol :: TypedAnySymbol a)
+       in if HS.member currentTypedSymbol allSymbols
+            then go (n + 1)
+            else currentSymbol
+
 -- | Build a general symbolic function with a bounded symbol and a term.
 buildGeneralFun ::
   forall a b.
@@ -442,6 +470,100 @@ buildGeneralFun arg v =
     (substTerm arg (symTerm argSymbol) HS.empty v)
   where
     argSymbol = freshArgSymbol [SomeTerm v]
+
+-- | Build a two-argument general function with one body scan and one
+-- capture-avoiding substitution.  This is extensionally identical to two
+-- nested 'buildGeneralFun' calls.  Choosing the innermost binder first retains
+-- the same alpha-normal form and therefore the same interning opportunities.
+buildGeneralFun2 ::
+  forall a b c.
+  ( SupportedNonFuncPrim a,
+    SupportedNonFuncPrim b,
+    SupportedPrim c,
+    SupportedPrim (b --> c)
+  ) =>
+  TypedConstantSymbol a ->
+  TypedConstantSymbol b ->
+  Term c ->
+  a --> b --> c
+buildGeneralFun2 first second body =
+  GeneralFun firstArgument $
+    conTerm $ GeneralFun secondArgument renamedBody
+  where
+    bodySymbols = extractSymSomeTermIncludeBoundedVars (SomeTerm body)
+    secondArgument = freshArgSymbolFromSymbols bodySymbols
+    secondArgumentSymbol =
+      someTypedSymbol $
+        fromJust (castTypedSymbol secondArgument :: Maybe (TypedAnySymbol b))
+    firstArgument =
+      freshArgSymbolFromSymbols (HS.insert secondArgumentSymbol bodySymbols)
+    firstArgumentSymbol =
+      someTypedSymbol $
+        fromJust (castTypedSymbol firstArgument :: Maybe (TypedAnySymbol a))
+    introduced = HS.fromList [firstArgumentSymbol, secondArgumentSymbol]
+    renamedBody =
+      generalSubstSomeTerm replace introduced HS.empty body
+    replace :: forall value. TypedSymbol 'AnyKind value -> Term value
+    replace symbol
+      | eqHeteroSymbol second symbol =
+          unsafeCoerce (symTerm secondArgument)
+      | eqHeteroSymbol first symbol =
+          unsafeCoerce (symTerm firstArgument)
+      | otherwise = symTerm symbol
+
+-- | Build a three-argument general function with one body scan and one
+-- capture-avoiding substitution.  Solver-native folds with an explicit
+-- environment use this shape; avoiding three complete walks is material for
+-- large, shared fold bodies while preserving their exact function term.
+buildGeneralFun3 ::
+  forall a b c d.
+  ( SupportedNonFuncPrim a,
+    SupportedNonFuncPrim b,
+    SupportedNonFuncPrim c,
+    SupportedPrim d,
+    SupportedPrim (c --> d),
+    SupportedPrim (b --> c --> d)
+  ) =>
+  TypedConstantSymbol a ->
+  TypedConstantSymbol b ->
+  TypedConstantSymbol c ->
+  Term d ->
+  a --> b --> c --> d
+buildGeneralFun3 first second third body =
+  GeneralFun firstArgument $
+    conTerm $
+      GeneralFun secondArgument $
+        conTerm $ GeneralFun thirdArgument renamedBody
+  where
+    bodySymbols = extractSymSomeTermIncludeBoundedVars (SomeTerm body)
+    thirdArgument = freshArgSymbolFromSymbols bodySymbols
+    thirdArgumentSymbol =
+      someTypedSymbol $
+        fromJust (castTypedSymbol thirdArgument :: Maybe (TypedAnySymbol c))
+    secondArgument =
+      freshArgSymbolFromSymbols (HS.insert thirdArgumentSymbol bodySymbols)
+    secondArgumentSymbol =
+      someTypedSymbol $
+        fromJust (castTypedSymbol secondArgument :: Maybe (TypedAnySymbol b))
+    firstArgument = freshArgSymbolFromSymbols $
+      HS.insert secondArgumentSymbol $
+        HS.insert thirdArgumentSymbol bodySymbols
+    firstArgumentSymbol =
+      someTypedSymbol $
+        fromJust (castTypedSymbol firstArgument :: Maybe (TypedAnySymbol a))
+    introduced = HS.fromList
+      [firstArgumentSymbol, secondArgumentSymbol, thirdArgumentSymbol]
+    renamedBody =
+      generalSubstSomeTerm replace introduced HS.empty body
+    replace :: forall value. TypedSymbol 'AnyKind value -> Term value
+    replace symbol
+      | eqHeteroSymbol third symbol =
+          unsafeCoerce (symTerm thirdArgument)
+      | eqHeteroSymbol second symbol =
+          unsafeCoerce (symTerm secondArgument)
+      | eqHeteroSymbol first symbol =
+          unsafeCoerce (symTerm firstArgument)
+      | otherwise = symTerm symbol
 
 -- | Checks if two formulas are the same. Not building the actual symbolic
 -- equality formula.

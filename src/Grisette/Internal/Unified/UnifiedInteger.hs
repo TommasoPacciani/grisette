@@ -20,6 +20,7 @@
 -- Portability :   GHC only
 module Grisette.Internal.Unified.UnifiedInteger
   ( GetInteger,
+    UnifiedIntegerBase,
     UnifiedInteger,
   )
 where
@@ -48,12 +49,6 @@ class
     SymType i ~ SymInteger,
     UnifiedBasicPrim mode i,
     Num i,
-    forall m.
-    (UnifiedBranching mode m, MonadError ArithException m) =>
-    UnifiedSafeDiv mode ArithException i m,
-    forall m.
-    (UnifiedBranching mode m, MonadError ArithException m) =>
-    UnifiedSafeLinearArith mode ArithException i m,
     UnifiedFromIntegral mode i i
   ) =>
   UnifiedIntegerImpl (mode :: EvalModeTag) i
@@ -69,9 +64,41 @@ instance UnifiedIntegerImpl 'C Integer where
 instance UnifiedIntegerImpl 'S SymInteger where
   type GetInteger 'S = SymInteger
 
--- | Evaluation mode with unified 'Integer' type.
+-- | Evaluation mode with the unified unbounded-integer carrier and its pure
+-- operations, but without safe-operation dictionaries quantified over every
+-- branching monad.
 class
   (UnifiedIntegerImpl mode (GetInteger mode)) =>
+  UnifiedIntegerBase (mode :: EvalModeTag)
+
+instance UnifiedIntegerBase 'C
+
+instance UnifiedIntegerBase 'S
+
+-- Keep the safe-operation carrier explicit so the quantified instance heads
+-- mention a type variable rather than the associated 'GetInteger' family.
+-- GHC rejects the latter even though the family is fixed by @mode@.
+class
+  ( i ~ GetInteger mode,
+    forall m.
+    (UnifiedBranching mode m, MonadError ArithException m) =>
+    UnifiedSafeDiv mode ArithException i m,
+    forall m.
+    (UnifiedBranching mode m, MonadError ArithException m) =>
+    UnifiedSafeLinearArith mode ArithException i m
+  ) =>
+  UnifiedIntegerSafeImpl (mode :: EvalModeTag) i
+    | mode -> i
+
+instance UnifiedIntegerSafeImpl 'C Integer
+
+instance UnifiedIntegerSafeImpl 'S SymInteger
+
+-- | Evaluation mode with unified 'Integer' type.
+class
+  ( UnifiedIntegerBase mode,
+    UnifiedIntegerSafeImpl mode (GetInteger mode)
+  ) =>
   UnifiedInteger (mode :: EvalModeTag)
 
 instance UnifiedInteger 'C

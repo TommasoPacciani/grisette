@@ -29,6 +29,7 @@ module Grisette.Internal.Internal.Decl.Unified.UnifiedBV
     GetSomeWordN,
     GetSomeIntN,
     SafeUnifiedBV,
+    AllUnifiedSizedBV,
     AllUnifiedBV,
   )
 where
@@ -235,7 +236,14 @@ class
   ) =>
   SafeUnifiedSomeBV mode m
 
--- | Evaluation mode with unified bit vector types.
+-- | Unified bit-vector evidence at every statically known positive width.
+-- The quantified dictionary is exposed directly instead of hidden behind a
+-- methodless superclass dictionary.
+type AllUnifiedSizedBV (mode :: EvalModeTag) =
+  ( forall n. (KnownNat n, 1 <= n) => UnifiedBV mode n
+  ) :: Constraint
+
+-- | Evaluation mode with all unified bit vector types and safe operations.
 class
   ( forall n m.
     ( UnifiedBranching mode m,
@@ -249,9 +257,9 @@ class
       MonadError (Either SomeBVException ArithException) m
     ) =>
     SafeUnifiedSomeBV mode m,
-    forall n. (KnownNat n, 1 <= n) => UnifiedBV mode n,
-    SomeBVPair mode (GetSomeWordN mode) (GetSomeIntN mode),
+    AllUnifiedSizedBV mode,
     SizedBV (GetWordN mode),
-    SizedBV (GetIntN mode)
+    SizedBV (GetIntN mode),
+    SomeBVPair mode (GetSomeWordN mode) (GetSomeIntN mode)
   ) =>
   AllUnifiedBV mode

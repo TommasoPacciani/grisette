@@ -445,6 +445,33 @@ sequenceTests =
           ( toCon (U.foldSeq @'S ufStep 0 (U.nilSeq @'S @SymInteger)) ::
               Maybe Integer
           ),
+      testCase "closed fold abstraction shares its step term DAG" $ do
+        let sharedStep ::
+              SymInteger -> SymInteger -> SymInteger -> SymInteger
+            sharedStep environment state element =
+              foldl'
+                (\shared _ -> shared + shared)
+                (environment + state + element)
+                [1 .. 20 :: Int]
+            candidate = "shared-fold-candidate" :: SymSeq SymInteger
+            firstFold = U.foldSeqWith @'S sharedStep 2 5 candidate
+            secondFold = U.foldSeqWith @'S sharedStep 2 5 candidate
+        assertEqual
+          "nil identity after abstracting a deeply shared step"
+          (Just 5)
+          ( toCon
+              ( U.foldSeqWith @'S
+                  sharedStep
+                  2
+                  5
+                  (U.nilSeq @'S @SymInteger)
+              ) ::
+              Maybe Integer
+          )
+        assertEqual
+          "fresh private binders retain one alpha-normalized fold term"
+          (AsKey firstFold)
+          (AsKey secondFold),
       testCase "captured scalar solver values are rejected before folding nil" $ do
         let hidden = "hidden" :: SymInteger
             capturedStep :: SymInteger -> SymInteger -> SymInteger

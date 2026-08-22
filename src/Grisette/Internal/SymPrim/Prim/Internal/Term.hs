@@ -284,7 +284,12 @@ module Grisette.Internal.SymPrim.Prim.Internal.Term
     pevalDefaultEqTerm,
     NonFuncPrimConstraint,
     NonFuncSBVRep (..),
-    SupportedNonFuncPrim (..),
+    SupportedNonFuncPrim
+      ( conNonFuncSBVTerm,
+        symNonFuncSBVTerm,
+        withNonFuncPrim,
+        sbvToCon
+      ),
     SBVRep (..),
     SBVFreshMonad (..),
     translateTypeError,
@@ -585,14 +590,32 @@ type NonFuncPrimConstraint a =
     PrimConstraint a
   )
 
+-- | A first-class witness for the SBV-side constraint of a non-function
+-- primitive.  Recursive primitives cache this witness in their class
+-- dictionary: arrays over large right-nested products otherwise redischarge
+-- every leaf constraint at each select, store, equality, or lowering step.
+data NonFuncPrimEvidence a where
+  NonFuncPrimEvidence ::
+    (NonFuncPrimConstraint a) => NonFuncPrimEvidence a
+
 -- | Indicates that a type is supported, can be represented as a symbolic term,
 -- is not a function type, and can be lowered to an SBV term.
 class (NonFuncSBVRep a) => SupportedNonFuncPrim a where
   conNonFuncSBVTerm :: a -> SBV.SBV (NonFuncSBVBaseType a)
   symNonFuncSBVTerm ::
     (SBVFreshMonad m) => String -> m (SBV.SBV (NonFuncSBVBaseType a))
+  nonFuncPrimEvidence :: NonFuncPrimEvidence a
+  nonFuncPrimEvidence = withNonFuncPrim @a NonFuncPrimEvidence
   withNonFuncPrim :: ((NonFuncPrimConstraint a) => r) -> r
+  withNonFuncPrim r = case nonFuncPrimEvidence @a of
+    NonFuncPrimEvidence -> r
   sbvToCon :: NonFuncSBVBaseType a -> a
+  {-# MINIMAL
+    conNonFuncSBVTerm,
+    symNonFuncSBVTerm,
+    (nonFuncPrimEvidence | withNonFuncPrim),
+    sbvToCon
+    #-}
 
 -- | Partition the list of CVs for models for functions.
 partitionCVArg ::
@@ -8202,7 +8225,8 @@ instance
   where
   conNonFuncSBVTerm = conNonFuncSBVTerm . unNominal
   symNonFuncSBVTerm = symNonFuncSBVTerm @value
-  withNonFuncPrim result = withNonFuncPrim @value result
+  nonFuncPrimEvidence = withNonFuncPrim @value NonFuncPrimEvidence
+  {-# NOINLINE nonFuncPrimEvidence #-}
   sbvToCon = Nominal . sbvToCon @value
 
 pevalITEBVTerm ::
@@ -8762,7 +8786,9 @@ instance
   ) => SupportedNonFuncPrim (Array k v) where
   conNonFuncSBVTerm = conSBVTerm
   symNonFuncSBVTerm = withNonFuncPrim @(Array k v) sbvFresh
-  withNonFuncPrim = withNonFuncPrim @k $ withNonFuncPrim @v $ id
+  nonFuncPrimEvidence =
+    withNonFuncPrim @k $ withNonFuncPrim @v NonFuncPrimEvidence
+  {-# NOINLINE nonFuncPrimEvidence #-}
   sbvToCon (SBV.ArrayModel entries def) =
     canonicalizeArrayModel $
       SBV.ArrayModel
@@ -8922,7 +8948,8 @@ instance SupportedNonFuncPrim a => NonFuncSBVRep [a] where
 instance SupportedNonFuncPrim a => SupportedNonFuncPrim [a] where
   conNonFuncSBVTerm = conSBVTerm
   symNonFuncSBVTerm = withNonFuncPrim @[a] sbvFresh
-  withNonFuncPrim = withNonFuncPrim @a
+  nonFuncPrimEvidence = withNonFuncPrim @a NonFuncPrimEvidence
+  {-# NOINLINE nonFuncPrimEvidence #-}
   sbvToCon = fmap sbvToCon
 
 instance
@@ -8999,7 +9026,9 @@ instance
   where
   conNonFuncSBVTerm = conSBVTerm
   symNonFuncSBVTerm = withNonFuncPrim @(a, b) sbvFresh
-  withNonFuncPrim r = withNonFuncPrim @a $ withNonFuncPrim @b r
+  nonFuncPrimEvidence =
+    withNonFuncPrim @a $ withNonFuncPrim @b NonFuncPrimEvidence
+  {-# NOINLINE nonFuncPrimEvidence #-}
   sbvToCon = bimap sbvToCon sbvToCon
 
 -- Bitwise

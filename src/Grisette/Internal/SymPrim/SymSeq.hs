@@ -42,7 +42,8 @@ import Grisette.Internal.Internal.Decl.SymPrim.AllSyms
   )
 import Grisette.Internal.Core.Data.Symbol (freshBoundSymbol)
 import Grisette.Internal.SymPrim.GeneralFun
-  ( buildGeneralFun,
+  ( buildGeneralFun2,
+    buildGeneralFun3,
     pevalClosedSeqFold,
     pevalClosedSeqFoldWith,
     type (-->),
@@ -293,10 +294,7 @@ foldHost step initial sequence = unsafePerformIO $ do
           )
       stepTerm =
         conTerm
-          ( buildGeneralFun
-              stateSymbol
-              (conTerm (buildGeneralFun elementSymbol body))
-          )
+          (buildGeneralFun2 stateSymbol elementSymbol body)
       folded =
         pevalClosedSeqFold
           stepTerm
@@ -339,14 +337,8 @@ foldWithHost step environment initial sequence = unsafePerformIO $ do
           )
       stepTerm =
         conTerm
-          ( buildGeneralFun
-              environmentSymbol
-              ( conTerm
-                  ( buildGeneralFun
-                      stateSymbol
-                      (conTerm (buildGeneralFun elementSymbol body))
-                  )
-              )
+          ( buildGeneralFun3
+              environmentSymbol stateSymbol elementSymbol body
           )
       folded =
         pevalClosedSeqFoldWith

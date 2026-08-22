@@ -13,6 +13,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE Trustworthy #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
 
@@ -141,7 +142,8 @@ import Grisette.Internal.SymPrim.BV (IntN, WordN)
 import Grisette.Internal.SymPrim.FP (FP, FPRoundingMode, ValidFP)
 import Grisette.Internal.SymPrim.GeneralFun (type (-->))
 import Grisette.Internal.SymPrim.Prim.Term
-  ( LinkedRep,
+  ( ConRep (ConType),
+    LinkedRep,
     SupportedNonFuncPrim,
     SupportedPrim,
   )
@@ -154,6 +156,7 @@ import Grisette.Internal.SymPrim.SymBool (SymBool)
 import Grisette.Internal.SymPrim.SymFP (SymFP, SymFPRoundingMode)
 import Grisette.Internal.SymPrim.SymGeneralFun (type (-~>) (SymGeneralFun))
 import Grisette.Internal.SymPrim.SymInteger (SymInteger)
+import Grisette.Internal.SymPrim.SymSeq (SymSeq)
 import Grisette.Internal.SymPrim.SymTabularFun (type (=~>) (SymTabularFun))
 import Grisette.Internal.SymPrim.TabularFun (type (=->))
 import Grisette.Unified.Lib.Data.Functor (mrgFmap)
@@ -1749,6 +1752,31 @@ GENSYM_BV(SymWordN)
 GENSYM_SIMPLE_BV(SymWordN)
 GENSYM_UNIT_BV(SymWordN)
 GENSYM_UNIT_SIMPLE_BV(SymWordN)
+
+instance
+  (SupportedNonFuncPrim (ConType a), LinkedRep (ConType a) a) =>
+  GenSym (SymSeq a) (SymSeq a)
+
+instance
+  (SupportedNonFuncPrim (ConType a), LinkedRep (ConType a) a) =>
+  GenSymSimple (SymSeq a) (SymSeq a)
+  where
+  simpleFresh _ = simpleFresh ()
+
+instance
+  (SupportedNonFuncPrim (ConType a), LinkedRep (ConType a) a) =>
+  GenSym () (SymSeq a)
+  where
+  fresh _ = mrgSingle <$> simpleFresh ()
+
+instance
+  (SupportedNonFuncPrim (ConType a), LinkedRep (ConType a) a) =>
+  GenSymSimple () (SymSeq a)
+  where
+  simpleFresh _ = do
+    ident <- getIdentifier
+    FreshIndex index <- nextFreshIndex
+    return $ isym ident index
 
 GENSYM_FUN((=->), (=~>), SymTabularFun)
 GENSYM_SIMPLE_FUN((=->), (=~>), SymTabularFun)

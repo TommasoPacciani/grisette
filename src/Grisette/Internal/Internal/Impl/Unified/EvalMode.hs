@@ -15,6 +15,7 @@ import Grisette.Internal.Internal.Decl.Unified.EvalMode
     EvalModeBV,
     EvalModeBase,
     EvalModeFP,
+    EvalModeSizedBV (withBaseBV, withBaseBVBVConversion),
   )
 import Grisette.Internal.Internal.Impl.Unified.BVFPConversion ()
 import Grisette.Internal.Internal.Impl.Unified.FPFPConversion ()
@@ -25,6 +26,14 @@ import Grisette.Internal.Unified.EvalModeTag (EvalModeTag (C, S))
 instance EvalModeBase 'C
 
 instance EvalModeBase 'S
+
+instance EvalModeSizedBV 'C where
+  withBaseBV result = result
+  withBaseBVBVConversion result = result
+
+instance EvalModeSizedBV 'S where
+  withBaseBV result = result
+  withBaseBVBVConversion result = result
 
 instance EvalModeAll 'C
 

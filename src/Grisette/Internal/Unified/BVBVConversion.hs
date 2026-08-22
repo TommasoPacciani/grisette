@@ -1,4 +1,5 @@
 {-# LANGUAGE CPP #-}
+{-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
@@ -24,6 +25,7 @@ module Grisette.Internal.Unified.BVBVConversion
   )
 where
 
+import Data.Kind (Constraint)
 import GHC.TypeNats (KnownNat, Nat, type (<=))
 import Grisette.Internal.SymPrim.BV (IntN, WordN)
 import Grisette.Internal.SymPrim.SymBV (SymIntN, SymWordN)
@@ -146,16 +148,10 @@ instance
   UnifiedBVBVConversion (mode :: EvalModeTag) n0 n1
 
 -- | Evaluation mode with unified conversion from bit-vectors to bit-vectors.
-class
+-- This is transparent so clients pass the quantified conversion evidence
+-- itself rather than a methodless superclass wrapper around it.
+type AllUnifiedBVBVConversion (mode :: EvalModeTag) =
   ( forall n0 n1.
     (KnownNat n0, KnownNat n1, 1 <= n0, 1 <= n1) =>
     UnifiedBVBVConversion mode n0 n1
-  ) =>
-  AllUnifiedBVBVConversion mode
-
-instance
-  ( forall n0 n1.
-    (KnownNat n0, KnownNat n1, 1 <= n0, 1 <= n1) =>
-    UnifiedBVBVConversion mode n0 n1
-  ) =>
-  AllUnifiedBVBVConversion mode
+  ) :: Constraint

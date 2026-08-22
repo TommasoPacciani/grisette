@@ -46,6 +46,7 @@ import Grisette.Internal.TH.Derivation.Common
     freshenCheckArgsResult,
     isVarUsedInFields,
     specializeResult,
+    wrapEvalModeConstraintBody,
   )
 import Grisette.Internal.TH.Util (allUsedNames)
 import Language.Haskell.TH
@@ -170,6 +171,7 @@ funPatAndExps fieldFunExpGen extraLiftedPatNames argTypes fields = do
 
 -- | Generate a clause for a unary function on a GADT.
 genUnaryOpFieldClause ::
+  (Q Exp -> Q Exp) ->
   UnaryOpFieldConfig ->
   [(Type, Kind)] ->
   Int ->
@@ -177,6 +179,7 @@ genUnaryOpFieldClause ::
   ConstructorInfo ->
   Q Clause
 genUnaryOpFieldClause
+  wrapBody
   (UnaryOpFieldConfig {..})
   argTypes
   totalConNumber
@@ -227,6 +230,7 @@ genUnaryOpFieldClause
     let transformPat (VarP nm) =
           if S.member nm resUsedNames then VarP nm else WildP
         transformPat p = p
+    wrappedResExp <- wrapBody $ return resExp
     return $
       Clause
         ( fmap transformPat $
@@ -234,7 +238,7 @@ genUnaryOpFieldClause
               ++ extraArgsPats
               ++ [fieldPats]
         )
-        (NormalB resExp)
+        (NormalB wrappedResExp)
         []
 
 -- | Configuration for a unary operation type class generation on a GADT.
@@ -313,10 +317,12 @@ class UnaryOpFunConfig config where
 instance UnaryOpFunConfig UnaryOpFieldConfig where
   genUnaryOpFun _ _ funNames n _ _ _ _ [] =
     funD (funNames !! n) [clause [] (normalB [|error "impossible"|]) []]
-  genUnaryOpFun _ config funNames n _ _ argTypes _ constructors = do
+  genUnaryOpFun deriveConfig config funNames n _ keptVars argTypes _ constructors = do
+    let wrapBody = wrapEvalModeConstraintBody deriveConfig keptVars
     clauses <-
       zipWithM
         ( genUnaryOpFieldClause
+            wrapBody
             config
             argTypes
             (length constructors)

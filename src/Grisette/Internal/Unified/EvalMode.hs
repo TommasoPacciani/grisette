@@ -9,8 +9,11 @@
 -- Stability   :   Experimental
 -- Portability :   GHC only
 module Grisette.Internal.Unified.EvalMode
-  ( EvalModeBase,
+  ( EvalModeCore,
+    EvalModeBase,
     EvalModeInteger,
+    EvalModeIntegerBase,
+    EvalModeSizedBV (..),
     EvalModeBV,
     EvalModeFP,
     EvalModeAlgReal,

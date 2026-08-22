@@ -4,6 +4,7 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 
 -- |
@@ -20,6 +21,7 @@ module Grisette.Internal.TH.Derivation.Common
     ctxForVar,
     EvalModeConfig (..),
     DeriveConfig (..),
+    wrapEvalModeConstraintBody,
     extraEvalModeConstraint,
     extraBitSizeConstraint,
     extraFpBitSizeConstraint,
@@ -45,9 +47,10 @@ import Grisette.Internal.Internal.Decl.Core.Data.Class.Mergeable
   )
 import Grisette.Internal.SymPrim.FP (ValidFP)
 import Grisette.Internal.Unified.EvalModeTag (EvalModeTag (C, S))
-import Grisette.Internal.Unified.Util (DecideEvalMode)
+import Grisette.Internal.Unified.Util (DecideEvalMode, withMode)
 import Language.Haskell.TH
-  ( Kind,
+  ( Exp,
+    Kind,
     Name,
     Pred,
     Q,
@@ -317,6 +320,22 @@ instance Semigroup DeriveConfig where
 instance Monoid DeriveConfig where
   mempty = DeriveConfig [] [] [] [] False False False True
   mappend = (<>)
+
+-- | Reintroduce the concrete mode equality only inside generated method
+-- bodies. This keeps quantified field constraints out of the instance context
+-- while still letting GHC select the concrete or symbolic field instances.
+wrapEvalModeConstraintBody ::
+  DeriveConfig -> [(Type, Kind)] -> Q Exp -> Q Exp
+wrapEvalModeConstraintBody DeriveConfig {..} args bodyQ = do
+  body <- bodyQ
+  foldM wrap body evalModeConfig
+  where
+    wrap current (position, EvalModeConstraints _)
+      | position >= 0,
+        position < length args =
+          let modeType = fst $ args !! position
+           in [|withMode @($(return modeType)) $(return current) $(return current)|]
+    wrap current _ = return current
 
 -- | Generate extra constraints for evaluation modes.
 extraEvalModeConstraint ::

@@ -27,6 +27,7 @@ import GHC.TypeLits (KnownNat, type (<=))
 import Grisette.Internal.Core.Data.Class.BitVector (SizedBV)
 import Grisette.Internal.Internal.Decl.Unified.UnifiedBV
   ( AllUnifiedBV,
+    AllUnifiedSizedBV,
     GetSomeIntN,
     GetSomeWordN,
     SafeUnifiedBV,
@@ -141,9 +142,9 @@ instance
       MonadError (Either SomeBVException ArithException) m
     ) =>
     SafeUnifiedSomeBV mode m,
-    forall n. (KnownNat n, 1 <= n) => UnifiedBV mode n,
-    SomeBVPair mode (GetSomeWordN mode) (GetSomeIntN mode),
+    AllUnifiedSizedBV mode,
     SizedBV (GetWordN mode),
-    SizedBV (GetIntN mode)
+    SizedBV (GetIntN mode),
+    SomeBVPair mode (GetSomeWordN mode) (GetSomeIntN mode)
   ) =>
   AllUnifiedBV mode

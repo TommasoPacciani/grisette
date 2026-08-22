@@ -43,6 +43,7 @@ import Grisette.Internal.TH.Derivation.Common
     freshenCheckArgsResult,
     isVarUsedInFields,
     specializeResult,
+    wrapEvalModeConstraintBody,
   )
 import Language.Haskell.TH
   ( Clause,
@@ -151,6 +152,7 @@ data BinaryOpFieldConfig = BinaryOpFieldConfig
 
 -- | Generate a clause for a binary operation on a GADT.
 genBinaryOpClause ::
+  (Q Exp -> Q Exp) ->
   BinaryOpFieldConfig ->
   [(Type, Kind)] ->
   [(Type, Kind)] ->
@@ -159,6 +161,7 @@ genBinaryOpClause ::
   ConstructorInfo ->
   Q [Clause]
 genBinaryOpClause
+  wrapBody
   (BinaryOpFieldConfig {..})
   lhsArgNewVars
   _rhsArgNewVars
@@ -244,28 +247,31 @@ genBinaryOpClause
               (\pat used -> if used then pat else WildP)
               extraPats
               extraArgsUsed
+      bothMatchedResult <-
+        wrapBody
+          [|
+            $( construct $
+                 zip
+                   (constructorVars lhsConstructors)
+                   (constructorVars rhsConstructors)
+             )
+            |]
+      leftMatchedResult <- wrapBody fieldLMatchResult
+      rightMatchedResult <- wrapBody fieldRMatchResult
       bothMatched <-
         clause
           ((return <$> funPats ++ extraArgsPats) ++ [lhsFieldPats, rhsFieldPats])
-          ( normalB
-              [|
-                $( construct $
-                     zip
-                       (constructorVars lhsConstructors)
-                       (constructorVars rhsConstructors)
-                 )
-                |]
-          )
+          (normalB $ return bothMatchedResult)
           []
       lhsMatched <-
         clause
           ((wildP <$ funPats) ++ [singleMatchPat, wildP])
-          (normalB [|$(fieldLMatchResult)|])
+          (normalB $ return leftMatchedResult)
           []
       rhsMatched <-
         clause
           ((wildP <$ funPats) ++ [wildP, singleMatchPat])
-          (normalB [|$(fieldRMatchResult)|])
+          (normalB $ return rightMatchedResult)
           []
       if isLast
         then return [bothMatched]
@@ -281,6 +287,7 @@ data BinaryOpClassConfig = BinaryOpClassConfig
 
 -- | Generate a function for a binary operation on a GADT.
 genBinaryOpFun ::
+  (Q Exp -> Q Exp) ->
   BinaryOpFieldConfig ->
   Int ->
   [(Type, Kind)] ->
@@ -288,11 +295,12 @@ genBinaryOpFun ::
   [ConstructorInfo] ->
   [ConstructorInfo] ->
   Q Dec
-genBinaryOpFun config n _ _ [] [] =
+genBinaryOpFun _ config n _ _ [] [] =
   funD
     (fieldFunNames config !! n)
     [clause [] (normalB [|error "impossible"|]) []]
 genBinaryOpFun
+  wrapBody
   config
   n
   lhsArgNewVars
@@ -301,11 +309,12 @@ genBinaryOpFun
   rhsConstructors = do
     clauses <-
       zipWithM
-        (genBinaryOpClause config lhsArgNewVars rhsArgNewVars False)
+        (genBinaryOpClause wrapBody config lhsArgNewVars rhsArgNewVars False)
         (init lhsConstructors)
         (init rhsConstructors)
     lastClause <-
       genBinaryOpClause
+        wrapBody
         config
         lhsArgNewVars
         rhsArgNewVars
@@ -354,10 +363,12 @@ genBinaryOpClass deriveConfig (BinaryOpClassConfig {..}) n typName = do
           filter (not . (`elem` unconstrainedPositions deriveConfig) . fst) $
             zip [0 ..] keptVars'
   let keptType = foldl AppT (ConT typName) $ fmap fst keptVars'
+  let wrapBody = wrapEvalModeConstraintBody deriveConfig keptVars'
   instanceFuns <-
     traverse
       ( \config ->
           genBinaryOpFun
+            wrapBody
             config
             n
             (argVars lhsResult)

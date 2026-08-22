@@ -17,8 +17,11 @@ module Grisette.Unified
     -- * Aggregated constraints
     genEvalMode,
     TheoryToUnify (..),
+    EvalModeCore,
     EvalModeBase,
     EvalModeInteger,
+    EvalModeIntegerBase,
+    EvalModeSizedBV (..),
     EvalModeBV,
     EvalModeFP,
     EvalModeAlgReal,
@@ -147,6 +150,7 @@ module Grisette.Unified
 
     -- ** Integer
     GetInteger,
+    UnifiedIntegerBase,
     UnifiedInteger,
 
     -- ** FP
@@ -183,7 +187,9 @@ module Grisette.Unified
     GetArray,
     UnifiedArray (..),
     UnifiedArrayConstraint,
-    EvalModeArray,
+    EvalModeArray (..),
+    UnifiedScalarArray,
+    UnifiedBVArray,
 
     -- ** Unified solver sequences and products
     SolverValue,
@@ -327,8 +333,11 @@ import Grisette.Internal.Unified.EvalMode
     EvalModeAll,
     EvalModeBV,
     EvalModeBase,
+    EvalModeCore,
     EvalModeFP,
     EvalModeInteger,
+    EvalModeIntegerBase,
+    EvalModeSizedBV (..),
     MonadEvalModeAll,
     genEvalMode,
   )
@@ -376,7 +385,9 @@ import Grisette.Internal.Unified.UnifiedArray
   ( GetArray,
     UnifiedArray (..),
     UnifiedArrayConstraint,
-    EvalModeArray,
+    EvalModeArray (..),
+    UnifiedBVArray,
+    UnifiedScalarArray,
   )
 import Grisette.Internal.Unified.UnifiedSeq
   ( GetPair,
@@ -407,6 +418,7 @@ import Grisette.Internal.Unified.UnifiedFun
 import Grisette.Internal.Unified.UnifiedInteger
   ( GetInteger,
     UnifiedInteger,
+    UnifiedIntegerBase,
   )
 import Grisette.Internal.Unified.UnifiedNominal
   ( GetNominal,
