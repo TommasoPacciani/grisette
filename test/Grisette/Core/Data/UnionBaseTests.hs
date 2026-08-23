@@ -3,6 +3,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
 
 module Grisette.Core.Data.UnionBaseTests (unionBaseTests) where
@@ -26,6 +27,10 @@ import Grisette.Internal.Core.Data.UnionBase
     fullReconstruct,
     ifWithLeftMost,
     ifWithStrategy,
+  )
+import Grisette.Internal.SymPrim.Prim.Internal.Term
+  ( iteTerm,
+    pattern ITETerm,
   )
 import Grisette.Internal.SymPrim.SymBool (SymBool (SymBool))
 import Grisette.TestUtil.SymbolicAssertion ((.@?=))
@@ -921,7 +926,7 @@ unionBaseTests =
                                 (UnionSingle $ TS3 2)
                             )
                         ),
-                  testCase "Equal-bucket guards remain shallow over shared conjunctions" $ do
+                  testCase "Equal-bucket guards keep nested ITE rewrites shallow" $ do
                     let commonGuard =
                           foldr
                             (.&&)
@@ -929,9 +934,15 @@ unionBaseTests =
                             [ fromString ("union.guard.common." <> show i)
                               | i <- [0 .. 63 :: Int]
                             ]
-                        trueGuard = commonGuard .&& "union.guard.true"
+                        trueArmGuard = commonGuard .&& "union.guard.true"
                         falseGuard = commonGuard .&& "union.guard.false"
+                        nestedGuard = "union.guard.nested"
                         outerGuard = "union.guard.outer"
+                        SymBool trueArmTerm = trueArmGuard
+                        SymBool falseTerm = falseGuard
+                        SymBool nestedTerm = nestedGuard
+                        trueGuard =
+                          SymBool $ iteTerm nestedTerm trueArmTerm falseTerm
                         ifTrue =
                           ifWithStrategy
                             rootStrategy
@@ -970,7 +981,16 @@ unionBaseTests =
                             let SymBool actualTerm = actualGuard
                                 SymBool outerTerm = outerGuard
                                 SymBool trueTerm = trueGuard
-                                SymBool falseTerm = falseGuard
+                                SymBool expectedCondition =
+                                  outerGuard .&& nestedGuard
+                            case actualTerm of
+                              ITETerm actualCondition actualTrue actualFalse -> do
+                                actualCondition @?= expectedCondition
+                                actualTrue @?= trueArmTerm
+                                actualFalse @?= falseTerm
+                              _ ->
+                                assertFailure
+                                  "equal-bucket guard was factored beyond its immediate ITE identity"
                             termSize actualTerm
                               @?= termsSize [outerTerm, trueTerm, falseTerm] + 1
                             actualGuard .@?= symIte outerGuard trueGuard falseGuard

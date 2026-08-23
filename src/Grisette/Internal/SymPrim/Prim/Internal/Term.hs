@@ -281,6 +281,7 @@ module Grisette.Internal.SymPrim.Prim.Internal.Term
     pevalXorTerm,
     pevalITEBasic,
     pevalITEBasicTerm,
+    pevalITEBoolMergeGuardTerm,
     pevalDefaultEqTerm,
     NonFuncPrimConstraint,
     NonFuncSBVRep (..),
@@ -8008,6 +8009,140 @@ pevalITEBasicTerm :: (SupportedPrim a) => Term Bool -> Term a -> Term a -> Term 
 pevalITEBasicTerm cond ~ifTrue ~ifFalse =
   fromMaybe (iteTerm cond ifTrue ifFalse) $
     pevalITEBasic cond ifTrue ifFalse
+
+-- | Construct the Boolean ITE used to merge equal sorted-union bucket guards.
+--
+-- This deliberately performs only one layer of generic ITE rewrites.  Every
+-- ITE synthesized by an immediate identity goes through 'mergeGuardITEAtom',
+-- which never calls 'pevalITETerm'.  In particular, large conjunction or
+-- disjunction arms cannot re-enter the Boolean-specific factoring rules.
+pevalITEBoolMergeGuardTerm ::
+  Term Bool -> Term Bool -> Term Bool -> Term Bool
+pevalITEBoolMergeGuardTerm
+  cond
+  (NotTerm ifTrue)
+  (NotTerm ifFalse) =
+    mergeGuardNotTerm $ mergeGuardITEBasic cond ifTrue ifFalse
+pevalITEBoolMergeGuardTerm cond ifTrue ifFalse =
+  mergeGuardITEBasic cond ifTrue ifFalse
+{-# INLINE pevalITEBoolMergeGuardTerm #-}
+
+mergeGuardITEBasic :: Term Bool -> Term Bool -> Term Bool -> Term Bool
+mergeGuardITEBasic (NotTerm cond) ifTrue ifFalse =
+  mergeGuardITEBasicNonNegated cond ifFalse ifTrue
+mergeGuardITEBasic cond ifTrue ifFalse =
+  mergeGuardITEBasicNonNegated cond ifTrue ifFalse
+{-# INLINE mergeGuardITEBasic #-}
+
+mergeGuardITEBasicNonNegated ::
+  Term Bool -> Term Bool -> Term Bool -> Term Bool
+mergeGuardITEBasicNonNegated (ConTerm True) ~ifTrue ~_ = ifTrue
+mergeGuardITEBasicNonNegated (ConTerm False) ~_ ~ifFalse = ifFalse
+mergeGuardITEBasicNonNegated _ ifTrue ifFalse
+  | ifTrue == ifFalse = ifTrue
+mergeGuardITEBasicNonNegated
+  (ITETerm cc ct cf)
+  (ITETerm tc tt tf)
+  (ITETerm fc ft ff)
+    | cc == tc && cc == fc =
+        mergeGuardITEAtom
+          cc
+          (mergeGuardITEAtom ct tt ft)
+          (mergeGuardITEAtom cf tf ff)
+mergeGuardITEBasicNonNegated cond (ITETerm tc tt tf) ifFalse
+  | tt == ifFalse =
+      mergeGuardITEAtom
+        (mergeGuardOrTerm (mergeGuardNotTerm cond) tc)
+        tt
+        tf
+  | tf == ifFalse =
+      mergeGuardITEAtom (mergeGuardAndTerm cond tc) tt tf
+  | termImplies cond tc = mergeGuardITEAtom cond tt ifFalse
+mergeGuardITEBasicNonNegated
+  cond
+  (ITETerm (AndTerm c1 c2) tt tf)
+  ifFalse
+    | cond == c1 =
+        mergeGuardITEAtom cond (mergeGuardITEAtom c2 tt tf) ifFalse
+    | cond == c2 =
+        mergeGuardITEAtom cond (mergeGuardITEAtom c1 tt tf) ifFalse
+mergeGuardITEBasicNonNegated cond ifTrue (ITETerm fc ft ff)
+  | ifTrue == ft =
+      mergeGuardITEAtom (mergeGuardOrTerm cond fc) ifTrue ff
+  | ifTrue == ff =
+      mergeGuardITEAtom
+        (mergeGuardOrTerm cond (mergeGuardNotTerm fc))
+        ifTrue
+        ft
+  | termImplies fc cond = mergeGuardITEAtom cond ifTrue ff
+mergeGuardITEBasicNonNegated
+  cond
+  ifTrue
+  (ITETerm (OrTerm c1 c2) ft ff)
+    | cond == c1 =
+        mergeGuardITEAtom cond ifTrue (mergeGuardITEAtom c2 ft ff)
+    | cond == c2 =
+        mergeGuardITEAtom cond ifTrue (mergeGuardITEAtom c1 ft ff)
+mergeGuardITEBasicNonNegated cond ifTrue ifFalse =
+  iteTerm cond ifTrue ifFalse
+{-# INLINE mergeGuardITEBasicNonNegated #-}
+
+-- Apply only the reductions that do not inspect an ITE arm.  This is the
+-- non-recursive destination for every ITE built by the one-layer identities
+-- above.
+mergeGuardITEAtom :: Term Bool -> Term Bool -> Term Bool -> Term Bool
+mergeGuardITEAtom (ConTerm True) ~ifTrue ~_ = ifTrue
+mergeGuardITEAtom (ConTerm False) ~_ ~ifFalse = ifFalse
+mergeGuardITEAtom (NotTerm cond) ifTrue ifFalse =
+  mergeGuardITEAtomNonNegated cond ifFalse ifTrue
+mergeGuardITEAtom cond ifTrue ifFalse =
+  mergeGuardITEAtomNonNegated cond ifTrue ifFalse
+{-# INLINE mergeGuardITEAtom #-}
+
+mergeGuardITEAtomNonNegated ::
+  Term Bool -> Term Bool -> Term Bool -> Term Bool
+mergeGuardITEAtomNonNegated (ConTerm True) ~ifTrue ~_ = ifTrue
+mergeGuardITEAtomNonNegated (ConTerm False) ~_ ~ifFalse = ifFalse
+mergeGuardITEAtomNonNegated _ ifTrue ifFalse
+  | ifTrue == ifFalse = ifTrue
+mergeGuardITEAtomNonNegated cond ifTrue ifFalse =
+  iteTerm cond ifTrue ifFalse
+{-# INLINE mergeGuardITEAtomNonNegated #-}
+
+mergeGuardNotTerm :: Term Bool -> Term Bool
+mergeGuardNotTerm (ConTerm value) =
+  if value then falseTerm else trueTerm
+mergeGuardNotTerm (NotTerm term) = term
+mergeGuardNotTerm term = notTerm term
+{-# INLINE mergeGuardNotTerm #-}
+
+mergeGuardOrTerm :: Term Bool -> Term Bool -> Term Bool
+mergeGuardOrTerm (ConTerm True) ~_ = trueTerm
+mergeGuardOrTerm _ (ConTerm True) = trueTerm
+mergeGuardOrTerm (ConTerm False) term = term
+mergeGuardOrTerm term (ConTerm False) = term
+mergeGuardOrTerm (NotTerm left) right
+  | left == right = trueTerm
+mergeGuardOrTerm left (NotTerm right)
+  | left == right = trueTerm
+mergeGuardOrTerm left right
+  | left == right = left
+mergeGuardOrTerm left right = orTerm left right
+{-# INLINE mergeGuardOrTerm #-}
+
+mergeGuardAndTerm :: Term Bool -> Term Bool -> Term Bool
+mergeGuardAndTerm (ConTerm False) ~_ = falseTerm
+mergeGuardAndTerm _ (ConTerm False) = falseTerm
+mergeGuardAndTerm (ConTerm True) term = term
+mergeGuardAndTerm term (ConTerm True) = term
+mergeGuardAndTerm (NotTerm left) right
+  | left == right = falseTerm
+mergeGuardAndTerm left (NotTerm right)
+  | left == right = falseTerm
+mergeGuardAndTerm left right
+  | left == right = left
+mergeGuardAndTerm left right = andTerm left right
+{-# INLINE mergeGuardAndTerm #-}
 
 -- | Default partial evaluation for equality terms.
 pevalDefaultEqTerm :: (SupportedNonFuncPrim a) => Term a -> Term a -> Term Bool

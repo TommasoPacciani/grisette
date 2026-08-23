@@ -47,13 +47,11 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
     SymRep (SymType),
     Term,
     conTerm,
-    pevalITEBasicTerm,
-    pevalNotTerm,
+    pevalITEBoolMergeGuardTerm,
     pformatTerm,
     symTerm,
     typedConstantSymbol,
     pattern ConTerm,
-    pattern NotTerm,
   )
 import Language.Haskell.TH.Syntax (Lift)
 
@@ -80,13 +78,8 @@ newtype SymBool = SymBool {underlyingBoolTerm :: Term Bool}
 -- disjunctions. Generic ITE reductions remain available for concrete or
 -- negated conditions, identical arms, and immediately nested ITEs.
 symIteMergeGuard :: SymBool -> SymBool -> SymBool -> SymBool
-symIteMergeGuard
-  (SymBool cond)
-  (SymBool (NotTerm ifTrue))
-  (SymBool (NotTerm ifFalse)) =
-    SymBool $ pevalNotTerm $ pevalITEBasicTerm cond ifTrue ifFalse
 symIteMergeGuard (SymBool cond) (SymBool ifTrue) (SymBool ifFalse) =
-  SymBool $ pevalITEBasicTerm cond ifTrue ifFalse
+  SymBool $ pevalITEBoolMergeGuardTerm cond ifTrue ifFalse
 {-# INLINE symIteMergeGuard #-}
 
 -- | t'SymBool' type with identity equality.
