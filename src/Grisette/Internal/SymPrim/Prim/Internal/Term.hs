@@ -8370,42 +8370,92 @@ pevalITEBVTerm ::
     PEvalBVTerm bv
   ) =>
   Term Bool -> Term (bv n) -> Term (bv n) -> Maybe (Term (bv n))
-pevalITEBVTerm
-  ( EqTerm
-      (DynTerm (l :: Term (bv n)))
-      (DynTerm (ConTerm (r :: bv n)))
-    )
-  (ConTerm t)
-  (ConTerm f)
-    | natVal (Proxy @n) == 1 && r == 1 && t == 0 && f == 1 = Just $ pevalComplementBitsTerm l
-    | natVal (Proxy @n) == 1 && r == 1 && t == 1 && f == 0 = Just l
-    | natVal (Proxy @n) == 1 && r == 0 && t == 0 && f == 1 = Just l
-    | natVal (Proxy @n) == 1 && r == 0 && t == 1 && f == 0 = Just $ pevalComplementBitsTerm l
-pevalITEBVTerm
-  (EqTerm (DynTerm (l :: Term (bv 1))) (DynTerm (ConTerm (r :: bv 1))))
-  (ConTerm t)
-  f
-    | n > 1 && (t == 0 || t == -1) && (r == -1 || r == 0) =
-        Just $
-          (if t == 0 then pevalAndBitsTerm else pevalOrBitsTerm)
-            ( unsafePevalBVExtendTerm
-                (natRepr @1)
-                (natRepr @n)
-                True
-                (if (r == 0) == (t == 0) then l else pevalComplementBitsTerm l)
-            )
-            f
-    where
-      n = natVal (Proxy @n)
-pevalITEBVTerm
-  (EqTerm (DynTerm (_ :: Term (bv 1))) (DynTerm (ConTerm (_ :: bv 1))))
-  (ConTerm _)
-  (ConTerm _) = Nothing
-pevalITEBVTerm
-  (EqTerm (DynTerm (l :: Term (bv 1))) (DynTerm (ConTerm (r :: bv 1))))
-  t
-  f@(ConTerm _) = pevalITEBVTerm (eqTerm l (conTerm $ complement r)) f t
-pevalITEBVTerm
+pevalITEBVTerm cond ifTrue ifFalse = case (ifTrue, ifFalse) of
+  -- Dispatch on branch roots before dynamically casting an equality guard.
+  -- Most fieldwise BV choices have no BV-specific rewrite shape; inspecting
+  -- their guards first repeatedly rebuilt SupportedPrim evidence for work that
+  -- could only end in Nothing.
+  (ConTerm t, ConTerm f)
+    | natVal (Proxy @n) == 1 ->
+        pevalITEBVOneConcreteTerm @bv @n cond t f
+    | otherwise -> pevalITEBVLeadingConcreteTerm @bv @n cond t ifFalse
+  (ConTerm t, _)
+    | natVal (Proxy @n) > 1 ->
+        case pevalITEBVLeadingConcreteTerm @bv @n cond t ifFalse of
+          Just result -> Just result
+          Nothing -> pevalITEBVStructuralTerm @bv @n cond ifTrue ifFalse
+    | otherwise -> pevalITEBVStructuralTerm @bv @n cond ifTrue ifFalse
+  (_, ConTerm _) -> case cond of
+    EqTerm
+        (DynTerm (l :: Term (bv 1)))
+        (DynTerm (ConTerm (r :: bv 1))) ->
+      pevalITEBVTerm
+        (eqTerm l (conTerm $ complement r)) ifFalse ifTrue
+    _ -> pevalITEBVStructuralTerm @bv @n cond ifTrue ifFalse
+  _ -> pevalITEBVStructuralTerm @bv @n cond ifTrue ifFalse
+
+pevalITEBVOneConcreteTerm ::
+  forall bv n.
+  ( KnownNat n,
+    1 <= n,
+    forall m. (KnownNat m, 1 <= m) => SupportedPrim (bv m),
+    forall m. (KnownNat m, 1 <= m) => Show (bv m),
+    PEvalBVTerm bv
+  ) =>
+  Term Bool -> bv n -> bv n -> Maybe (Term (bv n))
+pevalITEBVOneConcreteTerm
+    ( EqTerm
+        (DynTerm (l :: Term (bv n)))
+        (DynTerm (ConTerm (r :: bv n)))
+      )
+    t f
+  | natVal (Proxy @n) == 1 && r == 1 && t == 0 && f == 1 =
+      Just $ pevalComplementBitsTerm l
+  | natVal (Proxy @n) == 1 && r == 1 && t == 1 && f == 0 = Just l
+  | natVal (Proxy @n) == 1 && r == 0 && t == 0 && f == 1 = Just l
+  | natVal (Proxy @n) == 1 && r == 0 && t == 1 && f == 0 =
+      Just $ pevalComplementBitsTerm l
+pevalITEBVOneConcreteTerm _ _ _ = Nothing
+
+pevalITEBVLeadingConcreteTerm ::
+  forall bv n.
+  ( KnownNat n,
+    1 <= n,
+    forall m. (KnownNat m, 1 <= m) => SupportedPrim (bv m),
+    forall m. (KnownNat m, 1 <= m) => Show (bv m),
+    PEvalBVTerm bv
+  ) =>
+  Term Bool -> bv n -> Term (bv n) -> Maybe (Term (bv n))
+pevalITEBVLeadingConcreteTerm
+    ( EqTerm
+        (DynTerm (l :: Term (bv 1)))
+        (DynTerm (ConTerm (r :: bv 1)))
+      )
+    t fallback
+  | n > 1 && (t == 0 || t == -1) && (r == -1 || r == 0) =
+      Just $
+        (if t == 0 then pevalAndBitsTerm else pevalOrBitsTerm)
+          ( unsafePevalBVExtendTerm
+              (natRepr @1)
+              (natRepr @n)
+              True
+              (if (r == 0) == (t == 0) then l else pevalComplementBitsTerm l)
+          )
+          fallback
+  where
+    n = natVal (Proxy @n)
+pevalITEBVLeadingConcreteTerm _ _ _ = Nothing
+
+pevalITEBVStructuralTerm ::
+  forall bv n.
+  ( KnownNat n,
+    1 <= n,
+    forall m. (KnownNat m, 1 <= m) => SupportedPrim (bv m),
+    forall m. (KnownNat m, 1 <= m) => Show (bv m),
+    PEvalBVTerm bv
+  ) =>
+  Term Bool -> Term (bv n) -> Term (bv n) -> Maybe (Term (bv n))
+pevalITEBVStructuralTerm
   cond
   (BVConcatTerm (a :: Term (bv a)) (b :: Term (bv b)))
   (BVConcatTerm (DynTerm (c :: Term (bv a))) d) =
@@ -8413,7 +8463,7 @@ pevalITEBVTerm
       pevalBVConcatTerm
         (pevalITETerm cond a c)
         (pevalITETerm cond b (unsafeCoerce d))
-pevalITEBVTerm
+pevalITEBVStructuralTerm
   cond
   (BVExtendTerm True pl (a :: Term (bv a)))
   (BVExtendTerm True _ (DynTerm (b :: Term (bv a)))) =
@@ -8422,29 +8472,29 @@ pevalITEBVTerm
         True
         pl
         (pevalITETerm cond a b)
-pevalITEBVTerm cond (AndBitsTerm a b) (AndBitsTerm c d)
+pevalITEBVStructuralTerm cond (AndBitsTerm a b) (AndBitsTerm c d)
   | a == c = Just $ andBitsTerm a $ pevalITETerm cond b d
   | a == d = Just $ andBitsTerm a $ pevalITETerm cond b c
   | b == c = Just $ andBitsTerm b $ pevalITETerm cond a d
   | b == d = Just $ andBitsTerm b $ pevalITETerm cond a c
-pevalITEBVTerm cond (AndBitsTerm a b) c
+pevalITEBVStructuralTerm cond (AndBitsTerm a b) c
   | a == c = Just $ andBitsTerm c $ pevalOrBitsTerm (boolToBVTerm $ pevalNotTerm cond) b
   | b == c = Just $ andBitsTerm c $ pevalOrBitsTerm (boolToBVTerm $ pevalNotTerm cond) a
-pevalITEBVTerm cond a (AndBitsTerm b c)
+pevalITEBVStructuralTerm cond a (AndBitsTerm b c)
   | a == b = Just $ andBitsTerm a $ pevalOrBitsTerm (boolToBVTerm cond) c
   | a == c = Just $ andBitsTerm a $ pevalOrBitsTerm (boolToBVTerm cond) b
-pevalITEBVTerm cond (OrBitsTerm a b) (OrBitsTerm c d)
+pevalITEBVStructuralTerm cond (OrBitsTerm a b) (OrBitsTerm c d)
   | a == c = Just $ orBitsTerm a $ pevalITETerm cond b d
   | a == d = Just $ orBitsTerm a $ pevalITETerm cond b c
   | b == c = Just $ orBitsTerm b $ pevalITETerm cond a d
   | b == d = Just $ orBitsTerm b $ pevalITETerm cond a c
-pevalITEBVTerm cond (OrBitsTerm a b) c
+pevalITEBVStructuralTerm cond (OrBitsTerm a b) c
   | a == c = Just $ orBitsTerm c $ pevalAndBitsTerm (boolToBVTerm cond) b
   | b == c = Just $ orBitsTerm c $ pevalAndBitsTerm (boolToBVTerm cond) a
-pevalITEBVTerm cond a (OrBitsTerm b c)
+pevalITEBVStructuralTerm cond a (OrBitsTerm b c)
   | a == b = Just $ orBitsTerm a $ pevalAndBitsTerm (boolToBVTerm $ pevalNotTerm cond) c
   | a == c = Just $ orBitsTerm a $ pevalAndBitsTerm (boolToBVTerm $ pevalNotTerm cond) b
-pevalITEBVTerm _ _ _ = Nothing
+pevalITEBVStructuralTerm _ _ _ = Nothing
 
 -- | Convert boolean term to a 1-bit bitvector term.
 boolToBVTerm ::
