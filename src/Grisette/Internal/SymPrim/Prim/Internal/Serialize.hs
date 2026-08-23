@@ -42,7 +42,6 @@ import Data.List.NonEmpty (NonEmpty ((:|)))
 import Data.Maybe (isJust, fromMaybe)
 import Data.Proxy (Proxy (Proxy))
 import qualified Data.Serialize as Cereal
-import Data.Typeable (heqT)
 import Data.Word (Word8)
 import GHC.Generics (Generic)
 import GHC.Natural (Natural)
@@ -1733,65 +1732,56 @@ statefulDeserializeSomeTerm = do
             else error "statefulDeserializeSomeTerm: invalid FP type"
       | tag == selectTermTag -> do
           -- Deserialize the array and key.
-          SomeTerm (arr :: Term a) <- deserializeTerm
-          SomeTerm (key :: Term k) <- deserializeTerm
+          arr <- deserializeTerm
+          key <- deserializeTerm
 
-          -- Deserialize the resulting value type and get the required
-          -- dictionaries for this type.
-          -- TODO: How do I know I get the correct known type here?
+          -- Deserialize the declared result type; it is checked against the
+          -- array's recovered value descriptor below.
           valType <- deserializeKnownType
-          KnownTypeWitness (_ :: Proxy v) <- pure $ witnessKnownType valType
+          KnownTypeWitness (_ :: Proxy result) <- pure $ witnessKnownType valType
 
-          -- Ensure that the key is indeed a valid key for the array and that
-          -- the resulting value matches the value type such that we can provide
-          -- the dictionary. Using this, we construct the final term.
-          let term = case typeRep @a of
-                App (App aRep kRep) vRep
-                  | Just HRefl <- eqTypeRep aRep $ typeRep @Array
-                  , Just HRefl <- eqTypeRep kRep $ typeRep @k
-                  , Just HRefl <- eqTypeRep vRep $ typeRep @v -> do
-                    someTerm $ selectTerm @k @v arr key
-                _ -> error "statefulDeserializeSomeTerm: invalid Array type"
-
-          pure $ Just (term, ktTmId)
+          -- Recover the key/value non-function dictionaries from the array
+          -- descriptor. Array term construction retains these dictionaries and
+          -- leaves the heavier SBV constraint discharge to solver lowering.
+          withArrayTerm arr $ \(arr' :: Term (Array arrayKey arrayValue)) ->
+            withNonFuncTerm key $ \(key' :: Term actualKey) ->
+              case
+                  ( eqTypeRep (typeRep @actualKey) (typeRep @arrayKey),
+                    eqTypeRep (typeRep @result) (typeRep @arrayValue)
+                  )
+                of
+                  (Just HRefl, Just HRefl) ->
+                    pure $ Just (someTerm $ selectTerm arr' key', ktTmId)
+                  _ -> fail "statefulDeserializeSomeTerm: invalid Array select type"
       | tag == storeTermTag -> do
           -- Deserialize the array, key and value.
-          SomeTerm (arr :: Term a) <- deserializeTerm
-          SomeTerm (key :: Term k) <- deserializeTerm
-          SomeTerm (val :: Term v) <- deserializeTerm
+          arr <- deserializeTerm
+          key <- deserializeTerm
+          val <- deserializeTerm
 
-          -- Ensure the types match up such that we can construct the term.
-          let term = case typeRep @a of
-                App (App aRep kRep) vRep
-                  | Just HRefl <- eqTypeRep aRep $ typeRep @Array
-                  , Just HRefl <- eqTypeRep kRep $ typeRep @k
-                  , Just HRefl <- eqTypeRep vRep $ typeRep @v -> do
-                    someTerm $ storeTerm @k @v arr key val
-                _ -> error "statefulDeserializeSomeTerm: invalid Array type"
-
-          pure $ Just (term, ktTmId)
+          withArrayTerm arr $ \(arr' :: Term (Array arrayKey arrayValue)) ->
+            withNonFuncTerm key $ \(key' :: Term actualKey) ->
+              withNonFuncTerm val $ \(val' :: Term actualValue) ->
+                case
+                    ( eqTypeRep (typeRep @actualKey) (typeRep @arrayKey),
+                      eqTypeRep (typeRep @actualValue) (typeRep @arrayValue)
+                    )
+                  of
+                    (Just HRefl, Just HRefl) ->
+                      pure $ Just (someTerm $ storeTerm arr' key' val', ktTmId)
+                    _ -> fail "statefulDeserializeSomeTerm: invalid Array store type"
       | tag == constArrayTermTag -> do
-          -- Get the value term and non-function primitive dictionary.
-          SomeTerm (val :: Term v) <- deserializeTerm
-          let valType = knownNonFuncType @v Proxy
-          KnownNonFuncTypeWitness (_ :: p v') <- do
-            pure $ witnessKnownNonFuncType valType
-
-          -- Gather the key type and its non-function primitive dictionary
-          -- TODO: How do I know I get the correct known type for the key?
-          keyType <- deserializeKnownNonFuncType
-          KnownNonFuncTypeWitness (_ :: p k) <- do
-            pure $ witnessKnownNonFuncType keyType
-
-          -- Really, this should never fail but I guess we can check instead of
-          -- coercing unsafely.
-          HRefl <- case heqT @v @v' of
-            Just refl -> pure refl
-            Nothing -> error "statefulDeserializeSomeTerm: non-injective type translation"
-
-          let term = someTerm $ constArrayTerm @k Proxy val
-
-          pure $ Just (term, ktTmId)
+          value <- deserializeTerm
+          keyType <- deserializeKnownType
+          case keyType of
+            NonFuncType keyDescriptor ->
+              case witnessKnownNonFuncType keyDescriptor of
+                KnownNonFuncTypeWitness (_ :: Proxy key) ->
+                  withNonFuncTerm value $ \value' ->
+                    pure $ Just
+                      (someTerm $ constArrayTerm (Proxy @key) value', ktTmId)
+            _ -> fail
+              "statefulDeserializeSomeTerm: expected non-function Array key type"
       | tag == seqConsTermTag -> do
           element <- deserializeTerm
           sequence <- deserializeTerm
@@ -1955,6 +1945,33 @@ statefulDeserializeSomeTerm = do
       case tm of
         Nothing -> fail "statefulDeserializeSomeTerm: unknown term id"
         Just tm' -> return tm'
+    withArrayTerm ::
+      SomeTerm ->
+      ( forall key value.
+        (SupportedNonFuncPrim key, SupportedNonFuncPrim value) =>
+        Term (Array key value) ->
+        StateT (HM.HashMap (KnownType, Id) SomeTerm, SomeTerm) m result
+      ) ->
+      StateT (HM.HashMap (KnownType, Id) SomeTerm, SomeTerm) m result
+    withArrayTerm (SomeTerm (term :: Term actual)) continuation =
+      case knownNonFuncTypeMaybe @actual Proxy of
+        Just (ArrayType keyDescriptor valueDescriptor) ->
+          case
+              ( witnessKnownNonFuncType keyDescriptor,
+                witnessKnownNonFuncType valueDescriptor
+              )
+            of
+              ( KnownNonFuncTypeWitness (_ :: Proxy key),
+                KnownNonFuncTypeWitness (_ :: Proxy value)
+                ) ->
+                  case
+                      eqTypeRep
+                        (primTypeRep @actual)
+                        (typeRep @(Array key value))
+                    of
+                      Just HRefl -> continuation term
+                      Nothing -> fail "statefulDeserializeSomeTerm: array type mismatch"
+        _ -> fail "statefulDeserializeSomeTerm: expected array term"
     withNonFuncTerm ::
       SomeTerm ->
       ( forall value.
@@ -2267,7 +2284,7 @@ serializeSingleSomeTerm (SomeTerm (tm :: Term t)) = do
           serializeKnownType $ knownType @t Proxy
         StoreTerm arr key val -> do
           serializeTernary ktTmId storeTermTag arr key val
-        ConstArrayTerm pkey val -> withPrim @t $ do
+        ConstArrayTerm pkey val -> do
           serializeUnary ktTmId constArrayTermTag val
           serializeKnownType $ knownType pkey
         SeqConsTerm element sequence ->

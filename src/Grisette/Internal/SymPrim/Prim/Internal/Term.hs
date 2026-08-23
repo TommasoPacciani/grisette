@@ -393,7 +393,7 @@ import Data.Coerce (coerce)
 import qualified Data.HashMap.Strict as HM
 import qualified Data.HashSet as HS
 import Data.Hashable (Hashable (hashWithSalt))
-import Data.IORef (IORef, newIORef, readIORef)
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.Kind (Constraint, Type)
 import Data.List.NonEmpty (NonEmpty ((:|)), toList)
 import Data.Maybe (fromMaybe, isJust)
@@ -1840,20 +1840,20 @@ data Term t where
     Proxy sb ->
     Term (FP eb sb)
   SelectTerm' ::
-    SupportedPrim (Array k v) =>
+    (SupportedNonFuncPrim k, SupportedNonFuncPrim v) =>
     {-# UNPACK #-} !CachedInfo ->
     !(Term (Array k v)) ->
     !(Term k) ->
     Term v
   StoreTerm' ::
-    SupportedPrim (Array k v) =>
+    (SupportedNonFuncPrim k, SupportedNonFuncPrim v) =>
     {-# UNPACK #-} !CachedInfo ->
     !(Term (Array k v)) ->
     !(Term k) ->
     !(Term v) ->
     Term (Array k v)
   ConstArrayTerm' ::
-    SupportedPrim (Array k v) =>
+    (SupportedNonFuncPrim k, SupportedNonFuncPrim v) =>
     {-# UNPACK #-} !CachedInfo ->
     Proxy k ->
     !(Term v) ->
@@ -2906,7 +2906,8 @@ pattern SelectTerm ::
   forall ret.
   () =>
   forall k v.
-  ( SupportedPrim (Array k v),
+  ( SupportedNonFuncPrim k,
+    SupportedNonFuncPrim v,
     ret ~ v
   ) =>
   Term (Array k v) ->
@@ -2926,7 +2927,8 @@ pattern StoreTerm ::
   forall ret.
   () =>
   forall k v.
-  ( SupportedPrim (Array k v),
+  ( SupportedNonFuncPrim k,
+    SupportedNonFuncPrim v,
     ret ~ Array k v
   ) =>
   Term (Array k v) ->
@@ -2947,7 +2949,8 @@ pattern ConstArrayTerm ::
   forall ret.
   () =>
   forall k v.
-  ( SupportedPrim (Array k v),
+  ( SupportedNonFuncPrim k,
+    SupportedNonFuncPrim v,
     ret ~ Array k v
   ) =>
   Proxy k ->
@@ -3125,6 +3128,74 @@ pattern SecondTerm value <- SecondTerm' _ value
   NotTerm,
   OrTerm,
   AndTerm,
+  EqTerm,
+  DistinctTerm,
+  ITETerm,
+  AddNumTerm,
+  NegNumTerm,
+  MulNumTerm,
+  AbsNumTerm,
+  SignumNumTerm,
+  LtOrdTerm,
+  LeOrdTerm,
+  AndBitsTerm,
+  OrBitsTerm,
+  XorBitsTerm,
+  ComplementBitsTerm,
+  ShiftLeftTerm,
+  ShiftRightTerm,
+  RotateLeftTerm,
+  RotateRightTerm,
+  BitCastTerm,
+  BitCastOrTerm,
+  BVConcatTerm,
+  BVSelectTerm,
+  BVExtendTerm,
+  ApplyTerm,
+  DivIntegralTerm,
+  ModIntegralTerm,
+  QuotIntegralTerm,
+  RemIntegralTerm,
+  FPTraitTerm,
+  FdivTerm,
+  RecipTerm,
+  FloatingUnaryTerm,
+  PowerTerm,
+  FPUnaryTerm,
+  FPBinaryTerm,
+  FPRoundingUnaryTerm,
+  FPRoundingBinaryTerm,
+  FPFMATerm,
+  FromIntegralTerm,
+  FromFPOrTerm,
+  ToFPTerm,
+  SelectTerm,
+  StoreTerm,
+  ConstArrayTerm,
+  SeqConsTerm,
+  SeqAppendTerm,
+  SeqZipTerm,
+  SeqLengthTerm,
+  SeqRangeTerm,
+  SeqTailTerm,
+  SeqLookupTerm,
+  SeqFoldTerm,
+  SeqFoldWithTerm,
+  PairTerm,
+  FirstTerm,
+  SecondTerm
+  #-}
+
+-- The reconstruction worker must retain the normalization sets, so it matches
+-- the two set-bearing constructors directly rather than their binary views.
+{-# COMPLETE
+  ConTerm,
+  SymTerm,
+  ForallTerm,
+  ExistsTerm,
+  NotTerm,
+  OrTerm',
+  AndTerm',
   EqTerm,
   DistinctTerm,
   ITETerm,
@@ -3370,8 +3441,7 @@ introSupportedPrimConstraint0 FPFMATerm' {} x = x
 introSupportedPrimConstraint0 FromIntegralTerm' {} x = x
 introSupportedPrimConstraint0 FromFPOrTerm' {} x = x
 introSupportedPrimConstraint0 ToFPTerm' {} x = x
-introSupportedPrimConstraint0 (SelectTerm' _ (_ :: Term arr) _) x = do
-  withPrim @arr x
+introSupportedPrimConstraint0 SelectTerm' {} x = x
 introSupportedPrimConstraint0 StoreTerm' {} x = x
 introSupportedPrimConstraint0 ConstArrayTerm' {} x = x
 introSupportedPrimConstraint0 SeqConsTerm' {} x = x
@@ -4152,8 +4222,9 @@ instance (SupportedPrim t) => Eq (Term t) where
       then termId a == termId b
       else unsafePerformIO $ do
         tid <- myWeakThreadId
-        a' <- toCurThreadImpl tid a
-        b' <- toCurThreadImpl tid b
+        memo <- newReconstructionMemo
+        a' <- toCurThreadWithMemo memo tid a
+        b' <- toCurThreadWithMemo memo tid b
         return $ a' == b'
 
 instance (SupportedPrim t) => Hashable (Term t) where
@@ -4349,18 +4420,18 @@ data UTerm t where
     Proxy sb ->
     UTerm (FP eb sb)
   USelectTerm ::
-    SupportedPrim (Array k v) =>
+    (SupportedNonFuncPrim k, SupportedNonFuncPrim v) =>
     !(Term (Array k v)) ->
     !(Term k) ->
     UTerm v
   UStoreTerm ::
-    SupportedPrim (Array k v) =>
+    (SupportedNonFuncPrim k, SupportedNonFuncPrim v) =>
     !(Term (Array k v)) ->
     !(Term k) ->
     !(Term v) ->
     UTerm (Array k v)
   UConstArrayTerm ::
-    SupportedPrim (Array k v) =>
+    (SupportedNonFuncPrim k, SupportedNonFuncPrim v) =>
     Proxy k ->
     !(Term v) ->
     UTerm (Array k v)
@@ -5400,7 +5471,7 @@ instance Interned (Term t) where
     let valHashId = termHashId val
     let digest = preHashStoreDescription arrHashId keyHashId valHashId
     DStoreTerm digest arrHashId keyHashId valHashId
-  describe (UConstArrayTerm pkey val) = withPrim @t $ do
+  describe (UConstArrayTerm pkey val) = do
     let keyFingerprint = typeRepFingerprint $ someTypeRep pkey
     let valHashId = termHashId val
     let digest = preHashConstArrayDescription valHashId
@@ -5904,199 +5975,252 @@ instance Hashable (Description (Term t)) where
   hashWithSalt s = hashWithSalt s . descriptionDigest
   {-# INLINE hashWithSalt #-}
 
+type ReconstructionKey = (WeakThreadId, SomeTypeRep, Id)
+
+data SomeReconstructedTerm where
+  SomeReconstructedTerm ::
+    (SupportedPrim t) => Term t -> SomeReconstructedTerm
+
+type ReconstructionMemo =
+  IORef (HM.HashMap ReconstructionKey SomeReconstructedTerm)
+
+newReconstructionMemo :: IO ReconstructionMemo
+newReconstructionMemo = newIORef HM.empty
+{-# INLINE newReconstructionMemo #-}
+
+reconstructionKey ::
+  forall t. (SupportedPrim t) => Term t -> ReconstructionKey
+reconstructionKey term =
+  (termThreadId term, SomeTypeRep (primTypeRep @t), termId term)
+{-# INLINE reconstructionKey #-}
+
 fullReconstructTerm1 ::
   forall a b.
+  ReconstructionMemo ->
   (Term a -> IO (Term b)) ->
   Term a ->
   IO (Term b)
-fullReconstructTerm1 f x = fullReconstructTerm x >>= f
+fullReconstructTerm1 memo f x = fullReconstructTermWithMemo memo x >>= f
 {-# INLINE fullReconstructTerm1 #-}
 
 fullReconstructTerm2 ::
   forall a b c.
+  ReconstructionMemo ->
   (Term a -> Term b -> IO (Term c)) ->
   Term a ->
   Term b ->
   IO (Term c)
-fullReconstructTerm2 f x y = do
-  rx <- fullReconstructTerm x
-  ry <- fullReconstructTerm y
+fullReconstructTerm2 memo f x y = do
+  rx <- fullReconstructTermWithMemo memo x
+  ry <- fullReconstructTermWithMemo memo y
   f rx ry
 {-# INLINE fullReconstructTerm2 #-}
 
 fullReconstructTerm3 ::
   forall a b c d.
+  ReconstructionMemo ->
   (Term a -> Term b -> Term c -> IO (Term d)) ->
   Term a ->
   Term b ->
   Term c ->
   IO (Term d)
-fullReconstructTerm3 f x y z = do
-  rx <- fullReconstructTerm x
-  ry <- fullReconstructTerm y
-  rz <- fullReconstructTerm z
+fullReconstructTerm3 memo f x y z = do
+  rx <- fullReconstructTermWithMemo memo x
+  ry <- fullReconstructTermWithMemo memo y
+  rz <- fullReconstructTermWithMemo memo z
   f rx ry rz
 {-# INLINE fullReconstructTerm3 #-}
 
 fullReconstructTerm2Set ::
   forall a c.
+  ReconstructionMemo ->
   (Term a -> Term a -> HS.HashSet (Term a) -> IO (Term c)) ->
   Term a ->
   Term a ->
   HS.HashSet (Term a) ->
   IO (Term c)
-fullReconstructTerm2Set f x y s = do
-  rx@SupportedTerm <- fullReconstructTerm x
-  ry <- fullReconstructTerm y
-  rs <- traverse fullReconstructTerm (HS.toList s)
+fullReconstructTerm2Set memo f x y s = do
+  rx@SupportedTerm <- fullReconstructTermWithMemo memo x
+  ry <- fullReconstructTermWithMemo memo y
+  rs <- traverse (fullReconstructTermWithMemo memo) (HS.toList s)
   f rx ry (HS.fromList rs)
 {-# INLINE fullReconstructTerm2Set #-}
 
 fullReconstructTerm :: forall t. Term t -> IO (Term t)
-fullReconstructTerm (ConTerm i) = curThreadConTerm i
-fullReconstructTerm (SymTerm sym) = curThreadSymTerm sym
-fullReconstructTerm (ForallTerm sym arg) =
-  fullReconstructTerm1 (curThreadForallTerm sym) arg
-fullReconstructTerm (ExistsTerm sym arg) =
-  fullReconstructTerm1 (curThreadExistsTerm sym) arg
-fullReconstructTerm (NotTerm arg) =
-  fullReconstructTerm1 curThreadNotTerm arg
-fullReconstructTerm (OrTermAll arg1 arg2 s) =
-  fullReconstructTerm2Set curThreadOrTerm arg1 arg2 s
-fullReconstructTerm (OrTerm _ _) = error "Make compiler happy"
-fullReconstructTerm (AndTermAll arg1 arg2 s) =
-  fullReconstructTerm2Set curThreadAndTerm arg1 arg2 s
-fullReconstructTerm (AndTerm _ _) = error "Make compiler happy"
-fullReconstructTerm (EqTerm arg1 arg2) =
-  fullReconstructTerm2 curThreadEqTerm arg1 arg2
-fullReconstructTerm (DistinctTerm args) =
-  traverse fullReconstructTerm args >>= curThreadDistinctTerm
-fullReconstructTerm (ITETerm cond arg1 arg2) =
-  fullReconstructTerm3 curThreadIteTerm cond arg1 arg2
-fullReconstructTerm (AddNumTerm arg1 arg2) =
-  fullReconstructTerm2 curThreadAddNumTerm arg1 arg2
-fullReconstructTerm (NegNumTerm arg) =
-  fullReconstructTerm1 curThreadNegNumTerm arg
-fullReconstructTerm (MulNumTerm arg1 arg2) =
-  fullReconstructTerm2 curThreadMulNumTerm arg1 arg2
-fullReconstructTerm (AbsNumTerm arg) =
-  fullReconstructTerm1 curThreadAbsNumTerm arg
-fullReconstructTerm (SignumNumTerm arg) =
-  fullReconstructTerm1 curThreadSignumNumTerm arg
-fullReconstructTerm (LtOrdTerm arg1 arg2) =
-  fullReconstructTerm2 curThreadLtOrdTerm arg1 arg2
-fullReconstructTerm (LeOrdTerm arg1 arg2) =
-  fullReconstructTerm2 curThreadLeOrdTerm arg1 arg2
-fullReconstructTerm (AndBitsTerm arg1 arg2) =
-  fullReconstructTerm2 curThreadAndBitsTerm arg1 arg2
-fullReconstructTerm (OrBitsTerm arg1 arg2) =
-  fullReconstructTerm2 curThreadOrBitsTerm arg1 arg2
-fullReconstructTerm (XorBitsTerm arg1 arg2) =
-  fullReconstructTerm2 curThreadXorBitsTerm arg1 arg2
-fullReconstructTerm (ComplementBitsTerm arg) =
-  fullReconstructTerm1 curThreadComplementBitsTerm arg
-fullReconstructTerm (ShiftLeftTerm arg n) =
-  fullReconstructTerm1 (curThreadShiftLeftTerm arg) n
-fullReconstructTerm (ShiftRightTerm arg n) =
-  fullReconstructTerm1 (curThreadShiftRightTerm arg) n
-fullReconstructTerm (RotateLeftTerm arg n) =
-  fullReconstructTerm1 (curThreadRotateLeftTerm arg) n
-fullReconstructTerm (RotateRightTerm arg n) =
-  fullReconstructTerm1 (curThreadRotateRightTerm arg) n
-fullReconstructTerm (BitCastTerm v) =
-  fullReconstructTerm1 curThreadBitCastTerm v
-fullReconstructTerm (BitCastOrTerm d v) =
-  fullReconstructTerm2 curThreadBitCastOrTerm d v
-fullReconstructTerm (BVConcatTerm arg1 arg2) =
-  fullReconstructTerm2 curThreadBVConcatTerm arg1 arg2
-fullReconstructTerm (BVSelectTerm (_ :: Proxy ix) (_ :: Proxy w) arg) =
-  fullReconstructTerm1 (curThreadBVSelectTerm (Proxy @ix) (Proxy @w)) arg
-fullReconstructTerm (BVExtendTerm signed p arg) =
-  fullReconstructTerm1 (curThreadBVExtendTerm signed p) arg
-fullReconstructTerm (ApplyTerm f arg) =
-  fullReconstructTerm2 curThreadApplyTerm f arg
-fullReconstructTerm (DivIntegralTerm arg1 arg2) =
-  fullReconstructTerm2 curThreadDivIntegralTerm arg1 arg2
-fullReconstructTerm (ModIntegralTerm arg1 arg2) =
-  fullReconstructTerm2 curThreadModIntegralTerm arg1 arg2
-fullReconstructTerm (QuotIntegralTerm arg1 arg2) =
-  fullReconstructTerm2 curThreadQuotIntegralTerm arg1 arg2
-fullReconstructTerm (RemIntegralTerm arg1 arg2) =
-  fullReconstructTerm2 curThreadRemIntegralTerm arg1 arg2
-fullReconstructTerm (FPTraitTerm trait arg) =
-  fullReconstructTerm1 (curThreadFpTraitTerm trait) arg
-fullReconstructTerm (FdivTerm arg1 arg2) =
-  fullReconstructTerm2 curThreadFdivTerm arg1 arg2
-fullReconstructTerm (RecipTerm arg) =
-  fullReconstructTerm1 curThreadRecipTerm arg
-fullReconstructTerm (FloatingUnaryTerm op arg) =
-  fullReconstructTerm1 (curThreadFloatingUnaryTerm op) arg
-fullReconstructTerm (PowerTerm arg1 arg2) =
-  fullReconstructTerm2 curThreadPowerTerm arg1 arg2
-fullReconstructTerm (FPUnaryTerm op arg) =
-  fullReconstructTerm1 (curThreadFpUnaryTerm op) arg
-fullReconstructTerm (FPBinaryTerm op arg1 arg2) =
-  fullReconstructTerm2 (curThreadFpBinaryTerm op) arg1 arg2
-fullReconstructTerm (FPRoundingUnaryTerm op mode arg) =
-  fullReconstructTerm2 (curThreadFpRoundingUnaryTerm op) mode arg
-fullReconstructTerm (FPRoundingBinaryTerm op mode arg1 arg2) =
-  fullReconstructTerm3 (curThreadFpRoundingBinaryTerm op) mode arg1 arg2
-fullReconstructTerm (FPFMATerm mode arg1 arg2 arg3) = do
-  rmode <- fullReconstructTerm mode
-  rarg1 <- fullReconstructTerm arg1
-  rarg2 <- fullReconstructTerm arg2
-  rarg3 <- fullReconstructTerm arg3
+fullReconstructTerm term = do
+  memo <- newReconstructionMemo
+  fullReconstructTermWithMemo memo term
+
+fullReconstructTermWithMemo ::
+  forall t. ReconstructionMemo -> Term t -> IO (Term t)
+fullReconstructTermWithMemo memo source@SupportedTerm = do
+  cached <- readIORef memo
+  case HM.lookup key cached of
+    Just (SomeReconstructedTerm (target :: Term cachedType)) ->
+      case eqTypeRep (primTypeRep @t) (primTypeRep @cachedType) of
+        Just HRefl -> pure target
+        Nothing -> reconstructAndRemember
+    Nothing -> reconstructAndRemember
+  where
+    key = reconstructionKey source
+    reconstructAndRemember = do
+      target <- fullReconstructTermUncached memo source
+      modifyIORef' memo (HM.insert key (SomeReconstructedTerm target))
+      pure target
+
+fullReconstructTermUncached ::
+  forall t. ReconstructionMemo -> Term t -> IO (Term t)
+fullReconstructTermUncached _ (ConTerm i) = curThreadConTerm i
+fullReconstructTermUncached _ (SymTerm sym) = curThreadSymTerm sym
+fullReconstructTermUncached memo (ForallTerm sym arg) =
+  fullReconstructTerm1 memo (curThreadForallTerm sym) arg
+fullReconstructTermUncached memo (ExistsTerm sym arg) =
+  fullReconstructTerm1 memo (curThreadExistsTerm sym) arg
+fullReconstructTermUncached memo (NotTerm arg) =
+  fullReconstructTerm1 memo curThreadNotTerm arg
+fullReconstructTermUncached memo (OrTerm' _ arg1 arg2 s) =
+  fullReconstructTerm2Set memo curThreadOrTerm arg1 arg2 s
+fullReconstructTermUncached memo (AndTerm' _ arg1 arg2 s) =
+  fullReconstructTerm2Set memo curThreadAndTerm arg1 arg2 s
+fullReconstructTermUncached memo (EqTerm arg1 arg2) =
+  fullReconstructTerm2 memo curThreadEqTerm arg1 arg2
+fullReconstructTermUncached memo (DistinctTerm args) =
+  traverse (fullReconstructTermWithMemo memo) args >>= curThreadDistinctTerm
+fullReconstructTermUncached memo (ITETerm cond arg1 arg2) =
+  fullReconstructTerm3 memo curThreadIteTerm cond arg1 arg2
+fullReconstructTermUncached memo (AddNumTerm arg1 arg2) =
+  fullReconstructTerm2 memo curThreadAddNumTerm arg1 arg2
+fullReconstructTermUncached memo (NegNumTerm arg) =
+  fullReconstructTerm1 memo curThreadNegNumTerm arg
+fullReconstructTermUncached memo (MulNumTerm arg1 arg2) =
+  fullReconstructTerm2 memo curThreadMulNumTerm arg1 arg2
+fullReconstructTermUncached memo (AbsNumTerm arg) =
+  fullReconstructTerm1 memo curThreadAbsNumTerm arg
+fullReconstructTermUncached memo (SignumNumTerm arg) =
+  fullReconstructTerm1 memo curThreadSignumNumTerm arg
+fullReconstructTermUncached memo (LtOrdTerm arg1 arg2) =
+  fullReconstructTerm2 memo curThreadLtOrdTerm arg1 arg2
+fullReconstructTermUncached memo (LeOrdTerm arg1 arg2) =
+  fullReconstructTerm2 memo curThreadLeOrdTerm arg1 arg2
+fullReconstructTermUncached memo (AndBitsTerm arg1 arg2) =
+  fullReconstructTerm2 memo curThreadAndBitsTerm arg1 arg2
+fullReconstructTermUncached memo (OrBitsTerm arg1 arg2) =
+  fullReconstructTerm2 memo curThreadOrBitsTerm arg1 arg2
+fullReconstructTermUncached memo (XorBitsTerm arg1 arg2) =
+  fullReconstructTerm2 memo curThreadXorBitsTerm arg1 arg2
+fullReconstructTermUncached memo (ComplementBitsTerm arg) =
+  fullReconstructTerm1 memo curThreadComplementBitsTerm arg
+fullReconstructTermUncached memo (ShiftLeftTerm arg n) =
+  fullReconstructTerm1 memo (curThreadShiftLeftTerm arg) n
+fullReconstructTermUncached memo (ShiftRightTerm arg n) =
+  fullReconstructTerm1 memo (curThreadShiftRightTerm arg) n
+fullReconstructTermUncached memo (RotateLeftTerm arg n) =
+  fullReconstructTerm1 memo (curThreadRotateLeftTerm arg) n
+fullReconstructTermUncached memo (RotateRightTerm arg n) =
+  fullReconstructTerm1 memo (curThreadRotateRightTerm arg) n
+fullReconstructTermUncached memo (BitCastTerm v) =
+  fullReconstructTerm1 memo curThreadBitCastTerm v
+fullReconstructTermUncached memo (BitCastOrTerm d v) =
+  fullReconstructTerm2 memo curThreadBitCastOrTerm d v
+fullReconstructTermUncached memo (BVConcatTerm arg1 arg2) =
+  fullReconstructTerm2 memo curThreadBVConcatTerm arg1 arg2
+fullReconstructTermUncached memo (BVSelectTerm (_ :: Proxy ix) (_ :: Proxy w) arg) =
+  fullReconstructTerm1
+    memo
+    (curThreadBVSelectTerm (Proxy @ix) (Proxy @w))
+    arg
+fullReconstructTermUncached memo (BVExtendTerm signed p arg) =
+  fullReconstructTerm1 memo (curThreadBVExtendTerm signed p) arg
+fullReconstructTermUncached memo (ApplyTerm f arg) =
+  fullReconstructTerm2 memo curThreadApplyTerm f arg
+fullReconstructTermUncached memo (DivIntegralTerm arg1 arg2) =
+  fullReconstructTerm2 memo curThreadDivIntegralTerm arg1 arg2
+fullReconstructTermUncached memo (ModIntegralTerm arg1 arg2) =
+  fullReconstructTerm2 memo curThreadModIntegralTerm arg1 arg2
+fullReconstructTermUncached memo (QuotIntegralTerm arg1 arg2) =
+  fullReconstructTerm2 memo curThreadQuotIntegralTerm arg1 arg2
+fullReconstructTermUncached memo (RemIntegralTerm arg1 arg2) =
+  fullReconstructTerm2 memo curThreadRemIntegralTerm arg1 arg2
+fullReconstructTermUncached memo (FPTraitTerm trait arg) =
+  fullReconstructTerm1 memo (curThreadFpTraitTerm trait) arg
+fullReconstructTermUncached memo (FdivTerm arg1 arg2) =
+  fullReconstructTerm2 memo curThreadFdivTerm arg1 arg2
+fullReconstructTermUncached memo (RecipTerm arg) =
+  fullReconstructTerm1 memo curThreadRecipTerm arg
+fullReconstructTermUncached memo (FloatingUnaryTerm op arg) =
+  fullReconstructTerm1 memo (curThreadFloatingUnaryTerm op) arg
+fullReconstructTermUncached memo (PowerTerm arg1 arg2) =
+  fullReconstructTerm2 memo curThreadPowerTerm arg1 arg2
+fullReconstructTermUncached memo (FPUnaryTerm op arg) =
+  fullReconstructTerm1 memo (curThreadFpUnaryTerm op) arg
+fullReconstructTermUncached memo (FPBinaryTerm op arg1 arg2) =
+  fullReconstructTerm2 memo (curThreadFpBinaryTerm op) arg1 arg2
+fullReconstructTermUncached memo (FPRoundingUnaryTerm op mode arg) =
+  fullReconstructTerm2 memo (curThreadFpRoundingUnaryTerm op) mode arg
+fullReconstructTermUncached memo (FPRoundingBinaryTerm op mode arg1 arg2) =
+  fullReconstructTerm3 memo (curThreadFpRoundingBinaryTerm op) mode arg1 arg2
+fullReconstructTermUncached memo (FPFMATerm mode arg1 arg2 arg3) = do
+  rmode <- fullReconstructTermWithMemo memo mode
+  rarg1 <- fullReconstructTermWithMemo memo arg1
+  rarg2 <- fullReconstructTermWithMemo memo arg2
+  rarg3 <- fullReconstructTermWithMemo memo arg3
   curThreadFpFMATerm rmode rarg1 rarg2 rarg3
-fullReconstructTerm (FromIntegralTerm arg) =
-  fullReconstructTerm1 curThreadFromIntegralTerm arg
-fullReconstructTerm (FromFPOrTerm d r arg) =
-  fullReconstructTerm3 curThreadFromFPOrTerm d r arg
-fullReconstructTerm (ToFPTerm r arg _ _) =
-  fullReconstructTerm2 curThreadToFPTerm r arg
-fullReconstructTerm (SelectTerm (arr :: Term arr) key) = withPrim @arr $ do
-  arr' <- fullReconstructTerm arr
-  key' <- fullReconstructTerm key
+fullReconstructTermUncached memo (FromIntegralTerm arg) =
+  fullReconstructTerm1 memo curThreadFromIntegralTerm arg
+fullReconstructTermUncached memo (FromFPOrTerm d r arg) =
+  fullReconstructTerm3 memo curThreadFromFPOrTerm d r arg
+fullReconstructTermUncached memo (ToFPTerm r arg _ _) =
+  fullReconstructTerm2 memo curThreadToFPTerm r arg
+fullReconstructTermUncached memo (SelectTerm arr key) = do
+  arr' <- fullReconstructTermWithMemo memo arr
+  key' <- fullReconstructTermWithMemo memo key
   intern $ USelectTerm arr' key'
-fullReconstructTerm (StoreTerm arr key val) = do
-  arr' <- fullReconstructTerm arr
-  key' <- fullReconstructTerm key
-  val' <- fullReconstructTerm val
+fullReconstructTermUncached memo (StoreTerm arr key val) = do
+  arr' <- fullReconstructTermWithMemo memo arr
+  key' <- fullReconstructTermWithMemo memo key
+  val' <- fullReconstructTermWithMemo memo val
   intern $ UStoreTerm arr' key' val'
-fullReconstructTerm (ConstArrayTerm pkey val) = do
-  val' <- fullReconstructTerm val
+fullReconstructTermUncached memo (ConstArrayTerm pkey val) = do
+  val' <- fullReconstructTermWithMemo memo val
   intern $ UConstArrayTerm pkey val'
-fullReconstructTerm (SeqConsTerm element sequence) =
-  fullReconstructTerm2 curThreadSeqConsTerm element sequence
-fullReconstructTerm (SeqAppendTerm left right) =
-  fullReconstructTerm2 curThreadSeqAppendTerm left right
-fullReconstructTerm (SeqZipTerm left right) =
-  fullReconstructTerm2 curThreadSeqZipTerm left right
-fullReconstructTerm (SeqLengthTerm sequence) =
-  fullReconstructTerm1 curThreadSeqLengthTerm sequence
-fullReconstructTerm (SeqRangeTerm extent) =
-  fullReconstructTerm1 curThreadSeqRangeTerm extent
-fullReconstructTerm (SeqTailTerm sequence) =
-  fullReconstructTerm1 curThreadSeqTailTerm sequence
-fullReconstructTerm (SeqLookupTerm seed sequence index) =
-  fullReconstructTerm3 curThreadSeqLookupTerm seed sequence index
-fullReconstructTerm (SeqFoldTerm step initial sequence) =
-  fullReconstructTerm3 curThreadSeqFoldTerm step initial sequence
-fullReconstructTerm (SeqFoldWithTerm step environment initial sequence) = do
-  step' <- fullReconstructTerm step
-  environment' <- fullReconstructTerm environment
-  initial' <- fullReconstructTerm initial
-  sequence' <- fullReconstructTerm sequence
+fullReconstructTermUncached memo (SeqConsTerm element sequence) =
+  fullReconstructTerm2 memo curThreadSeqConsTerm element sequence
+fullReconstructTermUncached memo (SeqAppendTerm left right) =
+  fullReconstructTerm2 memo curThreadSeqAppendTerm left right
+fullReconstructTermUncached memo (SeqZipTerm left right) =
+  fullReconstructTerm2 memo curThreadSeqZipTerm left right
+fullReconstructTermUncached memo (SeqLengthTerm sequence) =
+  fullReconstructTerm1 memo curThreadSeqLengthTerm sequence
+fullReconstructTermUncached memo (SeqRangeTerm extent) =
+  fullReconstructTerm1 memo curThreadSeqRangeTerm extent
+fullReconstructTermUncached memo (SeqTailTerm sequence) =
+  fullReconstructTerm1 memo curThreadSeqTailTerm sequence
+fullReconstructTermUncached memo (SeqLookupTerm seed sequence index) =
+  fullReconstructTerm3 memo curThreadSeqLookupTerm seed sequence index
+fullReconstructTermUncached memo (SeqFoldTerm step initial sequence) =
+  fullReconstructTerm3 memo curThreadSeqFoldTerm step initial sequence
+fullReconstructTermUncached memo (SeqFoldWithTerm step environment initial sequence) = do
+  step' <- fullReconstructTermWithMemo memo step
+  environment' <- fullReconstructTermWithMemo memo environment
+  initial' <- fullReconstructTermWithMemo memo initial
+  sequence' <- fullReconstructTermWithMemo memo sequence
   curThreadSeqFoldWithTerm step' environment' initial' sequence'
-fullReconstructTerm (PairTerm firstValue secondValue) =
-  fullReconstructTerm2 curThreadPairTerm firstValue secondValue
-fullReconstructTerm (FirstTerm value) =
-  fullReconstructTerm1 curThreadFirstTerm value
-fullReconstructTerm (SecondTerm value) =
-  fullReconstructTerm1 curThreadSecondTerm value
+fullReconstructTermUncached memo (PairTerm firstValue secondValue) =
+  fullReconstructTerm2 memo curThreadPairTerm firstValue secondValue
+fullReconstructTermUncached memo (FirstTerm value) =
+  fullReconstructTerm1 memo curThreadFirstTerm value
+fullReconstructTermUncached memo (SecondTerm value) =
+  fullReconstructTerm1 memo curThreadSecondTerm value
+
+toCurThreadWithMemo ::
+  forall t. ReconstructionMemo -> WeakThreadId -> Term t -> IO (Term t)
+toCurThreadWithMemo _ tid term | termThreadId term == tid = pure term
+toCurThreadWithMemo memo _ term = fullReconstructTermWithMemo memo term
+{-# INLINE toCurThreadWithMemo #-}
 
 toCurThreadImpl :: forall t. WeakThreadId -> Term t -> IO (Term t)
-toCurThreadImpl tid t | termThreadId t == tid = return t
-toCurThreadImpl _ t = fullReconstructTerm t
+toCurThreadImpl tid term | termThreadId term == tid = pure term
+toCurThreadImpl _ term = fullReconstructTerm term
 {-# INLINE toCurThreadImpl #-}
 
 -- | Convert a term to the current thread.
@@ -6521,17 +6645,16 @@ curThreadToFPTerm r f = intern $ UToFPTerm r f (Proxy @eb) (Proxy @sb)
 -- | Construct and internalizing a 'SelectTerm'.
 curThreadSelectTerm ::
   forall k v.
-  SupportedPrim (Array k v) =>
+  (SupportedNonFuncPrim k, SupportedNonFuncPrim v) =>
   Term (Array k v) ->
   Term k ->
   IO (Term v)
-curThreadSelectTerm arr key = withPrim @(Array k v) $ do
-  intern $ USelectTerm arr key
+curThreadSelectTerm arr key = intern $ USelectTerm arr key
 {-# INLINE curThreadSelectTerm #-}
 
 curThreadStoreTerm ::
   forall k v.
-  SupportedPrim (Array k v) =>
+  (SupportedNonFuncPrim k, SupportedNonFuncPrim v) =>
   Term (Array k v) ->
   Term k ->
   Term v ->
@@ -6541,7 +6664,7 @@ curThreadStoreTerm arr key val = intern $ UStoreTerm arr key val
 
 curThreadConstArrayTerm ::
   forall k v.
-  SupportedPrim (Array k v) =>
+  (SupportedNonFuncPrim k, SupportedNonFuncPrim v) =>
   Proxy k ->
   Term v ->
   IO (Term (Array k v))
@@ -6745,10 +6868,19 @@ inCurThread2Set ::
   IO (Term c)
 inCurThread2Set f a b s = do
   tid <- myWeakThreadId
-  ra@SupportedTerm <- toCurThreadImpl tid a
-  rb <- toCurThreadImpl tid b
-  rs <- traverse (toCurThreadImpl tid) (HS.toList s)
-  f ra rb (HS.fromList rs)
+  case a of
+    ra@SupportedTerm
+      -- Every Boolean set is constructed from these roots (and, recursively,
+      -- their already-internalized sets).  A current-thread root therefore
+      -- owns a current-thread set; foreign roots take the rebuilding path.
+      | termThreadId a == tid && termThreadId b == tid -> f ra b s
+      | otherwise -> do
+          memo <- newReconstructionMemo
+          reconstructedA <- toCurThreadWithMemo memo tid a
+          reconstructedB <- toCurThreadWithMemo memo tid b
+          reconstructedSet <- traverse
+            (toCurThreadWithMemo memo tid) (HS.toList s)
+          f reconstructedA reconstructedB (HS.fromList reconstructedSet)
 {-# INLINE inCurThread2Set #-}
 
 unsafeInCurThread2Set ::
@@ -7171,7 +7303,7 @@ toFPTerm = unsafeInCurThread2 curThreadToFPTerm
 -- | Construct and internalizing a 'SelectTerm'.
 selectTerm ::
   forall k v.
-  SupportedPrim (Array k v) =>
+  (SupportedNonFuncPrim k, SupportedNonFuncPrim v) =>
   Term (Array k v) ->
   Term k ->
   Term v
@@ -7181,7 +7313,7 @@ selectTerm = unsafeInCurThread2 curThreadSelectTerm
 -- | Construct and internalizing a 'StoreTerm'.
 storeTerm ::
   forall k v.
-  SupportedPrim (Array k v) =>
+  (SupportedNonFuncPrim k, SupportedNonFuncPrim v) =>
   Term (Array k v) ->
   Term k ->
   Term v ->
@@ -7192,7 +7324,7 @@ storeTerm = unsafeInCurThread3 curThreadStoreTerm
 -- | Construct and internalizing a 'ConstArrayTerm'.
 constArrayTerm ::
   forall k v.
-  SupportedPrim (Array k v) =>
+  (SupportedNonFuncPrim k, SupportedNonFuncPrim v) =>
   Proxy k ->
   Term v ->
   Term (Array k v)
@@ -8606,25 +8738,24 @@ instance SupportedNonFuncPrim AlgReal where
 --     is left as a 'selectTerm' for the solver's native array theory rather than
 --     expanded into a nested @ite@ chain (sound but a needless blow-up).
 --
--- @withPrim \@(Array k v)@ brings the array's 'PrimConstraint' into scope, which
--- supplies @Hashable k@ (lookups), @Eq v@ (the 'Arr.store' canonicalisation),
--- and 'SupportedPrim' for 'conTerm' / 'pevalEqTerm'.
+-- The key and value dictionaries directly supply the host constraints needed
+-- by these reductions.  In particular, term construction deliberately does
+-- not discharge the array's SBV-side constraints: those are required only
+-- when the completed term is lowered to a solver expression.
 pevalSelectTerm ::
   forall k v.
-  SupportedPrim (Array k v) =>
+  (SupportedNonFuncPrim k, SupportedNonFuncPrim v) =>
   Term (Array k v) ->
   Term k ->
   Term v
-pevalSelectTerm arr key =
-  withPrim @(Array k v) $
-    case (arr, key) of
-      (ConTerm a, ConTerm kc) -> conTerm (Arr.select a kc)
-      (ConstArrayTerm _ v, _) -> v
-      (StoreTerm a i x, _) -> case pevalEqTerm i key of
-        ConTerm True -> x
-        ConTerm False -> pevalSelectTerm a key
-        _ -> selectTerm arr key
-      _ -> selectTerm arr key
+pevalSelectTerm arr key = case (arr, key) of
+  (ConTerm a, ConTerm kc) -> conTerm (Arr.select a kc)
+  (ConstArrayTerm _ v, _) -> v
+  (StoreTerm a i x, _) -> case pevalEqTerm i key of
+    ConTerm True -> x
+    ConTerm False -> pevalSelectTerm a key
+    _ -> selectTerm arr key
+  _ -> selectTerm arr key
 
 -- | Partial evaluation for @store@: when array, index, and value are all
 -- concrete, fold to a concrete (canonicalised) 'Arr.store' so a closed
@@ -8632,30 +8763,26 @@ pevalSelectTerm arr key =
 -- All other shapes are left symbolic for the solver.
 pevalStoreTerm ::
   forall k v.
-  SupportedPrim (Array k v) =>
+  (SupportedNonFuncPrim k, SupportedNonFuncPrim v) =>
   Term (Array k v) ->
   Term k ->
   Term v ->
   Term (Array k v)
-pevalStoreTerm arr key val =
-  withPrim @(Array k v) $
-    case (arr, key, val) of
-      (ConTerm a, ConTerm kc, ConTerm vc) -> conTerm (Arr.store a kc vc)
-      _ -> storeTerm arr key val
+pevalStoreTerm arr key val = case (arr, key, val) of
+  (ConTerm a, ConTerm kc, ConTerm vc) -> conTerm (Arr.store a kc vc)
+  _ -> storeTerm arr key val
 
 -- | Partial evaluation for @const@: a concrete default folds to a concrete
 -- 'Arr.const'; otherwise left symbolic.
 pevalConstArrayTerm ::
   forall k v.
-  SupportedPrim (Array k v) =>
+  (SupportedNonFuncPrim k, SupportedNonFuncPrim v) =>
   Proxy k ->
   Term v ->
   Term (Array k v)
-pevalConstArrayTerm pkey val =
-  withPrim @(Array k v) $
-    case val of
-      ConTerm vc -> conTerm (Arr.const vc)
-      _ -> constArrayTerm pkey val
+pevalConstArrayTerm pkey val = case val of
+  ConTerm vc -> conTerm (Arr.const vc)
+  _ -> constArrayTerm pkey val
 
 -- | Sound equality partial-evaluation for symbolic arrays.
 --

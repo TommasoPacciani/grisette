@@ -19,6 +19,7 @@ import Grisette
     type (-->),
     type (=->) (TabularFun),
   )
+import Grisette.Internal.SymPrim.Array (Array)
 import Grisette.Internal.SymPrim.BV (IntN, WordN)
 import Grisette.Internal.SymPrim.FP (FP)
 import Grisette.Internal.SymPrim.Prim.Term
@@ -42,6 +43,7 @@ import Grisette.Internal.SymPrim.Prim.Term
     bvzeroExtendTerm,
     complementBitsTerm,
     conTerm,
+    constArrayTerm,
     distinctTerm,
     divIntegralTerm,
     eqTerm,
@@ -65,6 +67,7 @@ import Grisette.Internal.SymPrim.Prim.Term
     notTerm,
     orBitsTerm,
     orTerm,
+    pairTerm,
     pevalFPTraitTerm,
     powerTerm,
     quotIntegralTerm,
@@ -72,10 +75,12 @@ import Grisette.Internal.SymPrim.Prim.Term
     remIntegralTerm,
     rotateLeftTerm,
     rotateRightTerm,
+    selectTerm,
     shiftLeftTerm,
     shiftRightTerm,
     signumNumTerm,
     ssymTerm,
+    storeTerm,
     toFPTerm,
     xorBitsTerm,
   )
@@ -398,6 +403,20 @@ serializationTests =
               (ssymTerm "r")
               (ssymTerm "a" :: Term (FP 11 53)) ::
               Term (FP 8 24)
+          ),
+      testCase "array terms retain key/value evidence across serialization" $ do
+        let array =
+              ssymTerm "array" ::
+                Term (Array (WordN 8) (Integer, WordN 8))
+            key = ssymTerm "key" :: Term (WordN 8)
+            value = pairTerm
+              (ssymTerm "integer-value" :: Term Integer)
+              (ssymTerm "word-value" :: Term (WordN 8))
+        assertSerialization (selectTerm array key)
+        assertSerialization (storeTerm array key value)
+        assertSerialization
+          ( constArrayTerm (Proxy @(WordN 8)) value ::
+              Term (Array (WordN 8) (Integer, WordN 8))
           )
     ]
 

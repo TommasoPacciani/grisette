@@ -2,7 +2,6 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE ViewPatterns #-}
 
 -- |
@@ -21,7 +20,6 @@ where
 import Data.Foldable (Foldable (toList))
 import Grisette.Internal.SymPrim.Prim.Internal.Term
   ( Term,
-    SupportedPrim (withPrim),
     pattern AbsNumTerm,
     pattern AddNumTerm,
     pattern AndBitsTerm,
@@ -139,9 +137,9 @@ subTermsViewPattern (FPFMATerm rd t1 t2 t3) =
 subTermsViewPattern (FromIntegralTerm t) = return [SomeTerm t]
 subTermsViewPattern (FromFPOrTerm t1 rd t2) = return [SomeTerm t1, SomeTerm rd, SomeTerm t2]
 subTermsViewPattern (ToFPTerm rd t1 _ _) = return [SomeTerm rd, SomeTerm t1]
-subTermsViewPattern (SelectTerm (t1 :: Term arr) t2) = withPrim @arr $ return [SomeTerm t1, SomeTerm t2]
-subTermsViewPattern (StoreTerm t1 t2 t3) = withPrim @a $ return [SomeTerm t1, SomeTerm t2, SomeTerm t3]
-subTermsViewPattern (ConstArrayTerm _ t1) = withPrim @a $ return [SomeTerm t1]
+subTermsViewPattern (SelectTerm t1 t2) = return [SomeTerm t1, SomeTerm t2]
+subTermsViewPattern (StoreTerm t1 t2 t3) = return [SomeTerm t1, SomeTerm t2, SomeTerm t3]
+subTermsViewPattern (ConstArrayTerm _ t1) = return [SomeTerm t1]
 subTermsViewPattern (SeqConsTerm t1 t2) = return [SomeTerm t1, SomeTerm t2]
 subTermsViewPattern (SeqAppendTerm t1 t2) = return [SomeTerm t1, SomeTerm t2]
 subTermsViewPattern (SeqZipTerm t1 t2) = return [SomeTerm t1, SomeTerm t2]

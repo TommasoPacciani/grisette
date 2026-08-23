@@ -1,4 +1,5 @@
 {-# LANGUAGE GHC2024 #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeFamilyDependencies #-}
 
 -- |
@@ -16,6 +17,8 @@ module Grisette.Internal.Unified.UnifiedSeq
     SeqStepWith,
     SeqStepValue,
     SeqStepWithValue,
+    SeqFoldKey,
+    seqFoldKey,
     UnifiedSeq (..),
     UnifiedPair (..),
   )
@@ -23,6 +26,8 @@ where
 
 import Data.Foldable (foldl')
 import Data.Kind (Constraint)
+import qualified Data.Text as T
+import Grisette.Internal.Core.Data.Symbol (Identifier, withLocation)
 import Grisette.Internal.SymPrim.Prim.Term
   ( ConRep (ConType),
     SupportedPrim,
@@ -37,7 +42,22 @@ import qualified Grisette.Internal.SymPrim.SymSeq as SSeq
 import Grisette.Internal.Unified.EvalModeTag (EvalModeTag (C, S))
 import Grisette.Internal.Unified.UnifiedBool (UnifiedBool (GetBool))
 import Grisette.Internal.Unified.UnifiedInteger (GetInteger)
+import Language.Haskell.TH.Syntax.Compat (SpliceQ)
 import qualified Prelude as P
+
+-- | A statically unique identity for one closed host-authored sequence fold.
+--
+-- The constructor stays private: sharing a key between different fold bodies
+-- could make a nested abstraction bind the wrong private variables.  Use
+-- 'seqFoldKey', which incorporates the splice location as well as its label.
+newtype SeqFoldKey = SeqFoldKey Identifier
+
+-- | Construct a fold key whose identity is the source location of the splice.
+-- Repeated executions at that location intentionally reuse the same closed
+-- function term.
+seqFoldKey :: P.String -> SpliceQ SeqFoldKey
+seqFoldKey label =
+  [||SeqFoldKey $$(withLocation (T.pack label))||]
 
 type SolverValue a =
   ( SupportedNonFuncPrim (ConType a),
@@ -139,6 +159,18 @@ class UnifiedSeq (mode :: EvalModeTag) where
     state ->
     GetSeq mode element ->
     state
+  foldSeqWithKey ::
+    ( SeqValue mode environment,
+      SeqValue mode state,
+      SeqValue mode element,
+      SeqStepWithValue mode environment state element
+    ) =>
+    SeqFoldKey ->
+    SeqStepWith environment state element ->
+    environment ->
+    state ->
+    GetSeq mode element ->
+    state
 
 instance UnifiedSeq 'C where
   nilSeq = []
@@ -157,6 +189,7 @@ instance UnifiedSeq 'C where
   zipSeq = P.zip
   foldSeq = foldl'
   foldSeqWith step environment = foldl' (step environment)
+  foldSeqWithKey _ step environment = foldl' (step environment)
 
 instance UnifiedSeq 'S where
   nilSeq = SSeq.nil
@@ -169,6 +202,7 @@ instance UnifiedSeq 'S where
   zipSeq = SSeq.zip
   foldSeq = SSeq.foldHost
   foldSeqWith = SSeq.foldWithHost
+  foldSeqWithKey (SeqFoldKey key) = SSeq.foldWithHostKey key
 
 class UnifiedPair (mode :: EvalModeTag) where
   pair ::

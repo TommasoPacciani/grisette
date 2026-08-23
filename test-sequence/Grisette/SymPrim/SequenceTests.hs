@@ -1,5 +1,6 @@
 {-# LANGUAGE GHC2024 #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 module Grisette.SymPrim.SequenceTests (sequenceTests) where
 
@@ -472,6 +473,47 @@ sequenceTests =
           "fresh private binders retain one alpha-normalized fold term"
           (AsKey firstFold)
           (AsKey secondFold),
+      testCase "location-keyed folds reuse a closed step and reject captures" $ do
+        let key = $$(U.seqFoldKey "sequence-test.reusable")
+            step :: SymInteger -> SymInteger -> SymInteger -> SymInteger
+            step environment state element = environment + state + element
+            candidate = "keyed-fold-candidate" :: SymSeq SymInteger
+            firstFold = U.foldSeqWithKey @'S key step 2 5 candidate
+            secondFold = U.foldSeqWithKey @'S key step 2 5 candidate
+        assertEqual "keyed concrete fold" 20
+          (U.foldSeqWithKey @'C key (\scale acc x -> acc + scale * x)
+            2 0 [1 .. 4 :: Integer])
+        assertEqual "keyed symbolic fold is shared"
+          (AsKey firstFold) (AsKey secondFold)
+        let hidden = "keyed-hidden" :: SymInteger
+            captured :: SymInteger -> SymInteger -> SymInteger -> SymInteger
+            captured environment state element =
+              environment + state + element + hidden
+        result <- try @ErrorCall $ evaluate
+          (U.foldSeqWithKey @'S key captured 1 0 (U.nilSeq @'S @SymInteger))
+        case result of
+          Left exception -> assertBool "keyed capture diagnostic"
+            ( "foldSeqWith step function captures solver values:"
+                `isPrefixOf` displayException exception )
+          Right _ -> assertFailure "location-keyed fold accepted a capture",
+      testCase "re-entrant location-keyed folds keep binders distinct" $ do
+        let key = $$(U.seqFoldKey "sequence-test.reentrant")
+            one = U.consSeq @'S (1 :: SymInteger) U.nilSeq
+            outerStep
+              :: SymInteger -> SymInteger -> SymInteger -> SymInteger
+            outerStep environment state element =
+              state + element + U.foldSeqWithKey @'S key
+                (\_ innerState innerElement ->
+                  innerState + innerElement + environment)
+                (0 :: SymInteger) 0 one
+        result <- try @ErrorCall $ evaluate
+          (U.foldSeqWithKey @'S key outerStep 1 0 one)
+        case result of
+          Left exception -> assertBool "re-entrant capture diagnostic"
+            ( "foldSeqWith step function captures solver values:"
+                `isPrefixOf` displayException exception )
+          Right _ -> assertFailure
+            "re-entrant keyed fold captured an enclosing binder",
       testCase "captured scalar solver values are rejected before folding nil" $ do
         let hidden = "hidden" :: SymInteger
             capturedStep :: SymInteger -> SymInteger -> SymInteger

@@ -23,14 +23,25 @@ module Grisette.Internal.SymPrim.SymSeq
     foldWith,
     foldHost,
     foldWithHost,
+    foldWithHostKey,
   )
 where
 
+import Control.Concurrent
+  ( MVar,
+    ThreadId,
+    modifyMVar,
+    modifyMVar_,
+    myThreadId,
+    newMVar,
+  )
+import Control.Exception (bracket)
 import Control.DeepSeq (NFData)
 import qualified Data.Binary as Binary
 import Data.Bytes.Serial (Serial (deserialize, serialize))
 import qualified Data.Serialize as Cereal
 import Data.String (IsString (fromString))
+import qualified Data.Map.Strict as Map
 import GHC.Generics (Generic)
 import Grisette.Internal.Core.Data.Class.Solvable
   ( Solvable (con, conView, sym),
@@ -40,13 +51,17 @@ import Grisette.Internal.Internal.Decl.SymPrim.AllSyms
   ( AllSyms (allSymsS),
     SomeSym (SomeSym),
   )
-import Grisette.Internal.Core.Data.Symbol (freshBoundSymbol)
+import Grisette.Internal.Core.Data.Symbol
+  ( Identifier,
+    bound,
+    freshBoundSymbol,
+  )
 import Grisette.Internal.SymPrim.GeneralFun
   ( buildGeneralFun2,
     buildGeneralFun3,
     pevalClosedSeqFold,
     pevalClosedSeqFoldWith,
-    type (-->),
+    type (-->) (GeneralFun),
   )
 import System.IO.Unsafe (unsafePerformIO)
 import Grisette.Internal.SymPrim.Prim.Internal.Serialize ()
@@ -57,6 +72,7 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
     SupportedPrim,
     SymRep (SymType),
     Term,
+    TypedConstantSymbol,
     conTerm,
     pevalSeqAppendTerm,
     pevalSeqConsTerm,
@@ -348,3 +364,79 @@ foldWithHost step environment initial sequence = unsafePerformIO $ do
           (underlyingTerm sequence)
   folded `seq` return (wrapTerm folded)
 {-# NOINLINE foldWithHost #-}
+
+-- | Active nesting depths for location-keyed folds.  The depth is tracked per
+-- thread and key: ordinary repeated calls use depth zero and therefore share
+-- their entire step DAG, while a re-entrant use receives distinct binders and
+-- cannot capture an enclosing fold argument.
+activeFoldKeyDepths :: MVar (Map.Map (ThreadId, Identifier) Int)
+activeFoldKeyDepths = unsafePerformIO (newMVar Map.empty)
+{-# NOINLINE activeFoldKeyDepths #-}
+
+withFoldKeyDepth :: Identifier -> (Int -> IO value) -> IO value
+withFoldKeyDepth key action = bracket acquire release (action . snd)
+  where
+    acquire = do
+      thread <- myThreadId
+      depth <- modifyMVar activeFoldKeyDepths $ \depths ->
+        let identity = (thread, key)
+            current = Map.findWithDefault 0 identity depths
+         in return (Map.insert identity (current + 1) depths, current)
+      return (thread, depth)
+
+    release (thread, _) = modifyMVar_ activeFoldKeyDepths $ \depths ->
+      let identity = (thread, key)
+       in return $ case Map.lookup identity depths of
+            Just current | current > 1 ->
+              Map.insert identity (current - 1) depths
+            _ -> Map.delete identity depths
+
+-- | 'foldWithHost' with a source-location key for a step that is executed many
+-- times.  Its private binders are stable at one non-re-entrant call site, so
+-- constructing the same large step body reaches the existing hash-consed DAG
+-- directly instead of allocating a fresh DAG and alpha-renaming it afterward.
+-- Closure validation remains identical to 'foldWithHost'.
+foldWithHostKey ::
+  forall environment state element.
+  ( SupportedNonFuncPrim (ConType environment),
+    SupportedNonFuncPrim (ConType state),
+    SupportedNonFuncPrim (ConType element),
+    SupportedPrim (ConType element --> ConType state),
+    SupportedPrim (ConType state --> ConType element --> ConType state),
+    SupportedPrim
+      (ConType environment --> ConType state --> ConType element --> ConType state),
+    LinkedRep (ConType environment) environment,
+    LinkedRep (ConType state) state,
+    LinkedRep (ConType element) element
+  ) =>
+  Identifier ->
+  (environment -> state -> element -> state) ->
+  environment ->
+  state ->
+  SymSeq element ->
+  state
+foldWithHostKey key step environment initial sequence = unsafePerformIO $
+  withFoldKeyDepth key $ \depth -> do
+    let argument :: forall value. SupportedNonFuncPrim value =>
+          Int -> TypedConstantSymbol value
+        argument ordinal = typedConstantSymbol $
+          bound key (depth * 3 + ordinal)
+        environmentSymbol = argument 0
+        stateSymbol = argument 1
+        elementSymbol = argument 2
+        body = underlyingTerm
+          (step
+            (wrapTerm (symTerm environmentSymbol))
+            (wrapTerm (symTerm stateSymbol))
+            (wrapTerm (symTerm elementSymbol)))
+        stepTerm = conTerm $
+          GeneralFun environmentSymbol $
+            conTerm $ GeneralFun stateSymbol $
+              conTerm $ GeneralFun elementSymbol body
+        folded = pevalClosedSeqFoldWith
+          stepTerm
+          (underlyingTerm environment)
+          (underlyingTerm initial)
+          (underlyingTerm sequence)
+    folded `seq` return (wrapTerm folded)
+{-# NOINLINE foldWithHostKey #-}
