@@ -7,6 +7,7 @@
 
 module Grisette.Core.Data.UnionBaseTests (unionBaseTests) where
 
+import Data.String (fromString)
 import GHC.Generics (Generic)
 import Grisette
   ( AsKey (AsKey),
@@ -16,6 +17,8 @@ import Grisette
     MergingStrategy (SortedStrategy),
     Solvable (con),
     SymInteger,
+    termSize,
+    termsSize,
     wrapStrategy,
   )
 import Grisette.Internal.Core.Data.UnionBase
@@ -24,9 +27,11 @@ import Grisette.Internal.Core.Data.UnionBase
     ifWithLeftMost,
     ifWithStrategy,
   )
+import Grisette.Internal.SymPrim.SymBool (SymBool (SymBool))
+import Grisette.TestUtil.SymbolicAssertion ((.@?=))
 import Test.Framework (Test, testGroup)
 import Test.Framework.Providers.HUnit (testCase)
-import Test.HUnit ((@?=))
+import Test.HUnit (assertFailure, (@?=))
 
 data TripleSum a b c = TS1 a | TS2 b | TS3 c deriving (Show, Eq, Generic)
 
@@ -916,6 +921,60 @@ unionBaseTests =
                                 (UnionSingle $ TS3 2)
                             )
                         ),
+                  testCase "Equal-bucket guards remain shallow over shared conjunctions" $ do
+                    let commonGuard =
+                          foldr
+                            (.&&)
+                            (con True)
+                            [ fromString ("union.guard.common." <> show i)
+                              | i <- [0 .. 63 :: Int]
+                            ]
+                        trueGuard = commonGuard .&& "union.guard.true"
+                        falseGuard = commonGuard .&& "union.guard.false"
+                        outerGuard = "union.guard.outer"
+                        ifTrue =
+                          ifWithStrategy
+                            rootStrategy
+                            trueGuard
+                            (UnionSingle $ TS1 (1 :: Integer))
+                            (UnionSingle $ TS2 (2 :: Integer))
+                        ifFalse =
+                          ifWithStrategy
+                            rootStrategy
+                            falseGuard
+                            (UnionSingle $ TS1 (2 :: Integer))
+                            (UnionSingle $ TS3 (3 :: Integer))
+                        result =
+                          ifWithStrategy rootStrategy outerGuard ifTrue ifFalse
+                    case result of
+                      UnionIf
+                        (TS1 1)
+                        True
+                        actualGuard
+                        ( UnionIf
+                            (TS1 1)
+                            True
+                            trueBucketGuard
+                            (UnionSingle (TS1 1))
+                            (UnionSingle (TS1 2))
+                          )
+                        ( UnionIf
+                            (TS2 2)
+                            True
+                            falseBucketGuard
+                            (UnionSingle (TS2 2))
+                            (UnionSingle (TS3 3))
+                          ) -> do
+                            AsKey trueBucketGuard @?= AsKey outerGuard
+                            AsKey falseBucketGuard @?= AsKey outerGuard
+                            let SymBool actualTerm = actualGuard
+                                SymBool outerTerm = outerGuard
+                                SymBool trueTerm = trueGuard
+                                SymBool falseTerm = falseGuard
+                            termSize actualTerm
+                              @?= termsSize [outerTerm, trueTerm, falseTerm] + 1
+                            actualGuard .@?= symIte outerGuard trueGuard falseGuard
+                      _ -> assertFailure "unexpected sorted-union leaf order",
                   testCase "Non-degenerated case when idxtt > idxft" $ do
                     let x =
                           ifWithStrategy

@@ -32,7 +32,6 @@ where
 import Control.Monad (ap)
 import GHC.Generics (Generic, Generic1)
 import Grisette.Internal.Core.Data.Class.AsKey (AsKey (AsKey), KeyEq (keyEq), KeyEq1 (liftKeyEq), shouldUseAsKeyHasSymbolicVersionError)
-import Grisette.Internal.Core.Data.Class.ITEOp (ITEOp (symIte))
 import Grisette.Internal.Core.Data.Class.LogicalOp
   ( LogicalOp (symNot, (.&&), (.||)),
   )
@@ -55,7 +54,10 @@ import Grisette.Internal.Internal.Decl.Core.Data.Class.SimpleMergeable
 import Grisette.Internal.Internal.Decl.Core.Data.Class.TryMerge
   ( TryMerge (tryMergeWithStrategy),
   )
-import Grisette.Internal.SymPrim.SymBool (SymBool)
+import Grisette.Internal.SymPrim.SymBool
+  ( SymBool,
+    symIteMergeGuard,
+  )
 import Language.Haskell.TH.Syntax (Lift)
 
 -- | The base union implementation, which is an if-then-else tree structure.
@@ -237,7 +239,7 @@ ifWithStrategyInv
               ifWithLeftMost True (cond' .&& condt) tt $
                 ifWithStrategyInv strategy cond' tf ifFalse'
           | idxtt == idxft =
-              let newCond = symIte cond' condt condf
+              let newCond = symIteMergeGuard cond' condt condf
                   newUnionIfTrue =
                     ifWithStrategyInv (substrategy idxtt) cond' tt ft
                   newUnionIfFalse = ifWithStrategyInv strategy cond' tf ff

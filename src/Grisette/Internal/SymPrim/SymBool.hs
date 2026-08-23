@@ -13,7 +13,12 @@
 -- Maintainer  :   siruilu@cs.washington.edu
 -- Stability   :   Experimental
 -- Portability :   GHC only
-module Grisette.Internal.SymPrim.SymBool (SymBool (SymBool), SymBoolKey) where
+module Grisette.Internal.SymPrim.SymBool
+  ( SymBool (SymBool),
+    SymBoolKey,
+    symIteMergeGuard,
+  )
+where
 
 import Control.DeepSeq (NFData)
 import qualified Data.Binary as Binary
@@ -42,10 +47,13 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
     SymRep (SymType),
     Term,
     conTerm,
+    pevalITEBasicTerm,
+    pevalNotTerm,
     pformatTerm,
     symTerm,
     typedConstantSymbol,
     pattern ConTerm,
+    pattern NotTerm,
   )
 import Language.Haskell.TH.Syntax (Lift)
 
@@ -66,6 +74,20 @@ import Language.Haskell.TH.Syntax (Lift)
 -- more information.
 newtype SymBool = SymBool {underlyingBoolTerm :: Term Bool}
   deriving (Lift, NFData, Generic)
+
+-- | Construct an ITE used as a sorted-union bucket guard without applying the
+-- Boolean-specific rewrites that recursively factor conjunctions and
+-- disjunctions. Generic ITE reductions remain available for concrete or
+-- negated conditions, identical arms, and immediately nested ITEs.
+symIteMergeGuard :: SymBool -> SymBool -> SymBool -> SymBool
+symIteMergeGuard
+  (SymBool cond)
+  (SymBool (NotTerm ifTrue))
+  (SymBool (NotTerm ifFalse)) =
+    SymBool $ pevalNotTerm $ pevalITEBasicTerm cond ifTrue ifFalse
+symIteMergeGuard (SymBool cond) (SymBool ifTrue) (SymBool ifFalse) =
+  SymBool $ pevalITEBasicTerm cond ifTrue ifFalse
+{-# INLINE symIteMergeGuard #-}
 
 -- | t'SymBool' type with identity equality.
 type SymBoolKey = AsKey SymBool
