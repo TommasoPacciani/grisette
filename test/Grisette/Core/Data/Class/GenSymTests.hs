@@ -6,6 +6,7 @@ module Grisette.Core.Data.Class.GenSymTests (genSymTests) where
 import Control.Monad (replicateM)
 import Control.Monad.Except (ExceptT (ExceptT))
 import Control.Monad.Trans.Maybe (MaybeT (MaybeT))
+import qualified Control.Monad.Trans.Writer.CPS as WriterCPS
 import qualified Data.Text as T
 import Grisette
   ( AsKey,
@@ -1330,5 +1331,17 @@ genSymTests =
                 isym (withMetadata "c" (Atom ("b" :: T.Text))) 0,
                 isym (withMetadata "c" (Atom ("b" :: T.Text))) 1,
                 isym "c" 1
-              ]
+              ],
+      testCase "CPS WriterT preserves fresh scope and journal order" $ do
+        let computation = do
+              a <- freshString "a"
+              WriterCPS.tell ["before"]
+              b <- localIdentifier (const "local") (freshString "b")
+              WriterCPS.tell ["after"]
+              c <- freshString "c"
+              pure [a, b, c]
+        runFresh (WriterCPS.runWriterT computation) "c"
+          @?= ( ["c@0[a]", "local@0[b]", "c@1[c]"]
+              , ["before", "after"]
+              )
     ]

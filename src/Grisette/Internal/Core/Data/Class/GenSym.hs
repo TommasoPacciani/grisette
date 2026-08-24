@@ -88,6 +88,7 @@ import Control.Monad.Trans.Class
   ( MonadTrans (lift),
   )
 import Control.Monad.Trans.Maybe (MaybeT (MaybeT))
+import qualified Control.Monad.Trans.Writer.CPS as WriterCPS
 import qualified Control.Monad.Writer.Lazy as WriterLazy
 import qualified Control.Monad.Writer.Strict as WriterStrict
 import Data.Bifunctor (Bifunctor (first))
@@ -362,6 +363,12 @@ instance (MonadFresh m, Monoid w) => MonadFresh (WriterStrict.WriterT w m) where
   getIdentifier = lift getIdentifier
   localIdentifier f (WriterStrict.WriterT m) =
     WriterStrict.WriterT $ localIdentifier f m
+
+instance (MonadFresh m, Monoid w) => MonadFresh (WriterCPS.WriterT w m) where
+  getFreshIndex = lift getFreshIndex
+  setFreshIndex newIdx = lift $ setFreshIndex newIdx
+  getIdentifier = lift getIdentifier
+  localIdentifier f = WriterCPS.mapWriterT (localIdentifier f)
 
 instance (MonadFresh m) => MonadFresh (StateLazy.StateT s m) where
   getFreshIndex = lift getFreshIndex
