@@ -3,18 +3,23 @@
 
 module Grisette.SymPrim.Prim.ConcurrentTests (concurrentTests) where
 
-import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar)
+import Control.Concurrent (MVar, forkIO, newEmptyMVar, putMVar, takeMVar)
 import Control.DeepSeq (force)
 import Control.Exception (evaluate)
 import Data.Hashable (Hashable (hash))
 import Data.String (IsString (fromString))
+import Data.Unique (hashUnique, newUnique)
+import GHC.StableName (eqStableName, makeStableName)
 import Grisette
   ( LogicalOp(symNot, (.&&), (.||)), SolvingFailure(Unsat)
   , SymBool(SymBool), SymEq ((.==)), SymInteger (SymInteger)
   , evalSymToCon, solve, ssym, z3 )
 import Test.Framework (Test, testGroup)
 import Test.Framework.Providers.HUnit (testCase)
-import Test.HUnit (assertFailure, (@?=))
+import Test.HUnit (assertBool, assertFailure, (@?=))
+import System.Mem (performMajorGC)
+import System.Mem.Weak (mkWeakPtr)
+import System.Timeout (timeout)
 
 concurrentTests :: Test
 concurrentTests =
@@ -82,8 +87,34 @@ concurrentTests =
           Left Unsat -> pure ()
           Left failure -> assertFailure (show failure)
           Right{} -> assertFailure
-            "cross-thread Boolean reconstruction changed solver semantics"
+            "cross-thread Boolean reconstruction changed solver semantics",
+      testCase "live interned terms reuse their canonical node" $ do
+        SymInteger first <- evaluate $ force
+          (("canonical.left" + "canonical.right") :: SymInteger)
+        firstName <- makeStableName first
+        SymInteger second <- evaluate $ force
+          (("canonical.left" + "canonical.right") :: SymInteger)
+        secondName <- makeStableName second
+        assertBool "a live cache hit rebuilt the term wrapper"
+          (eqStableName firstName secondName),
+      testCase "the intern cache does not retain a canonical term" $ do
+        unique <- show . hashUnique <$> newUnique
+        collected <- newEmptyMVar
+        releaseInternedTerm unique collected
+        performMajorGC
+        timeout 5000000 (takeMVar collected) >>= (@?= Just ())
     ]
+
+releaseInternedTerm :: String -> MVar () -> IO ()
+releaseInternedTerm unique collected = do
+  SymInteger term <- evaluate $ force
+    ( (fromString ("weak-cache.left." ++ unique)
+        + fromString ("weak-cache.right." ++ unique))
+        :: SymInteger
+    )
+  _ <- mkWeakPtr term (Just (putMVar collected ()))
+  pure ()
+{-# NOINLINE releaseInternedTerm #-}
 
 largeConjunction :: String -> SymBool
 largeConjunction prefix = foldl' (.&&)

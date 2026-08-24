@@ -34,7 +34,7 @@ module Grisette.Internal.SymPrim.Prim.Internal.Utils
     mkWeakThreadIdRefWithFinalizer,
     addStableNameFinalizer,
     addThreadIdFinalizer,
-    mkWeakStableNameRefWithFinalizer,
+    mkWeakStableNameValueWithFinalizer,
     SomeStableName (..),
     mkWeakSomeStableNameRefWithFinalizer,
     mkWeakSomeStableNameRef,
@@ -187,11 +187,12 @@ addThreadIdFinalizer t@(ThreadId t#) (IO finalizer) = IO $ \s ->
   case mkWeak# t# t finalizer s of
     (# s1, _ #) -> (# s1, () #)
 
--- | Create a weak reference to a stable name with a finalizer.
-mkWeakStableNameRefWithFinalizer ::
-  StableName a -> IO () -> IO (Weak (StableName a))
-mkWeakStableNameRefWithFinalizer t@(StableName t#) (IO finalizer) = IO $ \s ->
-  case mkWeak# t# t finalizer s of
+-- | Create a weak value keyed by a stable name with a finalizer.
+mkWeakStableNameValueWithFinalizer ::
+  StableName key -> value -> IO () -> IO (Weak value)
+mkWeakStableNameValueWithFinalizer
+  (StableName key#) value (IO finalizer) = IO $ \s ->
+  case mkWeak# key# value finalizer s of
     (# s1, w #) -> (# s1, Weak w #)
 
 -- | Add a finalizer to a stable name.
