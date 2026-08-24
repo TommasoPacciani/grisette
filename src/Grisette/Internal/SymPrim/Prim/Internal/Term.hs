@@ -9193,18 +9193,47 @@ pevalSeqFoldWithTerm step environment initial sequence =
   seqFoldWithTerm step environment initial sequence
 
 pevalPairTerm ::
+  forall a b.
   (SupportedNonFuncPrim a, SupportedNonFuncPrim b) =>
   Term a -> Term b -> Term (a, b)
 pevalPairTerm firstValue secondValue = case (firstValue, secondValue) of
   (ConTerm firstConcrete, ConTerm secondConcrete) ->
     conTerm (firstConcrete, secondConcrete)
+  (FirstTerm firstSource, SecondTerm secondSource) ->
+    case
+        ( castTerm firstSource :: Maybe (Term (a, b)),
+          castTerm secondSource :: Maybe (Term (a, b))
+        )
+      of
+        (Just firstSource', Just secondSource')
+          | firstSource' == secondSource' -> firstSource'
+        _ -> pairTerm firstValue secondValue
   _ -> pairTerm firstValue secondValue
+
+explicitPairFirst ::
+  (SupportedNonFuncPrim a, SupportedNonFuncPrim b) =>
+  Term (a, b) -> Maybe (Term a)
+explicitPairFirst (ConTerm (firstValue, _)) = Just $ conTerm firstValue
+explicitPairFirst (PairTerm firstValue _) = Just firstValue
+explicitPairFirst _ = Nothing
+
+explicitPairSecond ::
+  (SupportedNonFuncPrim a, SupportedNonFuncPrim b) =>
+  Term (a, b) -> Maybe (Term b)
+explicitPairSecond (ConTerm (_, secondValue)) = Just $ conTerm secondValue
+explicitPairSecond (PairTerm _ secondValue) = Just secondValue
+explicitPairSecond _ = Nothing
 
 pevalFirstTerm ::
   (SupportedNonFuncPrim a, SupportedNonFuncPrim b) =>
   Term (a, b) -> Term a
 pevalFirstTerm (ConTerm (firstValue, _)) = conTerm firstValue
 pevalFirstTerm (PairTerm firstValue _) = firstValue
+pevalFirstTerm value@(ITETerm condition ifTrue ifFalse) =
+  case (explicitPairFirst ifTrue, explicitPairFirst ifFalse) of
+    (Just trueFirst, Just falseFirst) ->
+      pevalITETerm condition trueFirst falseFirst
+    _ -> firstTerm value
 pevalFirstTerm value = firstTerm value
 
 pevalSecondTerm ::
@@ -9212,6 +9241,11 @@ pevalSecondTerm ::
   Term (a, b) -> Term b
 pevalSecondTerm (ConTerm (_, secondValue)) = conTerm secondValue
 pevalSecondTerm (PairTerm _ secondValue) = secondValue
+pevalSecondTerm value@(ITETerm condition ifTrue ifFalse) =
+  case (explicitPairSecond ifTrue, explicitPairSecond ifFalse) of
+    (Just trueSecond, Just falseSecond) ->
+      pevalITETerm condition trueSecond falseSecond
+    _ -> secondTerm value
 pevalSecondTerm value = secondTerm value
 
 instance SupportedNonFuncPrim a => SupportedPrimConstraint [a] where

@@ -141,11 +141,17 @@ import Grisette.Internal.SymPrim.Prim.Term
     conTerm,
     eqTerm,
     fpTraitTerm,
+    firstTerm,
     iteTerm,
     notTerm,
     orBitsTerm,
     orTerm,
+    pairTerm,
+    pevalFirstTerm,
+    pevalPairTerm,
+    pevalSecondTerm,
     pformatTerm,
+    secondTerm,
     ssymTerm,
     xorBitsTerm,
   )
@@ -689,7 +695,41 @@ termRewritingTests :: Test
 termRewritingTests =
   testGroup
     "TermRewriting"
-    [ bv1Test @WordN,
+    [ testGroup
+        "solver products"
+        [ testCase "rejoining projections recovers the canonical tuple" $ do
+            let productTerm =
+                  ssymTerm "product" :: Term (Integer, Integer)
+            pevalPairTerm
+              (firstTerm productTerm)
+              (secondTerm productTerm)
+              @?= productTerm,
+          testCase "projections distribute across explicit tuple ITE arms" $ do
+            let condition = ssymTerm "condition" :: Term Bool
+            let trueFirst = ssymTerm "true.first" :: Term Integer
+            let trueSecond = ssymTerm "true.second" :: Term Integer
+            let falseFirst = ssymTerm "false.first" :: Term Integer
+            let falseSecond = ssymTerm "false.second" :: Term Integer
+            let selected =
+                  iteTerm
+                    condition
+                    (pairTerm trueFirst trueSecond)
+                    (pairTerm falseFirst falseSecond)
+            pevalFirstTerm selected
+              @?= iteTerm condition trueFirst falseFirst
+            pevalSecondTerm selected
+              @?= iteTerm condition trueSecond falseSecond,
+          testCase "opaque tuple ITE arms retain whole-tuple projections" $ do
+            let condition = ssymTerm "condition" :: Term Bool
+            let selected =
+                  iteTerm
+                    condition
+                    (ssymTerm "true.pair" :: Term (Integer, Integer))
+                    (ssymTerm "false.pair")
+            pevalFirstTerm selected @?= firstTerm selected
+            pevalSecondTerm selected @?= secondTerm selected
+        ],
+      bv1Test @WordN,
       bv1Test @IntN,
       bvConcatTest @WordN,
       bvConcatTest @IntN,

@@ -88,12 +88,12 @@ import Grisette.Internal.SymPrim.Prim.Model (evalTerm)
 import Grisette.Internal.SymPrim.Prim.Term
   ( SymRep (SymType),
     SupportedNonFuncPrim,
-    LinkedRep,
+    LinkedRep (wrapTerm),
     someTypedSymbol,
   )
 import Grisette.Internal.SymPrim.SymAlgReal (SymAlgReal (SymAlgReal))
 import Grisette.Internal.SymPrim.SymArray (SymArray (SymArray))
-import Grisette.Internal.SymPrim.SymPair (SymPair (SymPair))
+import Grisette.Internal.SymPrim.SymPair (SymPair, underlyingPairTerm)
 import Grisette.Internal.SymPrim.SymSeq (SymSeq (SymSeq))
 import Grisette.Internal.SymPrim.Nominal
   ( KnownNominalDomain,
@@ -223,7 +223,8 @@ instance
   ) =>
   EvalSym (SymPair sa sb)
   where
-  evalSym fill model (SymPair t) = SymPair $ evalTerm fill model HS.empty t
+  evalSym fill model value =
+    wrapTerm $ evalTerm fill model HS.empty (underlyingPairTerm value)
 
 instance (KnownSymbol n) => EvalSym (SymUninterp n) where
   evalSym fill model (SymUninterp t) = SymUninterp $ evalTerm fill model HS.empty t

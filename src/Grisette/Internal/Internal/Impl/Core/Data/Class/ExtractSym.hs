@@ -99,7 +99,7 @@ import Grisette.Internal.SymPrim.Prim.TermUtils (extractTerm)
 import Grisette.Internal.SymPrim.SymAlgReal (SymAlgReal (SymAlgReal))
 import Grisette.Internal.SymPrim.Array (Array)
 import Grisette.Internal.SymPrim.SymArray (SymArray (SymArray))
-import Grisette.Internal.SymPrim.SymPair (SymPair (SymPair))
+import Grisette.Internal.SymPrim.SymPair (SymPair, underlyingPairTerm)
 import Grisette.Internal.SymPrim.SymSeq (SymSeq (SymSeq))
 import Grisette.Internal.SymPrim.Nominal
   ( KnownNominalDomain,
@@ -265,10 +265,12 @@ instance
   where
   extractSymMaybe ::
     forall knd. IsSymbolKind knd => SymPair sa sb -> Maybe (SymbolSet knd)
-  extractSymMaybe (SymPair t) =
+  extractSymMaybe value =
     case decideSymbolKind @knd of
-      Left HRefl -> SymbolSet <$> extractTerm HS.empty t
-      Right HRefl -> SymbolSet <$> extractTerm HS.empty t
+      Left HRefl ->
+        SymbolSet <$> extractTerm HS.empty (underlyingPairTerm value)
+      Right HRefl ->
+        SymbolSet <$> extractTerm HS.empty (underlyingPairTerm value)
 
 instance (KnownSymbol n) => ExtractSym (SymUninterp n) where
   extractSymMaybe ::

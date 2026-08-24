@@ -113,7 +113,7 @@ import Grisette.Internal.SymPrim.SymFP
   )
 import Grisette.Internal.SymPrim.SymGeneralFun (type (-~>) (SymGeneralFun))
 import Grisette.Internal.SymPrim.SymInteger (SymInteger (SymInteger))
-import Grisette.Internal.SymPrim.SymPair (SymPair (SymPair))
+import Grisette.Internal.SymPrim.SymPair (SymPair, underlyingPairTerm)
 import Grisette.Internal.SymPrim.SymSeq (SymSeq (SymSeq))
 import Grisette.Internal.SymPrim.Nominal
   ( KnownNominalDomain,
@@ -220,7 +220,7 @@ instance PPrint (SymSeq a) where
   pformat (SymSeq term) = prettyPrintTerm term
 
 instance PPrint (SymPair a b) where
-  pformat (SymPair term) = prettyPrintTerm term
+  pformat = prettyPrintTerm . underlyingPairTerm
 
 instance (ValidFP eb sb) => PPrint (SymFP eb sb) where
   pformat (SymFP t) = prettyPrintTerm t

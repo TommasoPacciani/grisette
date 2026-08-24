@@ -10,14 +10,17 @@
 --
 -- Solver-native symbolic binary products.
 module Grisette.Internal.SymPrim.SymPair
-  ( SymPair (..),
+  ( SymPair,
+    underlyingPairTerm,
+    fromPairTerm,
+    symItePair,
     pair,
     first,
     second,
   )
 where
 
-import Control.DeepSeq (NFData)
+import Control.DeepSeq (NFData (rnf))
 import qualified Data.Binary as Binary
 import Data.Bytes.Serial (Serial (deserialize, serialize))
 import qualified Data.Serialize as Cereal
@@ -35,6 +38,7 @@ import Grisette.Internal.SymPrim.Prim.Internal.Serialize ()
 import Grisette.Internal.SymPrim.Prim.Internal.Term
   ( ConRep (ConType),
     LinkedRep (underlyingTerm, wrapTerm),
+    SupportedPrim (pevalITETerm),
     SupportedNonFuncPrim,
     SymRep (SymType),
     Term,
@@ -49,10 +53,67 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
   )
 import Language.Haskell.TH.Syntax (Lift)
 
-newtype SymPair a b = SymPair
-  { underlyingPairTerm :: Term (ConType a, ConType b)
+-- | A solver-native tuple together with its lifetime-bounded semantic view.
+--
+-- The whole term remains authoritative for equality, hashing, serialization,
+-- model operations and solver lowering.  The component pair is deliberately
+-- lazy: an opaque tuple or array selection pays for a projection only when it
+-- is observed, and every live 'SymPair' pays at most once per side.  Keeping
+-- the view here avoids repeating the complete weak-interning lookup at every
+-- row lens without retaining either the tuple or its projections globally.
+data SymPair a b = SymPair
+  { underlyingPairTerm :: !(Term (ConType a, ConType b)),
+    pairComponents :: (a, b)
   }
-  deriving (Lift, NFData, Generic)
+  deriving stock (Generic)
+
+deriving stock instance (Lift a, Lift b) => Lift (SymPair a b)
+
+instance NFData (SymPair a b) where
+  rnf = rnf . underlyingPairTerm
+
+-- | Construct a symbolic pair view from an arbitrary solver tuple term.
+-- Component projections remain suspended and are shared by every consumer of
+-- the resulting value.
+fromPairTerm ::
+  ( SupportedNonFuncPrim (ConType a),
+    SupportedNonFuncPrim (ConType b),
+    LinkedRep (ConType a) a,
+    LinkedRep (ConType b) b
+  ) =>
+  Term (ConType a, ConType b) ->
+  SymPair a b
+fromPairTerm term = SymPair term
+  ( wrapTerm (pevalFirstTerm term),
+    wrapTerm (pevalSecondTerm term)
+  )
+
+-- | Select a solver-native tuple while retaining componentwise views lazily.
+-- The two views are extensionally the projections of the authoritative whole
+-- tuple ITE, but accessing either one never interns that whole-tuple
+-- projection more than once.
+symItePair ::
+  ( SupportedNonFuncPrim (ConType a),
+    SupportedNonFuncPrim (ConType b),
+    LinkedRep (ConType a) a,
+    LinkedRep (ConType b) b
+  ) =>
+  Term Bool ->
+  SymPair a b ->
+  SymPair a b ->
+  SymPair a b
+symItePair condition
+    (SymPair trueTerm trueComponents)
+    (SymPair falseTerm falseComponents) =
+  SymPair
+    (pevalITETerm condition trueTerm falseTerm)
+    ( wrapTerm $ pevalITETerm condition
+        (underlyingTerm (fst trueComponents))
+        (underlyingTerm (fst falseComponents)),
+      wrapTerm $ pevalITETerm condition
+        (underlyingTerm (snd trueComponents))
+        (underlyingTerm (snd falseComponents))
+    )
 
 instance ConRep (SymPair a b) where
   type ConType (SymPair a b) = (ConType a, ConType b)
@@ -72,7 +133,7 @@ instance
   LinkedRep (ca, cb) (SymPair sa sb)
   where
   underlyingTerm = underlyingPairTerm
-  wrapTerm = SymPair
+  wrapTerm = fromPairTerm
 
 instance
   ( SupportedNonFuncPrim ca,
@@ -154,7 +215,9 @@ pair ::
   b ->
   SymPair a b
 pair firstValue secondValue =
-  wrapTerm $ pevalPairTerm (underlyingTerm firstValue) (underlyingTerm secondValue)
+  SymPair
+    (pevalPairTerm (underlyingTerm firstValue) (underlyingTerm secondValue))
+    (firstValue, secondValue)
 
 first ::
   ( SupportedNonFuncPrim (ConType a),
@@ -164,7 +227,7 @@ first ::
   ) =>
   SymPair a b ->
   a
-first = wrapTerm . pevalFirstTerm . underlyingTerm
+first (SymPair _ components) = fst components
 
 second ::
   ( SupportedNonFuncPrim (ConType a),
@@ -174,4 +237,4 @@ second ::
   ) =>
   SymPair a b ->
   b
-second = wrapTerm . pevalSecondTerm . underlyingTerm
+second (SymPair _ components) = snd components
