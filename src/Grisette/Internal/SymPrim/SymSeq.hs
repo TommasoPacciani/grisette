@@ -1,5 +1,7 @@
 {-# LANGUAGE GHC2024 #-}
+{-# OPTIONS_GHC -Wno-missing-import-lists #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE RoleAnnotations #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
 
@@ -17,31 +19,33 @@ module Grisette.Internal.SymPrim.SymSeq
     range,
     tail,
     lookup,
+    lookupValue,
+    lookupParts,
     zip,
     length,
     fold,
     foldWith,
+    PreparedSeqFold,
+    PreparedSeqFoldWith,
+    SymbolicFocusedCaptures (..),
+    PreparedFocusedSeqFold,
+    prepareFocusedFoldHost,
+    applyPreparedFocusedFold,
+    prepareFoldHost,
+    prepareFoldWithHost,
+    applyPreparedFold,
+    applyPreparedFoldWith,
     foldHost,
     foldWithHost,
-    foldWithHostKey,
   )
 where
 
-import Control.Concurrent
-  ( MVar,
-    ThreadId,
-    modifyMVar,
-    modifyMVar_,
-    myThreadId,
-    newMVar,
-  )
-import Control.Exception (bracket)
 import Control.DeepSeq (NFData)
 import qualified Data.Binary as Binary
 import Data.Bytes.Serial (Serial (deserialize, serialize))
 import qualified Data.Serialize as Cereal
 import Data.String (IsString (fromString))
-import qualified Data.Map.Strict as Map
+import Data.Kind (Type)
 import GHC.Generics (Generic)
 import Grisette.Internal.Core.Data.Class.Solvable
   ( Solvable (con, conView, sym),
@@ -52,16 +56,21 @@ import Grisette.Internal.Internal.Decl.SymPrim.AllSyms
     SomeSym (SomeSym),
   )
 import Grisette.Internal.Core.Data.Symbol
-  ( Identifier,
-    bound,
-    freshBoundSymbol,
+  ( freshBoundSymbol,
   )
 import Grisette.Internal.SymPrim.GeneralFun
   ( buildGeneralFun2,
     buildGeneralFun3,
     pevalClosedSeqFold,
     pevalClosedSeqFoldWith,
-    type (-->) (GeneralFun),
+    pevalPreparedSeqFold,
+    pevalPreparedSeqFoldWith,
+    pevalPreparedFocusedSeqFold,
+    buildFocusedGeneralFun,
+    validateClosedFocusedSeqFold,
+    validateClosedSeqFold,
+    validateClosedSeqFoldWith,
+    type (-->),
   )
 import System.IO.Unsafe (unsafePerformIO)
 import Grisette.Internal.SymPrim.Prim.Internal.Serialize ()
@@ -72,13 +81,23 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
     SupportedPrim,
     SymRep (SymType),
     Term,
-    TypedConstantSymbol,
+    FocusedSeqFoldBinderSymbols
+      ( FocusedSeqFoldBinderSymbol,
+        NoFocusedSeqFoldBinderSymbols
+      ),
+    FocusedSeqFoldOperands
+      ( FocusedSeqFoldOperand,
+        NoFocusedSeqFoldOperands
+      ),
     conTerm,
     pevalSeqAppendTerm,
     pevalSeqConsTerm,
     pevalSeqRangeTerm,
     pevalSeqTailTerm,
     pevalSeqLookupTerm,
+    pevalSeqLookupValueTerm,
+    PEvalOrdTerm (pevalLeOrdTerm, pevalLtOrdTerm),
+    pevalAndTerm,
     pevalSeqZipTerm,
     pevalSeqLengthTerm,
     pformatTerm,
@@ -94,12 +113,55 @@ import Grisette.Internal.SymPrim.SymPair (SymPair)
 import Grisette.Internal.SymPrim.SymBool (SymBool)
 import Grisette.Internal.SymPrim.SymInteger (SymInteger)
 import Language.Haskell.TH.Syntax (Lift)
-import Prelude hiding (fold, length, lookup, tail, zip)
+import Prelude hiding (length, lookup, tail, zip)
 
 newtype SymSeq a = SymSeq
   { underlyingSeqTerm :: Term [ConType a]
   }
   deriving (Lift, NFData, Generic)
+
+-- | A closed, validated symbolic sequence step.  Its private application
+-- closure retains both the checked term and the exact solver evidence used to
+-- prepare it, so application needs no second constraint-solving pass.
+newtype PreparedSeqFold state element = PreparedSeqFold
+  (state -> SymSeq element -> state)
+
+type role PreparedSeqFold nominal nominal
+
+-- | 'PreparedSeqFold' with an explicit first-order environment.
+newtype PreparedSeqFoldWith environment state element = PreparedSeqFoldWith
+  (environment -> state -> SymSeq element -> state)
+
+type role PreparedSeqFoldWith nominal nominal nominal
+
+-- | Heterogeneous primitive lanes supplied to a prepared focused fold.  The
+-- constructor constraints ensure every capture has a first-order solver sort;
+-- a physical row itself therefore cannot be inserted into this bundle.
+data SymbolicFocusedCaptures (captures :: [Type]) where
+  FocusedNoCaptures :: SymbolicFocusedCaptures '[]
+  FocusedCapture
+    :: ( ConRep value
+       , SupportedNonFuncPrim (ConType value)
+       , LinkedRep (ConType value) value )
+    => !value
+    -> !(SymbolicFocusedCaptures rest)
+    -> SymbolicFocusedCaptures (value ': rest)
+
+infixr 5 `FocusedCapture`
+
+type family FocusedConTypes (captures :: [Type]) :: [Type] where
+  FocusedConTypes '[] = '[]
+  FocusedConTypes (value ': rest) = ConType value ': FocusedConTypes rest
+
+-- | A state/index fold whose binders and callback body were constructed once.
+-- Application only substitutes the current primitive lanes for private typed
+-- placeholders and applies the retained term; it never invokes the callback or
+-- allocates another binder.
+newtype PreparedFocusedSeqFold captures state element =
+  PreparedFocusedSeqFold
+    (SymbolicFocusedCaptures captures -> state -> SymSeq element -> state)
+
+type role PreparedFocusedSeqFold nominal nominal nominal
 
 instance ConRep (SymSeq a) where
   type ConType (SymSeq a) = [ConType a]
@@ -204,6 +266,42 @@ lookup seed sequence index =
       (underlyingTerm sequence)
       (underlyingTerm index)
 
+-- | Total value-only lookup.  Unlike projecting 'lookup', this operation never
+-- creates a symbolic product term; an absent coordinate yields the exact seed.
+lookupValue ::
+  (SupportedNonFuncPrim (ConType a), LinkedRep (ConType a) a) =>
+  a ->
+  SymSeq a ->
+  SymInteger ->
+  a
+lookupValue seed sequence index =
+  wrapTerm $
+    pevalSeqLookupValueTerm
+      (underlyingTerm seed)
+      (underlyingTerm sequence)
+      (underlyingTerm index)
+
+-- | Presence from a preparation-owned authoritative length together with a
+-- value-only lane lookup.  The result is a Haskell product of two scalar terms,
+-- never a solver pair.  Correlated columnar-sequence constructors establish
+-- that the authoritative length equals every reachable lane length.
+lookupParts ::
+  (SupportedNonFuncPrim (ConType a), LinkedRep (ConType a) a) =>
+  SymInteger ->
+  a ->
+  SymSeq a ->
+  SymInteger ->
+  (SymBool, a)
+lookupParts authoritativeLength seed sequence index =
+  ( wrapTerm $
+      pevalAndTerm
+        (pevalLeOrdTerm (conTerm (0 :: Integer)) (underlyingTerm index))
+        (pevalLtOrdTerm
+          (underlyingTerm index)
+          (underlyingTerm authoritativeLength)),
+    lookupValue seed sequence index
+  )
+
 zip ::
   ( SupportedNonFuncPrim (ConType a),
     SupportedNonFuncPrim (ConType b),
@@ -265,19 +363,48 @@ foldWith (SymGeneralFun (stepTerm@SupportedTerm)) environment initial sequence =
           (underlyingTerm sequence)
    in folded `seq` wrapTerm folded
 
--- | Fold a symbolic sequence with a step given as an ordinary Haskell function
--- over symbolic values.
---
--- The solver-native fold needs its step as a closed function /term/, which
--- previously forced every caller to build @sym --> sym --> body@ by hand and
--- therefore to write one step for concrete evaluation and a second, separately
--- authored step for symbolic evaluation.  Two authored steps are two programs, so
--- they can disagree.  Abstracting the caller's function over fresh bound symbols
--- here means one step serves both modes.
---
--- The step is applied to bound variables only, so a step that reaches out to a
--- solver value from its enclosing scope produces a non-closed term; that is
--- rejected by 'pevalClosedSeqFold', exactly as a hand-built step would be.
+-- | Abstract an ordinary Haskell step over fresh private binders and validate
+-- the resulting closed function once.  Applying the returned program never
+-- executes the callback or traverses it for free symbols again.
+prepareFoldHost ::
+  forall state element.
+  ( SupportedNonFuncPrim (ConType state),
+    SupportedNonFuncPrim (ConType element),
+    SupportedPrim (ConType element --> ConType state),
+    SupportedPrim (ConType state --> ConType element --> ConType state),
+    LinkedRep (ConType state) state,
+    LinkedRep (ConType element) element
+  ) =>
+  (state -> element -> state) ->
+  PreparedSeqFold state element
+prepareFoldHost step = unsafePerformIO $ do
+  stateSymbol <- typedConstantSymbol <$> freshBoundSymbol "foldSeq.state"
+  elementSymbol <- typedConstantSymbol <$> freshBoundSymbol "foldSeq.element"
+  let body =
+        underlyingTerm
+          ( step
+              (wrapTerm (symTerm stateSymbol))
+              (wrapTerm (symTerm elementSymbol))
+          )
+      checked = validateClosedSeqFold $
+        conTerm (buildGeneralFun2 stateSymbol elementSymbol body)
+      apply initial sequence =
+        let folded = pevalPreparedSeqFold
+              checked (underlyingTerm initial) (underlyingTerm sequence)
+         in folded `seq` wrapTerm folded
+  checked `seq` return (PreparedSeqFold apply)
+{-# NOINLINE prepareFoldHost #-}
+
+-- | Apply a prepared closed step to dynamic fold inputs.
+applyPreparedFold ::
+  PreparedSeqFold state element ->
+  state ->
+  SymSeq element ->
+  state
+applyPreparedFold (PreparedSeqFold apply) = apply
+
+-- | One-shot host fold.  This remains the convenient semantic API; retained
+-- owners should prepare once and call 'applyPreparedFold' repeatedly.
 foldHost ::
   forall state element.
   ( SupportedNonFuncPrim (ConType state),
@@ -291,35 +418,133 @@ foldHost ::
   state ->
   SymSeq element ->
   state
-foldHost step initial sequence = unsafePerformIO $ do
-  -- The step is an arbitrary Haskell function, so it cannot be inspected; it can
-  -- only be applied and its result examined.  Two properties make that sound.
-  -- The arguments are bound to symbols in a namespace the public API cannot
-  -- construct, so a symbol the step returns is either one it was handed or one
-  -- that stays free and is reported by the closure check below.  And each
-  -- allocation is distinct, so an enclosing abstraction's binder can never be
-  -- rebound here: a step closing over an enclosing fold's state leaves it free and
-  -- is rejected instead of silently reading this fold's argument.
-  stateSymbol <- typedConstantSymbol <$> freshBoundSymbol "foldSeq.state"
-  elementSymbol <- typedConstantSymbol <$> freshBoundSymbol "foldSeq.element"
+foldHost step = applyPreparedFold (prepareFoldHost step)
+{-# NOINLINE foldHost #-}
+
+-- | Prepare a closed fold step with an explicit environment.
+prepareFoldWithHost ::
+  forall environment state element.
+  ( SupportedNonFuncPrim (ConType environment),
+    SupportedNonFuncPrim (ConType state),
+    SupportedNonFuncPrim (ConType element),
+    SupportedPrim (ConType element --> ConType state),
+    SupportedPrim (ConType state --> ConType element --> ConType state),
+    SupportedPrim
+      (ConType environment --> ConType state --> ConType element --> ConType state),
+    LinkedRep (ConType environment) environment,
+    LinkedRep (ConType state) state,
+    LinkedRep (ConType element) element
+  ) =>
+  (environment -> state -> element -> state) ->
+  PreparedSeqFoldWith environment state element
+prepareFoldWithHost step = unsafePerformIO $ do
+  environmentSymbol <-
+    typedConstantSymbol <$> freshBoundSymbol "foldSeqWith.environment"
+  stateSymbol <- typedConstantSymbol <$> freshBoundSymbol "foldSeqWith.state"
+  elementSymbol <- typedConstantSymbol <$> freshBoundSymbol "foldSeqWith.element"
   let body =
         underlyingTerm
           ( step
+              (wrapTerm (symTerm environmentSymbol))
               (wrapTerm (symTerm stateSymbol))
               (wrapTerm (symTerm elementSymbol))
           )
-      stepTerm =
-        conTerm
-          (buildGeneralFun2 stateSymbol elementSymbol body)
-      folded =
-        pevalClosedSeqFold
-          stepTerm
-          (underlyingTerm initial)
-          (underlyingTerm sequence)
-  folded `seq` return (wrapTerm folded)
-{-# NOINLINE foldHost #-}
+      checked = validateClosedSeqFoldWith $
+        conTerm (buildGeneralFun3
+          environmentSymbol stateSymbol elementSymbol body)
+      apply environment initial sequence =
+        let folded = pevalPreparedSeqFoldWith
+              checked
+              (underlyingTerm environment)
+              (underlyingTerm initial)
+              (underlyingTerm sequence)
+         in folded `seq` wrapTerm folded
+  checked `seq` return (PreparedSeqFoldWith apply)
+{-# NOINLINE prepareFoldWithHost #-}
 
--- | 'foldHost' with an environment the step reads on every element.
+-- | Apply a prepared environment-bearing step.
+applyPreparedFoldWith ::
+  PreparedSeqFoldWith environment state element ->
+  environment ->
+  state ->
+  SymSeq element ->
+  state
+applyPreparedFoldWith (PreparedSeqFoldWith apply) = apply
+
+freshFocusedCaptures
+  :: SymbolicFocusedCaptures captures
+  -> IO
+      ( FocusedSeqFoldBinderSymbols (FocusedConTypes captures),
+        SymbolicFocusedCaptures captures
+      )
+freshFocusedCaptures FocusedNoCaptures =
+  pure (NoFocusedSeqFoldBinderSymbols, FocusedNoCaptures)
+freshFocusedCaptures (FocusedCapture (_ :: value) rest) = do
+  symbol <- typedConstantSymbol <$> freshBoundSymbol "focusedFold.capture"
+  (symbols, symbolicRest) <- freshFocusedCaptures rest
+  pure
+    ( FocusedSeqFoldBinderSymbol symbol symbols,
+      FocusedCapture (wrapTerm (symTerm symbol) :: value) symbolicRest
+    )
+
+focusedOperands
+  :: SymbolicFocusedCaptures captures
+  -> FocusedSeqFoldOperands (FocusedConTypes captures)
+focusedOperands FocusedNoCaptures = NoFocusedSeqFoldOperands
+focusedOperands (FocusedCapture value rest) =
+  FocusedSeqFoldOperand (underlyingTerm value) (focusedOperands rest)
+
+-- | Prepare a multi-lane scalar-driver fold exactly once.
+--
+-- The callback is evaluated once against private typed placeholders and fresh
+-- state/index binders.  Preparation rejects every free solver value except the
+-- declared captures.  Applying the result substitutes current primitive lanes
+-- into the retained function term; it neither calls the callback nor allocates
+-- a binder.  This is the column-major alternative to a pair-valued row
+-- environment.
+prepareFocusedFoldHost ::
+  forall captures state element.
+  ( SupportedNonFuncPrim (ConType state),
+    SupportedNonFuncPrim (ConType element),
+    SupportedPrim (ConType element --> ConType state),
+    SupportedPrim (ConType state --> ConType element --> ConType state),
+    LinkedRep (ConType state) state,
+    LinkedRep (ConType element) element
+  ) =>
+  SymbolicFocusedCaptures captures ->
+  (SymbolicFocusedCaptures captures -> state -> element -> state) ->
+  PreparedFocusedSeqFold captures state element
+prepareFocusedFoldHost template step = unsafePerformIO $ do
+  (captureSymbols, symbolicCaptures) <- freshFocusedCaptures template
+  stateSymbol <- typedConstantSymbol <$> freshBoundSymbol "focusedFold.state"
+  elementSymbol <- typedConstantSymbol <$> freshBoundSymbol "focusedFold.index"
+  let body = underlyingTerm
+        (step symbolicCaptures
+          (wrapTerm (symTerm stateSymbol))
+          (wrapTerm (symTerm elementSymbol)))
+      callback = buildFocusedGeneralFun
+        captureSymbols stateSymbol elementSymbol body
+      validated = validateClosedFocusedSeqFold callback
+      apply captures initial sequence =
+        let folded = pevalPreparedFocusedSeqFold
+              validated
+              (focusedOperands captures)
+              (underlyingTerm initial)
+              (underlyingTerm sequence)
+         in folded `seq` wrapTerm folded
+  validated `seq` pure (PreparedFocusedSeqFold apply)
+{-# NOINLINE prepareFocusedFoldHost #-}
+
+-- | Apply a retained focused fold.  The host callback is not reachable here.
+applyPreparedFocusedFold ::
+  PreparedFocusedSeqFold captures state element ->
+  SymbolicFocusedCaptures captures ->
+  state ->
+  SymSeq element ->
+  state
+applyPreparedFocusedFold (PreparedFocusedSeqFold apply) = apply
+
+-- | One-shot environment-bearing host fold.
 foldWithHost ::
   forall environment state element.
   ( SupportedNonFuncPrim (ConType environment),
@@ -338,105 +563,5 @@ foldWithHost ::
   state ->
   SymSeq element ->
   state
-foldWithHost step environment initial sequence = unsafePerformIO $ do
-  -- See 'foldHost' for why the binders are private and freshly allocated.
-  environmentSymbol <-
-    typedConstantSymbol <$> freshBoundSymbol "foldSeqWith.environment"
-  stateSymbol <- typedConstantSymbol <$> freshBoundSymbol "foldSeqWith.state"
-  elementSymbol <- typedConstantSymbol <$> freshBoundSymbol "foldSeqWith.element"
-  let body =
-        underlyingTerm
-          ( step
-              (wrapTerm (symTerm environmentSymbol))
-              (wrapTerm (symTerm stateSymbol))
-              (wrapTerm (symTerm elementSymbol))
-          )
-      stepTerm =
-        conTerm
-          ( buildGeneralFun3
-              environmentSymbol stateSymbol elementSymbol body
-          )
-      folded =
-        pevalClosedSeqFoldWith
-          stepTerm
-          (underlyingTerm environment)
-          (underlyingTerm initial)
-          (underlyingTerm sequence)
-  folded `seq` return (wrapTerm folded)
+foldWithHost step = applyPreparedFoldWith (prepareFoldWithHost step)
 {-# NOINLINE foldWithHost #-}
-
--- | Active nesting depths for location-keyed folds.  The depth is tracked per
--- thread and key: ordinary repeated calls use depth zero and therefore share
--- their entire step DAG, while a re-entrant use receives distinct binders and
--- cannot capture an enclosing fold argument.
-activeFoldKeyDepths :: MVar (Map.Map (ThreadId, Identifier) Int)
-activeFoldKeyDepths = unsafePerformIO (newMVar Map.empty)
-{-# NOINLINE activeFoldKeyDepths #-}
-
-withFoldKeyDepth :: Identifier -> (Int -> IO value) -> IO value
-withFoldKeyDepth key action = bracket acquire release (action . snd)
-  where
-    acquire = do
-      thread <- myThreadId
-      depth <- modifyMVar activeFoldKeyDepths $ \depths ->
-        let identity = (thread, key)
-            current = Map.findWithDefault 0 identity depths
-         in return (Map.insert identity (current + 1) depths, current)
-      return (thread, depth)
-
-    release (thread, _) = modifyMVar_ activeFoldKeyDepths $ \depths ->
-      let identity = (thread, key)
-       in return $ case Map.lookup identity depths of
-            Just current | current > 1 ->
-              Map.insert identity (current - 1) depths
-            _ -> Map.delete identity depths
-
--- | 'foldWithHost' with a source-location key for a step that is executed many
--- times.  Its private binders are stable at one non-re-entrant call site, so
--- constructing the same large step body reaches the existing hash-consed DAG
--- directly instead of allocating a fresh DAG and alpha-renaming it afterward.
--- Closure validation remains identical to 'foldWithHost'.
-foldWithHostKey ::
-  forall environment state element.
-  ( SupportedNonFuncPrim (ConType environment),
-    SupportedNonFuncPrim (ConType state),
-    SupportedNonFuncPrim (ConType element),
-    SupportedPrim (ConType element --> ConType state),
-    SupportedPrim (ConType state --> ConType element --> ConType state),
-    SupportedPrim
-      (ConType environment --> ConType state --> ConType element --> ConType state),
-    LinkedRep (ConType environment) environment,
-    LinkedRep (ConType state) state,
-    LinkedRep (ConType element) element
-  ) =>
-  Identifier ->
-  (environment -> state -> element -> state) ->
-  environment ->
-  state ->
-  SymSeq element ->
-  state
-foldWithHostKey key step environment initial sequence = unsafePerformIO $
-  withFoldKeyDepth key $ \depth -> do
-    let argument :: forall value. SupportedNonFuncPrim value =>
-          Int -> TypedConstantSymbol value
-        argument ordinal = typedConstantSymbol $
-          bound key (depth * 3 + ordinal)
-        environmentSymbol = argument 0
-        stateSymbol = argument 1
-        elementSymbol = argument 2
-        body = underlyingTerm
-          (step
-            (wrapTerm (symTerm environmentSymbol))
-            (wrapTerm (symTerm stateSymbol))
-            (wrapTerm (symTerm elementSymbol)))
-        stepTerm = conTerm $
-          GeneralFun environmentSymbol $
-            conTerm $ GeneralFun stateSymbol $
-              conTerm $ GeneralFun elementSymbol body
-        folded = pevalClosedSeqFoldWith
-          stepTerm
-          (underlyingTerm environment)
-          (underlyingTerm initial)
-          (underlyingTerm sequence)
-    folded `seq` return (wrapTerm folded)
-{-# NOINLINE foldWithHostKey #-}

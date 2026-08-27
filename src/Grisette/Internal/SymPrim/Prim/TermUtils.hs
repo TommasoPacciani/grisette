@@ -38,16 +38,26 @@ import Data.Foldable (traverse_)
 import qualified Data.HashSet as HS
 import Grisette.Internal.Core.Data.MemoUtils (htmemo)
 import Grisette.Internal.SymPrim.Prim.Internal.Term
-  ( IsSymbolKind (SymbolKindConstraint),
+  ( FocusedSeqFoldCallback
+      ( FocusedSeqFoldCallbackBind,
+        FocusedSeqFoldCallbackBody
+      ),
+    FocusedSeqFoldOperands
+      ( FocusedSeqFoldOperand,
+        NoFocusedSeqFoldOperands
+      ),
+    IsSymbolKind (SymbolKindConstraint),
     type (-->) (GeneralFun),
     SomeTypedConstantSymbol,
     SomeTypedSymbol (SomeTypedSymbol),
     SupportedPrim (castTypedSymbol, primTypeRep),
     Term,
     TypedAnySymbol,
+    focusedSeqFoldCallbackTerm,
     someTypedSymbol,
     pattern ConTerm,
     pattern ExistsTerm,
+    pattern FocusedSeqFoldTerm,
     pattern ForallTerm,
     pattern SupportedTerm,
     pattern SymTerm,
@@ -121,7 +131,32 @@ extractSymSomeTerm initialBounded = go initialMemo initialBounded
           newmemo = htmemo (go newmemo newBounded)
           {-# NOINLINE newmemo #-}
        in gotyped newmemo arg
+    go memo bs
+        (SomeTerm (FocusedSeqFoldTerm callback operands initial sequence)) =
+      let callbackBounded = HS.union (focusedBinders callback) bs
+          callbackMemo = htmemo (go callbackMemo callbackBounded)
+          {-# NOINLINE callbackMemo #-}
+       in combineAllSets $
+            gotyped callbackMemo (focusedSeqFoldCallbackTerm callback)
+              : focusedOperandResults memo operands
+                ++ [gotyped memo initial, gotyped memo sequence]
     go memo _ (SomeTerm (SubTerms ts)) = combineAllSets $ map memo ts
+
+    focusedBinders
+      :: FocusedSeqFoldCallback captures state element
+      -> HS.HashSet SomeTypedConstantSymbol
+    focusedBinders (FocusedSeqFoldCallbackBody _) = HS.empty
+    focusedBinders (FocusedSeqFoldCallbackBind symbol rest) =
+      HS.insert (someTypedSymbol symbol) (focusedBinders rest)
+
+    focusedOperandResults
+      :: (SomeTerm -> Maybe (HS.HashSet (SomeTypedSymbol knd)))
+      -> FocusedSeqFoldOperands captures
+      -> [Maybe (HS.HashSet (SomeTypedSymbol knd))]
+    focusedOperandResults _ NoFocusedSeqFoldOperands = []
+    focusedOperandResults memo (FocusedSeqFoldOperand operand rest) =
+      gotyped memo operand : focusedOperandResults memo rest
+
     combineSet (Just a) (Just b) = Just $ HS.union a b
     combineSet _ _ = Nothing
     combineAllSets = foldr combineSet (Just HS.empty)

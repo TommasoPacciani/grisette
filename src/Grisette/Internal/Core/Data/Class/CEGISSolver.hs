@@ -93,8 +93,8 @@ import Grisette.Internal.Core.Data.Class.ExtractSym
 import Grisette.Internal.Core.Data.Class.LogicalOp (LogicalOp (symNot, (.&&)))
 import Grisette.Internal.Core.Data.Class.Mergeable (Mergeable)
 import Grisette.Internal.Core.Data.Class.ModelOps
-  ( ModelOps (exact, exceptFor),
-    SymbolSetOps (isEmptySet),
+  ( ModelOps (exact),
+    SymbolSetOps (differenceSet, isEmptySet),
   )
 import Grisette.Internal.Core.Data.Class.PPrint (PPrint (pformat), (<+>))
 import Grisette.Internal.Core.Data.Class.SimpleMergeable
@@ -395,20 +395,31 @@ solverCegisMultiInputs
   verifierSolver
   inputs
   toCEGISCondition = do
-    solverGenericCEGIS
-      synthesizerSolver
-      True
-      (foldl' (\acc v -> acc .&& cexAssertFun v) (con True) conInputs)
-      (return . cexAssertFun)
-      $ getVerifier <$> symInputs
+    (counterExamples, result) <-
+      solverGenericCEGIS
+        synthesizerSolver
+        True
+        (foldl' (\acc v -> acc .&& cexAssertFun v) (con True) conInputs)
+        (return . cexAssertFun)
+        $ getVerifier <$> symInputs
+    let exactResult = case result of
+          CEGISSuccess model -> CEGISSuccess $ exact programSymbols model
+          _ -> result
+    return (counterExamples, exactResult)
     where
       cexAssertFun input =
         case toCEGISCondition input of
           CEGISCondition pre post -> pre .&& post
+      conditionSymbols input =
+        case toCEGISCondition input of
+          CEGISCondition pre post -> extractSym pre <> extractSym post
+      inputSymbols = foldMap extractSym inputs
+      programSymbols =
+        foldMap conditionSymbols inputs `differenceSet` inputSymbols
       getVerifier input md = do
         let CEGISCondition pre post = toCEGISCondition input
         let evaluated =
-              evalSym False (exceptFor (extractSym input) md) $
+              evalSym False (exact programSymbols md) $
                 pre .&& symNot post
         solverResetAssertions verifierSolver
         r <- solverSolve verifierSolver evaluated
@@ -687,16 +698,17 @@ solverCegisForAll
         (\md -> return $ evalSym False md phi)
         [verifier]
     let exactResult = case result of
-          CEGISSuccess model -> CEGISSuccess $ exceptFor forallSymbols model
+          CEGISSuccess model -> CEGISSuccess $ exact programSymbols model
           _ -> result
     return (models, exactResult)
     where
       phi = pre .&& post
       negphi = pre .&& symNot post
       forallSymbols = extractSym input
+      programSymbols = extractSym phi `differenceSet` forallSymbols
       verifier candidate = do
         let evaluated =
-              evalSym False (exceptFor forallSymbols candidate) negphi
+              evalSym False (exact programSymbols candidate) negphi
         solverResetAssertions verifierSolver
         r <- solverSolve verifierSolver evaluated
         case r of

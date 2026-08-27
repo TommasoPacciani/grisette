@@ -27,16 +27,24 @@
 -- @regA .== regB@ deciding semantic (extensional) register-state equality.
 module Grisette.SymPrim.SymArrayTests (symArrayTests) where
 
+import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, takeMVar)
+import Control.DeepSeq (force)
+import Control.Exception (evaluate)
 import qualified Data.HashMap.Strict as HM
 import Data.Hashable (hash)
+import Data.List (isInfixOf)
+import Data.Proxy (Proxy (Proxy))
 import qualified Data.SBV as SBV
 import qualified Data.SBV.Dynamic as SBVD
+import Data.String (fromString)
+import Data.Unique (hashUnique, newUnique)
 import Data.Word (Word8)
 import GHC.Generics (Generic)
 import GHC.Stack (HasCallStack)
 import Generics.Deriving (Default (Default))
 import Grisette
-  ( EvalSym (evalSym),
+  ( AsKey (AsKey),
+    EvalSym (evalSym),
     AllSyms (allSyms),
     ExtractSym (extractSym),
     ITEOp (symIte),
@@ -54,11 +62,13 @@ import Grisette
     WordN,
     isEmptySet,
     solve,
+    sizedBVSelect,
   )
 import Grisette.Internal.Backend.Solving (z3)
 import Grisette.Internal.Core.Data.Class.Solver (SolvingFailure (Unsat))
 import Grisette.Internal.SymPrim.Array (Array (Array))
 import Grisette.Internal.SymPrim.Prim.Term (SupportedPrim (parseSMTModelResult))
+import qualified Grisette.Internal.SymPrim.SymBV as SymBV
 import qualified Grisette.Internal.SymPrim.Array as Arr
 -- Exercise the public re-exports: the type from the umbrella module and the
 -- operations from the dedicated public module (imported qualified).
@@ -81,6 +91,10 @@ import Test.QuickCheck
     (===),
     (==>),
   )
+import System.Mem (performMajorGC)
+import System.Mem.StableName (eqStableName, makeStableName)
+import System.Mem.Weak (mkWeakPtr)
+import System.Timeout (timeout)
 
 -- ---------------------------------------------------------------------------
 -- Solver assertion helpers
@@ -343,9 +357,123 @@ axioms =
             checkValid
               ( A.select (symIte ("c" :: SymBool) aI bI) iI
                   .== symIte ("c" :: SymBool) (A.select aI iI) (A.select bI iI)
-              )
+              ),
+          testCase "focused select eliminates the array ITE" $ do
+            let condition = "focused-array-condition" :: SymBool
+                focused = A.selectThroughIte
+                  (symIte condition aI bI) iI
+            assertBool "no select remains above the array ITE"
+              (not ("(select (ite" `isInfixOf` show focused))
+            checkValid
+              ( focused
+                  .== symIte condition (A.select aI iI) (A.select bI iI)
+              ),
+          testCase "focused packed select slices after eliminating array ITE" $ do
+            let condition = "focused-packed-condition" :: SymBool
+                key = "focused-packed-key" :: SymInteger
+                left = "focused-packed-left" ::
+                  SymArray SymInteger (SymWordN 16)
+                right = "focused-packed-right" ::
+                  SymArray SymInteger (SymWordN 16)
+                chosen = symIte condition left right
+                prepared = A.prepareSliceSelectThroughIte
+                  (Proxy @4) (Proxy @8)
+                focused = A.applyPreparedSliceSelectThroughIte
+                  prepared chosen key
+                repeated = A.applyPreparedSliceSelectThroughIte
+                  prepared chosen key
+                expected = sizedBVSelect (Proxy @4) (Proxy @8)
+                  (A.select chosen key)
+            SymBV.SymWordN focusedTerm <- evaluate focused
+            SymBV.SymWordN repeatedTerm <- evaluate repeated
+            focusedName <- makeStableName focusedTerm
+            repeatedName <- makeStableName repeatedTerm
+            assertBool "slice result is scalar, not select of an array ITE"
+              (not ("(select (ite" `isInfixOf` show focused))
+            assertEqual "prepared weak table shares repeated normalized terms"
+              (AsKey focused) (AsKey repeated)
+            assertBool "prepared weak table reuses the normalized term object"
+              (focusedName `eqStableName` repeatedName)
+            checkValid (focused .== expected),
+          testCase "prepared packed-value slice eliminates and shares ITEs" $ do
+            let condition = "focused-packed-value-condition" :: SymBool
+                selected = "focused-packed-value-selected" :: SymWordN 16
+                fallback = "focused-packed-value-fallback" :: SymWordN 16
+                chosen = symIte condition selected fallback
+                prepared = A.prepareSliceThroughIte
+                  (Proxy @4) (Proxy @8)
+                focused = A.applyPreparedSliceThroughIte prepared chosen
+                repeated = A.applyPreparedSliceThroughIte prepared chosen
+                expected = sizedBVSelect (Proxy @4) (Proxy @8) chosen
+            SymBV.SymWordN focusedTerm <- evaluate focused
+            SymBV.SymWordN repeatedTerm <- evaluate repeated
+            focusedName <- makeStableName focusedTerm
+            repeatedName <- makeStableName repeatedTerm
+            assertEqual "prepared scalar slice shares normalized terms"
+              (AsKey focused) (AsKey repeated)
+            assertBool "prepared scalar slice reuses the normalized term object"
+              (focusedName `eqStableName` repeatedName)
+            checkValid (focused .== expected),
+          testCase "prepared focused slice does not retain dead terms" $ do
+            unique <- show . hashUnique <$> newUnique
+            collected <- newEmptyMVar
+            let prepared = A.prepareSliceSelectThroughIte
+                  (Proxy @4) (Proxy @8)
+            releasePreparedSliceTerm prepared unique collected
+            performMajorGC
+            result <- timeout 5000000 (takeMVar collected)
+            assertEqual "prepared weak table retained a dead normalized term"
+              (Just ()) result,
+          testCase "prepared packed-value slice does not retain dead terms" $ do
+            unique <- show . hashUnique <$> newUnique
+            collected <- newEmptyMVar
+            let prepared = A.prepareSliceThroughIte
+                  (Proxy @4) (Proxy @8)
+            releasePreparedValueSliceTerm prepared unique collected
+            performMajorGC
+            result <- timeout 5000000 (takeMVar collected)
+            assertEqual "prepared scalar weak table retained a dead term"
+              (Just ()) result
         ]
     ]
+
+releasePreparedSliceTerm
+  :: A.PreparedSliceSelectThroughIte SymInteger 16 4 8
+  -> String
+  -> MVar ()
+  -> IO ()
+releasePreparedSliceTerm prepared unique collected = do
+  let condition = fromString ("focused-weak-condition." ++ unique) :: SymBool
+      key = fromString ("focused-weak-key." ++ unique) :: SymInteger
+      left = fromString ("focused-weak-left." ++ unique) ::
+        SymArray SymInteger (SymWordN 16)
+      right = fromString ("focused-weak-right." ++ unique) ::
+        SymArray SymInteger (SymWordN 16)
+  SymBV.SymWordN term <- evaluate $ force $
+    A.applyPreparedSliceSelectThroughIte prepared
+      (symIte condition left right) key
+  _ <- mkWeakPtr term (Just (putMVar collected ()))
+  pure ()
+{-# NOINLINE releasePreparedSliceTerm #-}
+
+releasePreparedValueSliceTerm
+  :: A.PreparedSliceThroughIte 16 4 8
+  -> String
+  -> MVar ()
+  -> IO ()
+releasePreparedValueSliceTerm prepared unique collected = do
+  let condition = fromString
+        ("focused-scalar-weak-condition." ++ unique) :: SymBool
+      selected = fromString
+        ("focused-scalar-weak-selected." ++ unique) :: SymWordN 16
+      fallback = fromString
+        ("focused-scalar-weak-fallback." ++ unique) :: SymWordN 16
+  SymBV.SymWordN term <- evaluate $ force $
+    A.applyPreparedSliceThroughIte prepared
+      (symIte condition selected fallback)
+  _ <- mkWeakPtr term (Just (putMVar collected ()))
+  pure ()
+{-# NOINLINE releasePreparedValueSliceTerm #-}
 
 -- ---------------------------------------------------------------------------
 -- 4. Soundness regressions: non-canonical concrete arrays

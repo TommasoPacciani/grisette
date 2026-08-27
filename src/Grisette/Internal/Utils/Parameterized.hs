@@ -32,6 +32,7 @@ LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
 NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 -}
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
@@ -96,6 +97,7 @@ module Grisette.Internal.Utils.Parameterized
     leqAdd2,
     leqAdd,
     leqAddPos,
+    leqAddComm,
   )
 where
 
@@ -283,9 +285,9 @@ withCmpNatProof p r = case p of CmpNatProof -> r
 testLeq :: NatRepr m -> NatRepr n -> Maybe (LeqProof m n)
 testLeq (NatRepr m) (NatRepr n) =
   case compare m n of
-    LT -> Nothing
+    LT -> Just unsafeLeqProof
     EQ -> Just unsafeLeqProof
-    GT -> Just unsafeLeqProof
+    GT -> Nothing
 {-# INLINE testLeq #-}
 
 -- | Apply reflexivity to t'LeqProof'.
@@ -323,3 +325,9 @@ leqAdd _ _ = unsafeLeqProof
 leqAddPos :: (1 <= m, 1 <= n) => p m -> q n -> LeqProof 1 (m + n)
 leqAddPos _ _ = unsafeLeqProof
 {-# INLINE leqAddPos #-}
+
+-- | Addition is commutative, stated as the inequality needed by APIs whose
+-- slice bound is normalized in the opposite operand order.
+leqAddComm :: LeqProof (m + n) (n + m)
+leqAddComm = unsafeLeqProof
+{-# INLINE leqAddComm #-}

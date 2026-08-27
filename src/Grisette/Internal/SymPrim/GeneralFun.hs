@@ -32,6 +32,7 @@ module Grisette.Internal.SymPrim.GeneralFun
     buildGeneralFun,
     buildGeneralFun2,
     buildGeneralFun3,
+    buildFocusedGeneralFun,
     generalSubstSomeTerm,
     substTerm,
     freshArgSymbol,
@@ -39,8 +40,13 @@ module Grisette.Internal.SymPrim.GeneralFun
     validateClosedSeqFoldWith,
     checkClosedSeqFold,
     checkClosedSeqFoldWith,
+    checkClosedFocusedSeqFold,
+    validateClosedFocusedSeqFold,
     pevalClosedSeqFold,
     pevalClosedSeqFoldWith,
+    pevalPreparedSeqFold,
+    pevalPreparedSeqFoldWith,
+    pevalPreparedFocusedSeqFold,
   )
 where
 
@@ -50,7 +56,9 @@ import Data.Foldable (Foldable (foldl'))
 #endif
 
 import Control.DeepSeq (NFData (rnf))
+import qualified Control.Monad.State.Strict as State
 import Data.Bifunctor (Bifunctor (second))
+import qualified Data.HashMap.Strict as HM
 import qualified Data.HashSet as HS
 import Data.Hashable (Hashable (hashWithSalt))
 import Data.List (sortOn)
@@ -121,7 +129,9 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
     pevalSeqRangeTerm,
     pevalSeqTailTerm,
     pevalSeqLookupTerm,
+    pevalSeqLookupValueTerm,
     pevalSeqFoldTerm,
+    pevalFocusedSeqFoldTerm,
     pevalSeqFoldWithTerm,
     pevalPairTerm,
     pevalFirstTerm,
@@ -143,6 +153,20 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
     SymRep (SymType),
     SymbolKind (AnyKind, ConstantKind),
     Term,
+    FocusedSeqFoldBinderSymbols
+      ( FocusedSeqFoldBinderSymbol,
+        NoFocusedSeqFoldBinderSymbols
+      ),
+    FocusedSeqFoldCallback
+      ( FocusedSeqFoldCallbackBind,
+        FocusedSeqFoldCallbackBody
+      ),
+    FocusedSeqFoldOperands
+      ( FocusedSeqFoldOperand,
+        NoFocusedSeqFoldOperands
+      ),
+    focusedSeqFoldCallbackTerm,
+    mapFocusedSeqFoldCallbackTerm,
     TypedAnySymbol,
     TypedConstantSymbol,
     TypedSymbol,
@@ -226,12 +250,15 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
     pattern SeqRangeTerm,
     pattern SeqTailTerm,
     pattern SeqLookupTerm,
+    pattern SeqLookupValueTerm,
     pattern SeqFoldTerm,
+    pattern FocusedSeqFoldTerm,
     pattern SeqFoldWithTerm,
     pattern PairTerm,
     pattern FirstTerm,
     pattern SecondTerm,
   )
+
 import Grisette.Internal.SymPrim.Prim.Pattern (pattern SubTerms)
 import Grisette.Internal.SymPrim.Prim.SomeTerm (SomeTerm (SomeTerm), someTerm)
 import Grisette.Internal.SymPrim.Prim.TermUtils (extractSymSomeTerm)
@@ -267,40 +294,80 @@ instance (LinkedRep a sa, LinkedRep b sb) => Function (a --> b) sa sb where
 
 extractSymSomeTermIncludeBoundedVars ::
   SomeTerm -> HS.HashSet SomeTypedAnySymbol
-extractSymSomeTermIncludeBoundedVars = memoizedGo
+extractSymSomeTermIncludeBoundedVars root =
+  State.evalState (go root) HM.empty
   where
-    -- Terms are hash-consed DAGs.  Recursive calls must pass through the same
-    -- memo table; memoizing only the root expands shared subgraphs as trees and
-    -- makes binder selection exponential in the depth of a shared expression.
-    memoizedGo :: SomeTerm -> HS.HashSet SomeTypedAnySymbol
-    memoizedGo = htmemo go
-    {-# NOINLINE memoizedGo #-}
+    -- The memo belongs to one extraction invocation. Every recursive edge uses
+    -- it, preserving DAG sharing without retaining terms for the process lifetime.
+    go
+      :: SomeTerm
+      -> State.State
+          (HM.HashMap SomeTerm (HS.HashSet SomeTypedAnySymbol))
+          (HS.HashSet SomeTypedAnySymbol)
+    go term = do
+      memo <- State.get
+      case HM.lookup term memo of
+        Just result -> pure result
+        Nothing -> do
+          result <- goUncached term
+          result `seq` State.modify' (HM.insert term result)
+          pure result
 
-    goTyped :: Term a -> HS.HashSet SomeTypedAnySymbol
-    goTyped = memoizedGo . someTerm
+    goTyped :: Term a -> State.State
+      (HM.HashMap SomeTerm (HS.HashSet SomeTypedAnySymbol))
+      (HS.HashSet SomeTypedAnySymbol)
+    goTyped = go . someTerm
 
-    go :: SomeTerm -> HS.HashSet SomeTypedAnySymbol
-    go (SomeTerm (SymTerm (sym :: TypedAnySymbol a))) =
-      HS.singleton $ someTypedSymbol sym
-    go (SomeTerm (ConTerm cv :: Term v)) =
+    goUncached (SomeTerm (SymTerm (sym :: TypedAnySymbol a))) =
+      pure $ HS.singleton $ someTypedSymbol sym
+    goUncached (SomeTerm (ConTerm cv :: Term v)) =
       case (primTypeRep :: TypeRep v) of
         App (App gf _) _ ->
           case eqTypeRep (typeRep @(-->)) gf of
             Just HRefl ->
               case cv of
-                GeneralFun (tsym :: TypedConstantSymbol x) tm ->
-                  HS.union
-                    ( HS.singleton
-                        (someTypedSymbol $ fromJust $ castTypedSymbol tsym)
-                    )
-                    $ memoizedGo (SomeTerm tm)
-            Nothing -> HS.empty
-        _ -> HS.empty
-    go (SomeTerm (ForallTerm sym arg)) =
-      HS.insert (someTypedSymbol $ fromJust $ castTypedSymbol sym) $ goTyped arg
-    go (SomeTerm (ExistsTerm sym arg)) =
-      HS.insert (someTypedSymbol $ fromJust $ castTypedSymbol sym) $ goTyped arg
-    go (SomeTerm (SubTerms tms)) = mconcat <$> map memoizedGo $ tms
+                GeneralFun (tsym :: TypedConstantSymbol x) tm -> do
+                  body <- go (SomeTerm tm)
+                  pure $ HS.insert
+                    (someTypedSymbol $ fromJust $ castTypedSymbol tsym)
+                    body
+            Nothing -> pure HS.empty
+        _ -> pure HS.empty
+    goUncached (SomeTerm (ForallTerm sym arg)) =
+      HS.insert (someTypedSymbol $ fromJust $ castTypedSymbol sym) <$> goTyped arg
+    goUncached (SomeTerm (ExistsTerm sym arg)) =
+      HS.insert (someTypedSymbol $ fromJust $ castTypedSymbol sym) <$> goTyped arg
+    goUncached
+        (SomeTerm (FocusedSeqFoldTerm callback operands initial sequence)) = do
+      callbackSymbols <- goTyped (focusedSeqFoldCallbackTerm callback)
+      operandSymbols <- goFocusedOperands operands
+      initialSymbols <- goTyped initial
+      sequenceSymbols <- goTyped sequence
+      pure $
+        focusedBinderSymbols callback
+          <> callbackSymbols
+          <> operandSymbols
+          <> initialSymbols
+          <> sequenceSymbols
+    goUncached (SomeTerm (SubTerms tms)) = mconcat <$> traverse go tms
+
+    focusedBinderSymbols
+      :: FocusedSeqFoldCallback captures state element
+      -> HS.HashSet SomeTypedAnySymbol
+    focusedBinderSymbols (FocusedSeqFoldCallbackBody _) = HS.empty
+    focusedBinderSymbols (FocusedSeqFoldCallbackBind symbol rest) =
+      HS.insert
+        (someTypedSymbol $ fromJust $ castTypedSymbol symbol)
+        (focusedBinderSymbols rest)
+
+    goFocusedOperands
+      :: FocusedSeqFoldOperands captures
+      -> State.State
+          (HM.HashMap SomeTerm (HS.HashSet SomeTypedAnySymbol))
+          (HS.HashSet SomeTypedAnySymbol)
+    goFocusedOperands NoFocusedSeqFoldOperands = pure HS.empty
+    goFocusedOperands (FocusedSeqFoldOperand operand rest) =
+      (<>) <$> goTyped operand <*> goFocusedOperands rest
 
 validateClosedSeqFold ::
   (HasCallStack, SupportedPrim function) =>
@@ -328,6 +395,50 @@ checkClosedSeqFoldWith ::
   Either String (Term function)
 checkClosedSeqFoldWith = checkClosedSequenceFunction "foldSeqWith"
 
+validateClosedFocusedSeqFold ::
+  ( HasCallStack,
+    SupportedNonFuncPrim state,
+    SupportedNonFuncPrim element,
+    SupportedPrim (state --> element --> state)
+  ) =>
+  FocusedSeqFoldCallback captures state element ->
+  FocusedSeqFoldCallback captures state element
+validateClosedFocusedSeqFold callback =
+  either error id (checkClosedFocusedSeqFold callback)
+
+checkClosedFocusedSeqFold ::
+  ( SupportedNonFuncPrim state,
+    SupportedNonFuncPrim element,
+    SupportedPrim (state --> element --> state)
+  ) =>
+  FocusedSeqFoldCallback captures state element ->
+  Either String (FocusedSeqFoldCallback captures state element)
+checkClosedFocusedSeqFold callback
+  | hasDuplicateBinders =
+      Left "focusedFold step function has duplicate capture binders"
+  | otherwise =
+      case extractSymSomeTerm @'AnyKind bounded
+        (SomeTerm (focusedSeqFoldCallbackTerm callback)) of
+        Nothing ->
+          Left "BUG: focusedFold could not classify symbols in its step function"
+        Just symbols ->
+          case sortOn show (mapMaybe toCaptured (HS.toList symbols)) of
+            [] -> Right callback
+            captured ->
+              Left $ "focusedFold step function captures solver values: "
+                ++ unwords (show <$> captured)
+  where
+    binders = focusedCallbackBinders callback
+    bounded = HS.fromList binders
+    hasDuplicateBinders = HS.size bounded /= length binders
+    toCaptured symbol = castSomeTypedSymbol @'ConstantKind symbol
+
+    focusedCallbackBinders
+      :: FocusedSeqFoldCallback cs s e -> [SomeTypedConstantSymbol]
+    focusedCallbackBinders (FocusedSeqFoldCallbackBody _) = []
+    focusedCallbackBinders (FocusedSeqFoldCallbackBind symbol rest) =
+      someTypedSymbol symbol : focusedCallbackBinders rest
+
 pevalClosedSeqFold ::
   ( HasCallStack,
     SupportedNonFuncPrim state,
@@ -340,9 +451,7 @@ pevalClosedSeqFold ::
   Term state
 pevalClosedSeqFold step initial sequence =
   let checked = validateClosedSeqFold step
-   in checked `seq` case sequence of
-        ConTerm elements -> foldConcreteSequence checked initial elements
-        _ -> pevalSeqFoldTerm checked initial sequence
+   in checked `seq` pevalPreparedSeqFold checked initial sequence
 
 pevalClosedSeqFoldWith ::
   forall environment state element.
@@ -359,14 +468,101 @@ pevalClosedSeqFoldWith ::
   Term state
 pevalClosedSeqFoldWith step environment initial sequence =
   let checked = validateClosedSeqFoldWith step
-   in checked `seq` case sequence of
-        ConTerm elements ->
-          withPrim @(environment --> state --> element --> state) $
-            foldConcreteSequence
-              (pevalApplyTerm checked environment)
-              initial
-              elements
-        _ -> pevalSeqFoldWithTerm checked environment initial sequence
+   in checked `seq`
+        pevalPreparedSeqFoldWith checked environment initial sequence
+
+-- | Apply an already-validated closed sequence step.  The constructor for a
+-- prepared public fold is private to 'SymSeq', so this internal operation can
+-- omit the otherwise linear free-symbol traversal without admitting an
+-- unchecked function term.
+pevalPreparedSeqFold ::
+  ( SupportedNonFuncPrim state,
+    SupportedNonFuncPrim element,
+    SupportedPrim (state --> element --> state)
+  ) =>
+  Term (state --> element --> state) ->
+  Term state ->
+  Term [element] ->
+  Term state
+pevalPreparedSeqFold checked initial sequence = case sequence of
+  ConTerm elements -> foldConcreteSequence checked initial elements
+  _ -> pevalSeqFoldTerm checked initial sequence
+
+pevalPreparedFocusedSeqFold ::
+  ( SupportedNonFuncPrim state,
+    SupportedNonFuncPrim element,
+    SupportedPrim (state --> element --> state)
+  ) =>
+  FocusedSeqFoldCallback captures state element ->
+  FocusedSeqFoldOperands captures ->
+  Term state ->
+  Term [element] ->
+  Term state
+pevalPreparedFocusedSeqFold callback operands initial sequence = case sequence of
+  ConTerm elements ->
+    foldConcreteSequence (applyFocusedCallback callback operands) initial elements
+  _ -> pevalFocusedSeqFoldTerm callback operands initial sequence
+  where
+    applyFocusedCallback
+      :: FocusedSeqFoldCallback cs state element
+      -> FocusedSeqFoldOperands cs
+      -> Term (state --> element --> state)
+    applyFocusedCallback (FocusedSeqFoldCallbackBody step)
+        NoFocusedSeqFoldOperands = step
+    applyFocusedCallback (FocusedSeqFoldCallbackBind symbol rest)
+        (FocusedSeqFoldOperand operand operands') =
+      let introduced = extractSymSomeTermIncludeBoundedVars (SomeTerm operand)
+          captureSafeRest = avoidFocusedBinders introduced rest
+       in applyFocusedCallback
+            (mapFocusedSeqFoldCallbackTerm
+              (substTerm symbol operand HS.empty) captureSafeRest)
+            operands'
+
+    avoidFocusedBinders
+      :: HS.HashSet SomeTypedAnySymbol
+      -> FocusedSeqFoldCallback cs state element
+      -> FocusedSeqFoldCallback cs state element
+    avoidFocusedBinders _ callback@FocusedSeqFoldCallbackBody {} = callback
+    avoidFocusedBinders introduced
+        (FocusedSeqFoldCallbackBind
+          (symbol :: TypedConstantSymbol capture) rest) =
+      let symbolAny = someTypedSymbol $
+            fromJust
+              (castTypedSymbol symbol :: Maybe (TypedAnySymbol capture))
+          (renamedSymbol, renamedRest) =
+            if HS.member symbolAny introduced
+              then
+                let fresh = freshArgSymbolAvoiding introduced
+                      [SomeTerm (focusedSeqFoldCallbackTerm rest)]
+                 in ( fresh,
+                      mapFocusedSeqFoldCallbackTerm
+                        (substTerm symbol (symTerm fresh) HS.empty) rest
+                    )
+              else (symbol, rest)
+       in FocusedSeqFoldCallbackBind renamedSymbol
+            (avoidFocusedBinders introduced renamedRest)
+
+-- | 'pevalPreparedSeqFold' for a step with an explicit environment.
+pevalPreparedSeqFoldWith ::
+  forall environment state element.
+  ( SupportedNonFuncPrim environment,
+    SupportedNonFuncPrim state,
+    SupportedNonFuncPrim element,
+    SupportedPrim (environment --> state --> element --> state)
+  ) =>
+  Term (environment --> state --> element --> state) ->
+  Term environment ->
+  Term state ->
+  Term [element] ->
+  Term state
+pevalPreparedSeqFoldWith checked environment initial sequence = case sequence of
+  ConTerm elements ->
+    withPrim @(environment --> state --> element --> state) $
+      foldConcreteSequence
+        (pevalApplyTerm checked environment)
+        initial
+        elements
+  _ -> pevalSeqFoldWithTerm checked environment initial sequence
 
 foldConcreteSequence ::
   forall state element.
@@ -564,6 +760,90 @@ buildGeneralFun3 first second third body =
       | eqHeteroSymbol first symbol =
           unsafeCoerce (symTerm firstArgument)
       | otherwise = symTerm symbol
+
+data FocusedBinderRenamings captures where
+  NoFocusedBinderRenamings :: FocusedBinderRenamings '[]
+  FocusedBinderRenaming ::
+    SupportedNonFuncPrim capture =>
+    !(TypedConstantSymbol capture) ->
+    !(TypedConstantSymbol capture) ->
+    !(FocusedBinderRenamings rest) ->
+    FocusedBinderRenamings (capture ': rest)
+
+-- | Abstract every capture, state, and element binder with one symbol scan and
+-- one capture-avoiding substitution traversal.
+buildFocusedGeneralFun ::
+  forall captures state element.
+  ( SupportedNonFuncPrim state,
+    SupportedNonFuncPrim element,
+    SupportedPrim (element --> state),
+    SupportedPrim (state --> element --> state)
+  ) =>
+  FocusedSeqFoldBinderSymbols captures ->
+  TypedConstantSymbol state ->
+  TypedConstantSymbol element ->
+  Term state ->
+  FocusedSeqFoldCallback captures state element
+buildFocusedGeneralFun captureSymbols stateSymbol elementSymbol body =
+  buildCallback renamings step
+  where
+    bodySymbols = extractSymSomeTermIncludeBoundedVars (SomeTerm body)
+    elementArgument = freshArgSymbolFromSymbols bodySymbols
+    elementAny = toAny elementArgument
+    stateArgument = freshArgSymbolFromSymbols (HS.insert elementAny bodySymbols)
+    stateAny = toAny stateArgument
+    (renamings, allSymbols) =
+      freshenCaptureSymbols captureSymbols
+        (HS.insert stateAny (HS.insert elementAny bodySymbols))
+    introduced = HS.difference allSymbols bodySymbols
+    renamedBody = generalSubstSomeTerm replace introduced HS.empty body
+    step = conTerm $ GeneralFun stateArgument $
+      conTerm $ GeneralFun elementArgument renamedBody
+
+    toAny :: forall value. SupportedNonFuncPrim value
+      => TypedConstantSymbol value -> SomeTypedAnySymbol
+    toAny symbol = someTypedSymbol $
+      fromJust (castTypedSymbol symbol :: Maybe (TypedAnySymbol value))
+
+    freshenCaptureSymbols
+      :: FocusedSeqFoldBinderSymbols cs
+      -> HS.HashSet SomeTypedAnySymbol
+      -> (FocusedBinderRenamings cs, HS.HashSet SomeTypedAnySymbol)
+    freshenCaptureSymbols NoFocusedSeqFoldBinderSymbols symbols =
+      (NoFocusedBinderRenamings, symbols)
+    freshenCaptureSymbols (FocusedSeqFoldBinderSymbol old rest) symbols =
+      let (renamedRest, restSymbols) = freshenCaptureSymbols rest symbols
+          new = freshArgSymbolFromSymbols restSymbols
+       in ( FocusedBinderRenaming old new renamedRest,
+            HS.insert (toAny new) restSymbols
+          )
+
+    replace :: forall value. TypedSymbol 'AnyKind value -> Term value
+    replace symbol
+      | eqHeteroSymbol elementSymbol symbol =
+          unsafeCoerce (symTerm elementArgument)
+      | eqHeteroSymbol stateSymbol symbol =
+          unsafeCoerce (symTerm stateArgument)
+      | otherwise = replaceCapture renamings symbol
+
+    replaceCapture
+      :: forall cs value.
+         FocusedBinderRenamings cs
+      -> TypedSymbol 'AnyKind value
+      -> Term value
+    replaceCapture NoFocusedBinderRenamings symbol = symTerm symbol
+    replaceCapture (FocusedBinderRenaming old new rest) symbol
+      | eqHeteroSymbol old symbol = unsafeCoerce (symTerm new)
+      | otherwise = replaceCapture rest symbol
+
+    buildCallback
+      :: FocusedBinderRenamings cs
+      -> Term (state --> element --> state)
+      -> FocusedSeqFoldCallback cs state element
+    buildCallback NoFocusedBinderRenamings finalStep =
+      FocusedSeqFoldCallbackBody finalStep
+    buildCallback (FocusedBinderRenaming _ new rest) finalStep =
+      FocusedSeqFoldCallbackBind new (buildCallback rest finalStep)
 
 -- | Checks if two formulas are the same. Not building the actual symbolic
 -- equality formula.
@@ -869,6 +1149,8 @@ generalSubstSomeTerm subst introducedSymbols initialBoundedSymbols = go initialM
       goUnary memo pevalSeqTailTerm sequence
     goSome memo _ (SomeTerm (SeqLookupTerm seed sequence index)) =
       goTernary memo pevalSeqLookupTerm seed sequence index
+    goSome memo _ (SomeTerm (SeqLookupValueTerm seed sequence index)) =
+      goTernary memo pevalSeqLookupValueTerm seed sequence index
     goSome memo _ (SomeTerm (SeqFoldTerm step initial sequence)) =
       let folded =
             pevalClosedSeqFold
@@ -876,6 +1158,43 @@ generalSubstSomeTerm subst introducedSymbols initialBoundedSymbols = go initialM
               (go memo initial)
               (go memo sequence)
        in folded `seq` SomeTerm folded
+    goSome memo bs
+        (SomeTerm (FocusedSeqFoldTerm callback operands initial sequence)) =
+      let (callback', callbackBounded) = goFocusedCallback memo bs callback
+          operands' = goFocusedOperands memo operands
+          rebuilt = pevalPreparedFocusedSeqFold
+            callback' operands' (go memo initial) (go memo sequence)
+       in callbackBounded `seq` SomeTerm rebuilt
+      where
+        goFocusedCallback
+          :: (SomeTerm -> SomeTerm)
+          -> HS.HashSet SomeTypedConstantSymbol
+          -> FocusedSeqFoldCallback cs state element
+          -> ( FocusedSeqFoldCallback cs state element,
+               HS.HashSet SomeTypedConstantSymbol )
+        goFocusedCallback currentMemo bounded
+            (FocusedSeqFoldCallbackBody step) =
+          (FocusedSeqFoldCallbackBody (go currentMemo step), bounded)
+        goFocusedCallback _ bounded
+            (FocusedSeqFoldCallbackBind symbol rest) =
+          let body = focusedSeqFoldCallbackTerm rest
+              (symbol', renamedBody) = avoidCapture symbol body
+              rest' = mapFocusedSeqFoldCallbackTerm (const renamedBody) rest
+              bounded' = HS.insert (someTypedSymbol symbol') bounded
+              newMemo = htmemo (goSome newMemo bounded')
+              {-# NOINLINE newMemo #-}
+              (traversed, finalBounded) =
+                goFocusedCallback newMemo bounded' rest'
+           in (FocusedSeqFoldCallbackBind symbol' traversed, finalBounded)
+
+        goFocusedOperands
+          :: (SomeTerm -> SomeTerm)
+          -> FocusedSeqFoldOperands cs
+          -> FocusedSeqFoldOperands cs
+        goFocusedOperands _ NoFocusedSeqFoldOperands = NoFocusedSeqFoldOperands
+        goFocusedOperands currentMemo (FocusedSeqFoldOperand operand rest) =
+          FocusedSeqFoldOperand (go currentMemo operand)
+            (goFocusedOperands currentMemo rest)
     goSome memo _ (SomeTerm (SeqFoldWithTerm step environment initial sequence)) =
       let folded =
             pevalClosedSeqFoldWith

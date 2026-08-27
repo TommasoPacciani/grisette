@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-cse #-}
 
 module Grisette.SymPrim.Prim.ConcurrentTests (concurrentTests) where
@@ -14,6 +15,8 @@ import Grisette
   ( LogicalOp(symNot, (.&&), (.||)), SolvingFailure(Unsat)
   , SymBool(SymBool), SymEq ((.==)), SymInteger (SymInteger)
   , evalSymToCon, solve, ssym, z3 )
+import Grisette.Internal.SymPrim.GeneralFun (freshArgSymbol)
+import Grisette.Internal.SymPrim.Prim.SomeTerm (someTerm)
 import Test.Framework (Test, testGroup)
 import Test.Framework.Providers.HUnit (testCase)
 import Test.HUnit (assertBool, assertFailure, (@?=))
@@ -97,6 +100,12 @@ concurrentTests =
         secondName <- makeStableName second
         assertBool "a live cache hit rebuilt the term wrapper"
           (eqStableName firstName secondName),
+      testCase "symbol extraction does not retain a scanned term" $ do
+        unique <- show . hashUnique <$> newUnique
+        collected <- newEmptyMVar
+        releaseExtractedTerm unique collected
+        performMajorGC
+        timeout 5000000 (takeMVar collected) >>= (@?= Just ()),
       testCase "the intern cache does not retain a canonical term" $ do
         unique <- show . hashUnique <$> newUnique
         collected <- newEmptyMVar
@@ -104,6 +113,18 @@ concurrentTests =
         performMajorGC
         timeout 5000000 (takeMVar collected) >>= (@?= Just ())
     ]
+
+releaseExtractedTerm :: String -> MVar () -> IO ()
+releaseExtractedTerm unique collected = do
+  SymInteger term <- evaluate $ force
+    ( (fromString ("local-memo.left." ++ unique)
+        + fromString ("local-memo.right." ++ unique))
+        :: SymInteger
+    )
+  _ <- evaluate $ freshArgSymbol @Integer [someTerm term]
+  _ <- mkWeakPtr term (Just (putMVar collected ()))
+  pure ()
+{-# NOINLINE releaseExtractedTerm #-}
 
 releaseInternedTerm :: String -> MVar () -> IO ()
 releaseInternedTerm unique collected = do

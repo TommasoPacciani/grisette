@@ -20,6 +20,14 @@ where
 import Data.Foldable (Foldable (toList))
 import Grisette.Internal.SymPrim.Prim.Internal.Term
   ( Term,
+    FocusedSeqFoldCallback
+      ( FocusedSeqFoldCallbackBind,
+        FocusedSeqFoldCallbackBody
+      ),
+    FocusedSeqFoldOperands
+      ( FocusedSeqFoldOperand,
+        NoFocusedSeqFoldOperands
+      ),
     pattern AbsNumTerm,
     pattern AddNumTerm,
     pattern AndBitsTerm,
@@ -78,7 +86,9 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
     pattern SeqRangeTerm,
     pattern SeqTailTerm,
     pattern SeqLookupTerm,
+    pattern SeqLookupValueTerm,
     pattern SeqFoldTerm,
+    pattern FocusedSeqFoldTerm,
     pattern SeqFoldWithTerm,
     pattern PairTerm,
     pattern FirstTerm,
@@ -148,8 +158,24 @@ subTermsViewPattern (SeqRangeTerm t1) = return [SomeTerm t1]
 subTermsViewPattern (SeqTailTerm t1) = return [SomeTerm t1]
 subTermsViewPattern (SeqLookupTerm seed sequence index) =
   return [SomeTerm seed, SomeTerm sequence, SomeTerm index]
+subTermsViewPattern (SeqLookupValueTerm seed sequence index) =
+  return [SomeTerm seed, SomeTerm sequence, SomeTerm index]
 subTermsViewPattern (SeqFoldTerm step initial sequence) =
   return [SomeTerm step, SomeTerm initial, SomeTerm sequence]
+subTermsViewPattern (FocusedSeqFoldTerm callback operands initial sequence) =
+  return $
+    callbackTerms callback
+      ++ operandTerms operands
+      ++ [SomeTerm initial, SomeTerm sequence]
+  where
+    callbackTerms
+      :: FocusedSeqFoldCallback cs s e -> [SomeTerm]
+    callbackTerms (FocusedSeqFoldCallbackBody step) = [SomeTerm step]
+    callbackTerms (FocusedSeqFoldCallbackBind _ rest) = callbackTerms rest
+    operandTerms :: FocusedSeqFoldOperands cs -> [SomeTerm]
+    operandTerms NoFocusedSeqFoldOperands = []
+    operandTerms (FocusedSeqFoldOperand operand rest) =
+      SomeTerm operand : operandTerms rest
 subTermsViewPattern (SeqFoldWithTerm step environment initial sequence) =
   return [SomeTerm step, SomeTerm environment, SomeTerm initial, SomeTerm sequence]
 subTermsViewPattern (PairTerm t1 t2) = return [SomeTerm t1, SomeTerm t2]

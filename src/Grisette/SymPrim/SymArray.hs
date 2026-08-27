@@ -22,13 +22,27 @@ module Grisette.SymPrim.SymArray
   ( SymArray (..),
     const,
     select,
+    selectThroughIte,
+    PreparedSliceThroughIte,
+    prepareSliceThroughIte,
+    applyPreparedSliceThroughIte,
+    PreparedSliceSelectThroughIte,
+    prepareSliceSelectThroughIte,
+    applyPreparedSliceSelectThroughIte,
     store,
   )
 where
 
 import Grisette.Internal.SymPrim.SymArray
-  ( SymArray (..),
+  ( SymArray (SymArray),
     const,
     select,
+    selectThroughIte,
+    PreparedSliceThroughIte,
+    prepareSliceThroughIte,
+    applyPreparedSliceThroughIte,
+    PreparedSliceSelectThroughIte,
+    prepareSliceSelectThroughIte,
+    applyPreparedSliceSelectThroughIte,
     store,
   )

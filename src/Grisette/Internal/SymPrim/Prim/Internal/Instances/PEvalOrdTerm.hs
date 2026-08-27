@@ -23,7 +23,6 @@ module Grisette.Internal.SymPrim.Prim.Internal.Instances.PEvalOrdTerm
   )
 where
 
-import Control.Monad (msum)
 import qualified Data.SBV as SBV
 import GHC.TypeNats (KnownNat, type (<=))
 import Grisette.Internal.SymPrim.AlgReal (AlgReal)
@@ -32,10 +31,8 @@ import Grisette.Internal.SymPrim.FP
   ( FP,
     ValidFP,
   )
-import Grisette.Internal.SymPrim.Prim.Internal.Instances.PEvalNumTerm ()
 import Grisette.Internal.SymPrim.Prim.Internal.Term
-  ( PEvalNumTerm (pevalNegNumTerm),
-    PEvalOrdTerm
+  ( PEvalOrdTerm
       ( pevalLeOrdTerm,
         pevalLtOrdTerm,
         sbvLeOrdTerm,
@@ -46,8 +43,6 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
     conTerm,
     leOrdTerm,
     ltOrdTerm,
-    pevalSubNumTerm,
-    pattern AddNumTerm,
     pattern ConTerm,
   )
 import Grisette.Internal.SymPrim.Prim.Internal.Unfold (binaryUnfoldOnce)
@@ -69,48 +64,6 @@ doPevalGeneralLeOrdTerm ::
   (PEvalOrdTerm a, Ord a) => Term a -> Term a -> Maybe (Term Bool)
 doPevalGeneralLeOrdTerm (ConTerm a) (ConTerm b) = Just $ conTerm $ a <= b
 doPevalGeneralLeOrdTerm _ _ = Nothing
-
-instance PEvalOrdTerm Integer where
-  pevalLtOrdTerm = binaryUnfoldOnce doPevalLtOrdTerm ltOrdTerm
-    where
-      doPevalLtOrdTerm l r =
-        msum
-          [ doPevalGeneralLtOrdTerm l r,
-            case (l, r) of
-              (ConTerm l, AddNumTerm (ConTerm j) k) ->
-                Just $ pevalLtOrdTerm (conTerm $ l - j) k
-              (AddNumTerm (ConTerm i) j, ConTerm k) ->
-                Just $ pevalLtOrdTerm j (conTerm $ k - i)
-              ((AddNumTerm (ConTerm j) k), l) ->
-                Just $
-                  pevalLtOrdTerm
-                    (conTerm j)
-                    (pevalSubNumTerm l k)
-              (j, (AddNumTerm (ConTerm k) l)) ->
-                Just $ pevalLtOrdTerm (conTerm $ -k) (pevalSubNumTerm l j)
-              (l, ConTerm r) ->
-                Just $ pevalLtOrdTerm (conTerm $ -r) (pevalNegNumTerm l)
-              _ -> Nothing
-          ]
-  pevalLeOrdTerm = binaryUnfoldOnce doPevalLeOrdTerm leOrdTerm
-    where
-      doPevalLeOrdTerm l r =
-        msum
-          [ doPevalGeneralLeOrdTerm l r,
-            case (l, r) of
-              (ConTerm l, AddNumTerm (ConTerm j) k) ->
-                Just $ pevalLeOrdTerm (conTerm $ l - j) k
-              (AddNumTerm (ConTerm i) j, ConTerm k) ->
-                Just $ pevalLeOrdTerm j (conTerm $ k - i)
-              (AddNumTerm (ConTerm j) k, l) ->
-                Just $ pevalLeOrdTerm (conTerm j) (pevalSubNumTerm l k)
-              (j, AddNumTerm (ConTerm k) l) ->
-                Just $ pevalLeOrdTerm (conTerm $ -k) (pevalSubNumTerm l j)
-              (l, ConTerm r) ->
-                Just $ pevalLeOrdTerm (conTerm $ -r) (pevalNegNumTerm l)
-              _ -> Nothing
-          ]
-  withSbvOrdTermConstraint r = r
 
 instance (KnownNat n, 1 <= n) => PEvalOrdTerm (WordN n) where
   pevalLtOrdTerm = pevalGeneralLtOrdTerm

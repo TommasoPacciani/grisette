@@ -46,15 +46,6 @@ import Grisette.Internal.SymPrim.Prim.Internal.Unfold
     unaryUnfoldOnce,
   )
 
-instance PEvalNumTerm Integer where
-  pevalAddNumTerm = pevalDefaultAddNumTerm
-  pevalNegNumTerm = pevalDefaultNegNumTerm
-  pevalMulNumTerm = pevalDefaultMulNumTerm
-  pevalAbsNumTerm = unaryUnfoldOnce doPevalNoOverflowAbsNumTerm absNumTerm
-  pevalSignumNumTerm =
-    unaryUnfoldOnce doPevalNoOverflowSignumNumTerm signumNumTerm
-  withSbvNumTermConstraint r = r
-
 instance (ValidFP eb sb) => PEvalNumTerm (FP eb sb) where
   pevalAddNumTerm = generalBinaryUnfolded (+) addNumTerm
   pevalNegNumTerm = generalUnaryUnfolded negate negNumTerm

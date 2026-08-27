@@ -125,7 +125,7 @@ cegisTests =
               testCase "Lowering of TabularFun" $ do
                 let s1 = "s1" :: SymInteger =~> SymInteger
                 let s2 = "s2" :: SymInteger =~> SymInteger
-                (_, CEGISSuccess m1) <-
+                (_, result) <-
                   cegis unboundedConfig ("cond" :: SymBool) $
                     \cond ->
                       cegisPostCond $
@@ -133,16 +133,19 @@ cegisTests =
                           .== 10
                           .&& apply (symIte cond s1 s2) (symIte cond 3 4)
                           .== 100
-                let s1e = evalSym False m1 s1
-                let s2e = evalSym False m1 s2
-                AsKey (s1e # 1) @?= AsKey 10
-                AsKey (s1e # 3) @?= AsKey 100
-                AsKey (s2e # 2) @?= AsKey 10
-                AsKey (s2e # 4) @?= AsKey 100,
+                case result of
+                  CEGISSuccess m1 -> do
+                    let s1e = evalSym False m1 s1
+                    let s2e = evalSym False m1 s2
+                    AsKey (s1e # 1) @?= AsKey 10
+                    AsKey (s1e # 3) @?= AsKey 100
+                    AsKey (s2e # 2) @?= AsKey 10
+                    AsKey (s2e # 4) @?= AsKey 100
+                  failure -> assertFailure $ "CEGIS failed: " <> show failure,
               testCase "Lowering of GeneralFun" $ do
                 let s1 = "s1" :: SymInteger -~> SymInteger
                 let s2 = "s2" :: SymInteger -~> SymInteger
-                (_, CEGISSuccess m1) <-
+                (_, result) <-
                   cegis unboundedConfig ("cond" :: SymBool) $
                     \cond ->
                       cegisPostCond $
@@ -150,12 +153,15 @@ cegisTests =
                           .== 10
                           .&& apply (symIte cond s1 s2) (symIte cond 3 4)
                           .== 100
-                let s1e = evalSym False m1 s1
-                let s2e = evalSym False m1 s2
-                AsKey (s1e # 1) @?= AsKey 10
-                AsKey (s1e # 3) @?= AsKey 100
-                AsKey (s2e # 2) @?= AsKey 10
-                AsKey (s2e # 4) @?= AsKey 100
+                case result of
+                  CEGISSuccess m1 -> do
+                    let s1e = evalSym False m1 s1
+                    let s2e = evalSym False m1 s2
+                    AsKey (s1e # 1) @?= AsKey 10
+                    AsKey (s1e # 3) @?= AsKey 100
+                    AsKey (s2e # 2) @?= AsKey 10
+                    AsKey (s2e # 4) @?= AsKey 100
+                  failure -> assertFailure $ "CEGIS failed: " <> show failure
             ],
           testGroup
             "Boolean"

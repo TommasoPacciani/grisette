@@ -79,6 +79,7 @@ module Grisette.Utils
     leqAdd2,
     leqAdd,
     leqAddPos,
+    leqAddComm,
   )
 where
 
@@ -95,6 +96,7 @@ import Grisette.Internal.Utils.Parameterized
     knownAdd,
     leqAdd,
     leqAdd2,
+    leqAddComm,
     leqAddPos,
     leqRefl,
     leqSucc,

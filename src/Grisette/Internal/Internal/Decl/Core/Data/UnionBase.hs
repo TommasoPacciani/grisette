@@ -1,14 +1,14 @@
 {-# LANGUAGE CPP #-}
-{-# LANGUAGE DeriveFunctor #-}
-{-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE DeriveLift #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE Trustworthy #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeOperators #-}
 
 -- |
 -- Module      :   Grisette.Internal.Internal.Decl.Core.Data.UnionBase
@@ -23,6 +23,7 @@ module Grisette.Internal.Internal.Decl.Core.Data.UnionBase
 
     -- | Please consider using 'Grisette.Core.Union' instead.
     UnionBase (..),
+    eraseUnionGroups,
     ifWithLeftMost,
     ifWithStrategy,
     fullReconstruct,
@@ -30,7 +31,6 @@ module Grisette.Internal.Internal.Decl.Core.Data.UnionBase
 where
 
 import Control.Monad (ap)
-import GHC.Generics (Generic, Generic1)
 import Grisette.Internal.Core.Data.Class.AsKey (AsKey (AsKey), KeyEq (keyEq), KeyEq1 (liftKeyEq), shouldUseAsKeyHasSymbolicVersionError)
 import Grisette.Internal.Core.Data.Class.LogicalOp
   ( LogicalOp (symNot, (.&&), (.||)),
@@ -43,7 +43,11 @@ import Grisette.Internal.Core.Data.Class.UnionView
 import Grisette.Internal.Internal.Decl.Core.Data.Class.Mergeable
   ( Mergeable (rootStrategy),
     Mergeable1 (liftRootStrategy),
-    MergingStrategy (NoStrategy, SimpleStrategy, SortedStrategy),
+    MergingStrategy (SimpleStrategy, SortedStrategy),
+    StructuralStrategyCase (StructuralStrategyCase),
+    StructuralStrategyView (StructuralStrategyView),
+    StructuralOrdering (StructuralEQ, StructuralGT, StructuralLT),
+    structuralStrategyView,
   )
 import Grisette.Internal.Internal.Decl.Core.Data.Class.SimpleMergeable
   ( SimpleMergeable (mrgIte),
@@ -58,7 +62,6 @@ import Grisette.Internal.SymPrim.SymBool
   ( SymBool,
     symIteMergeGuard,
   )
-import Language.Haskell.TH.Syntax (Lift)
 
 -- | The base union implementation, which is an if-then-else tree structure.
 data UnionBase a where
@@ -77,8 +80,41 @@ data UnionBase a where
     -- | False branch
     UnionBase a ->
     UnionBase a
-  deriving (Generic, Lift, Generic1)
-  deriving (Functor)
+  -- | A homogeneous group selected by an actual structural ADT/GADT witness.
+  -- The constructor is intentionally hidden by the public UnionBase facade.
+  UnionGroup ::
+    key payload ->
+    MergingStrategy payload ->
+    (payload -> a) ->
+    UnionBase payload ->
+    UnionBase a
+
+instance Functor UnionBase where
+  fmap f (UnionSingle value) = UnionSingle (f value)
+  fmap f (UnionIf cached merged guard ifTrue ifFalse) =
+    UnionIf
+      (f cached)
+      merged
+      guard
+      (fmap f ifTrue)
+      (fmap f ifFalse)
+  fmap f group@UnionGroup {} = fmap f (eraseUnionGroups group)
+  {-# INLINE fmap #-}
+
+-- | Remove the internal typed grouping while preserving the exact transparent
+-- if-then-else semantics. Erased conditionals are marked unmerged so a caller
+-- cannot accidentally reuse a representation invariant from another strategy.
+eraseUnionGroups :: UnionBase a -> UnionBase a
+eraseUnionGroups (UnionSingle value) = UnionSingle value
+eraseUnionGroups (UnionIf _ _ guard ifTrue ifFalse) =
+  ifWithLeftMost
+    False
+    guard
+    (eraseUnionGroups ifTrue)
+    (eraseUnionGroups ifFalse)
+eraseUnionGroups (UnionGroup _ _ inject payloads) =
+  fmap inject (eraseUnionGroups payloads)
+{-# INLINE eraseUnionGroups #-}
 
 instance (Eq a) => Eq (UnionBase a) where
   (==) = shouldUseAsKeyHasSymbolicVersionError "UnionBase" "(==)" "(.==)"
@@ -91,6 +127,10 @@ instance KeyEq1 UnionBase where
   liftKeyEq f (UnionSingle l) (UnionSingle r) = f l r
   liftKeyEq f (UnionIf _ _ c l r) (UnionIf _ _ c' l' r') =
     keyEq c c' && liftKeyEq f l l' && liftKeyEq f r r'
+  liftKeyEq f left@UnionGroup {} right =
+    liftKeyEq f (eraseUnionGroups left) (eraseUnionGroups right)
+  liftKeyEq f left right@UnionGroup {} =
+    liftKeyEq f (eraseUnionGroups left) (eraseUnionGroups right)
   liftKeyEq _ _ _ = False
   {-# INLINE liftKeyEq #-}
 
@@ -105,6 +145,7 @@ instance Monad UnionBase where
   {-# INLINE return #-}
   UnionSingle a >>= f = f a
   UnionIf _ _ c t f >>= f' = ifWithLeftMost False c (t >>= f') (f >>= f')
+  UnionGroup _ _ inject payloads >>= f = payloads >>= (f . inject)
   {-# INLINE (>>=) #-}
 
 instance TryMerge UnionBase where
@@ -125,6 +166,7 @@ fullReconstruct _ u = u
 leftMost :: UnionBase a -> a
 leftMost (UnionSingle a) = a
 leftMost (UnionIf a _ _ _ _) = a
+leftMost (UnionGroup _ _ inject payloads) = inject (leftMost payloads)
 {-# INLINE leftMost #-}
 
 -- | Build 'UnionIf' with leftmost cache correctly maintained.
@@ -154,6 +196,18 @@ ifWithStrategy strategy cond t f@(UnionIf _ False _ _ _) =
 ifWithStrategy strategy cond t f = ifWithStrategyInv strategy cond t f
 {-# INLINE ifWithStrategy #-}
 
+data ActiveStructuralUnion key a where
+  ActiveStructuralGroup ::
+    key payload ->
+    UnionBase payload ->
+    ActiveStructuralUnion key a
+  ActiveStructuralIf ::
+    a ->
+    SymBool ->
+    ActiveStructuralUnion key a ->
+    ActiveStructuralUnion key a ->
+    ActiveStructuralUnion key a
+
 ifWithStrategyInv ::
   MergingStrategy a ->
   SymBool ->
@@ -169,17 +223,25 @@ ifWithStrategyInv strategy cond (UnionIf _ True condTrue tt _) f
 ifWithStrategyInv strategy cond t (UnionIf _ True condFalse _ ff)
   | AsKey cond == AsKey condFalse = ifWithStrategyInv strategy cond t ff
 -- {| symNot cond == condTrue || cond == symNot condTrue = ifWithStrategyInv strategy cond t tf -- buggy here condTrue
-ifWithStrategyInv (SimpleStrategy m) cond (UnionSingle l) (UnionSingle r) =
-  UnionSingle $ m cond l r
+ifWithStrategyInv strategy@(SimpleStrategy merge) cond ifTrue ifFalse =
+  case (ifTrue, ifFalse) of
+    (UnionSingle left, UnionSingle right) ->
+      UnionSingle $ merge cond left right
+    _ ->
+      ifWithStrategy
+        strategy
+        cond
+        (eraseUnionGroups ifTrue)
+        (eraseUnionGroups ifFalse)
 ifWithStrategyInv
   strategy@(SortedStrategy idxFun substrategy)
   cond
   ifTrue
   ifFalse = case (ifTrue, ifFalse) of
-    (UnionSingle _, UnionSingle _) -> ssUnionIf cond ifTrue ifFalse
-    (UnionSingle _, UnionIf {}) -> sgUnionIf cond ifTrue ifFalse
-    (UnionIf {}, UnionSingle _) -> gsUnionIf cond ifTrue ifFalse
-    _ -> ggUnionIf cond ifTrue ifFalse
+    (UnionIf {}, UnionIf {}) -> ggUnionIf cond ifTrue ifFalse
+    (UnionIf {}, _) -> gsUnionIf cond ifTrue ifFalse
+    (_, UnionIf {}) -> sgUnionIf cond ifTrue ifFalse
+    _ -> ssUnionIf cond ifTrue ifFalse
     where
       ssUnionIf cond' ifTrue' ifFalse'
         | idxt < idxf = ifWithLeftMost True cond' ifTrue' ifFalse'
@@ -209,7 +271,7 @@ ifWithStrategyInv
           idxft = idxFun $ leftMost ft
           idxff = idxFun $ leftMost ff
           idxt = idxFun $ leftMost ifTrue'
-      sgUnionIf _ _ _ = undefined
+      sgUnionIf cond' ifTrue' ifFalse' = ssUnionIf cond' ifTrue' ifFalse'
       {-# INLINE sgUnionIf #-}
       gsUnionIf cond' ifTrue'@(UnionIf _ True condt tt tf) ifFalse'
         | idxtt == idxtf = ssUnionIf cond' ifTrue' ifFalse'
@@ -227,7 +289,7 @@ ifWithStrategyInv
           idxtt = idxFun $ leftMost tt
           idxtf = idxFun $ leftMost tf
           idxf = idxFun $ leftMost ifFalse'
-      gsUnionIf _ _ _ = undefined
+      gsUnionIf cond' ifTrue' ifFalse' = ssUnionIf cond' ifTrue' ifFalse'
       {-# INLINE gsUnionIf #-}
       ggUnionIf
         cond'
@@ -252,11 +314,201 @@ ifWithStrategyInv
             idxtf = idxFun $ leftMost tf
             idxft = idxFun $ leftMost ft
             idxff = idxFun $ leftMost ff
-      ggUnionIf _ _ _ = undefined
+      ggUnionIf cond' ifTrue' ifFalse' =
+        case (ifTrue', ifFalse') of
+          (UnionIf {}, _) -> gsUnionIf cond' ifTrue' ifFalse'
+          _ -> sgUnionIf cond' ifTrue' ifFalse'
       {-# INLINE ggUnionIf #-}
-ifWithStrategyInv NoStrategy cond ifTrue ifFalse =
-  ifWithLeftMost True cond ifTrue ifFalse
-ifWithStrategyInv _ _ _ _ = error "Invariant violated"
+ifWithStrategyInv strategy cond originalTrue originalFalse =
+  case structuralStrategyView strategy of
+    Just structuralView -> mergeWithStructuralView structuralView
+    Nothing -> ifWithLeftMost True cond originalTrue originalFalse
+  where
+    mergeWithStructuralView
+      ( StructuralStrategyView
+          split
+          compareKey
+          _
+          payloadStrategy
+          inject
+        ) =
+        forgetActive $
+          mergeStructural
+            cond
+            (normalizeStructuralOperand originalTrue)
+            (normalizeStructuralOperand originalFalse)
+      where
+        forgetActive (ActiveStructuralGroup key payloads) =
+          UnionGroup key (payloadStrategy key) (inject key) payloads
+        forgetActive (ActiveStructuralIf cached cond' ifTrue ifFalse) =
+          UnionIf
+            cached
+            True
+            cond'
+            (forgetActive ifTrue)
+            (forgetActive ifFalse)
+
+        activeLeftMost (ActiveStructuralGroup key payloads) =
+          inject key (leftMost payloads)
+        activeLeftMost (ActiveStructuralIf cached _ _ _) = cached
+
+        activeIfWithLeftMost (Con selected) ifTrue ifFalse
+          | selected = ifTrue
+          | otherwise = ifFalse
+        activeIfWithLeftMost cond' ifTrue ifFalse =
+          ActiveStructuralIf
+            (activeLeftMost ifTrue)
+            cond'
+            ifTrue
+            ifFalse
+
+        makeGroup value = case split value of
+          StructuralStrategyCase key payload ->
+            ActiveStructuralGroup key (UnionSingle payload)
+
+        normalizeStructuralOperand = reconstructActive . eraseUnionGroups
+
+        reconstructActive (UnionSingle value) = makeGroup value
+        reconstructActive (UnionIf _ _ cond' ifTrue ifFalse) =
+          mergeStructural
+            cond'
+            (reconstructActive ifTrue)
+            (reconstructActive ifFalse)
+        reconstructActive group@UnionGroup {} =
+          reconstructActive (eraseUnionGroups group)
+
+        rebuildStructural = normalizeStructuralOperand . forgetActive
+
+        compareValues left right =
+          case (split left, split right) of
+            (StructuralStrategyCase leftKey _, StructuralStrategyCase rightKey _) ->
+              case compareKey leftKey rightKey of
+                StructuralLT -> LT
+                StructuralEQ -> EQ
+                StructuralGT -> GT
+
+        mergeStructural cond' ifTrue ifFalse =
+          case (ifTrue, ifFalse) of
+            (left@ActiveStructuralGroup {}, right@ActiveStructuralGroup {}) ->
+              mergeGroups cond' left right
+            ( left@ActiveStructuralGroup {},
+              right@(ActiveStructuralIf _ condRight rt rf)
+              ) ->
+                mergeGroupIf cond' left right condRight rt rf
+            ( left@(ActiveStructuralIf _ condLeft lt lf),
+              right@ActiveStructuralGroup {}
+              ) ->
+                mergeIfGroup cond' left condLeft lt lf right
+            ( left@(ActiveStructuralIf _ condLeft lt lf),
+              right@(ActiveStructuralIf _ condRight rt rf)
+              ) ->
+                mergeIfIf
+                  cond'
+                  left
+                  condLeft
+                  lt
+                  lf
+                  right
+                  condRight
+                  rt
+                  rf
+
+        mergeGroups
+          cond'
+          leftGroup@(ActiveStructuralGroup leftKey leftPayloads)
+          rightGroup@(ActiveStructuralGroup rightKey rightPayloads) =
+            case compareKey leftKey rightKey of
+              StructuralLT ->
+                activeIfWithLeftMost cond' leftGroup rightGroup
+              StructuralEQ ->
+                ActiveStructuralGroup
+                  leftKey
+                  ( ifWithStrategy
+                      (payloadStrategy leftKey)
+                      cond'
+                      leftPayloads
+                      rightPayloads
+                  )
+              StructuralGT ->
+                activeIfWithLeftMost (symNot cond') rightGroup leftGroup
+        mergeGroups cond' left right = mergeStructural cond' left right
+        {-# INLINE mergeGroups #-}
+
+        mergeGroupIf cond' ifTrue ifFalse condFalse ft ff =
+          case compareValues (activeLeftMost ft) (activeLeftMost ff) of
+            EQ ->
+              mergeStructural cond' ifTrue (rebuildStructural ifFalse)
+            GT ->
+              mergeStructural cond' ifTrue (rebuildStructural ifFalse)
+            LT ->
+              case compareValues (activeLeftMost ifTrue) (activeLeftMost ft) of
+                LT -> activeIfWithLeftMost cond' ifTrue ifFalse
+                EQ ->
+                  activeIfWithLeftMost
+                    (cond' .|| condFalse)
+                    (mergeStructural cond' ifTrue ft)
+                    ff
+                GT ->
+                  activeIfWithLeftMost
+                    (symNot cond' .&& condFalse)
+                    ft
+                    (mergeStructural cond' ifTrue ff)
+        {-# INLINE mergeGroupIf #-}
+
+        mergeIfGroup cond' ifTrue condTrue tt tf ifFalse =
+          case compareValues (activeLeftMost tt) (activeLeftMost tf) of
+            EQ ->
+              mergeStructural cond' (rebuildStructural ifTrue) ifFalse
+            GT ->
+              mergeStructural cond' (rebuildStructural ifTrue) ifFalse
+            LT ->
+              case compareValues (activeLeftMost tt) (activeLeftMost ifFalse) of
+                LT ->
+                  activeIfWithLeftMost (cond' .&& condTrue) tt $
+                    mergeStructural cond' tf ifFalse
+                EQ ->
+                  activeIfWithLeftMost
+                    (symNot cond' .|| condTrue)
+                    (mergeStructural cond' tt ifFalse)
+                    tf
+                GT ->
+                  activeIfWithLeftMost (symNot cond') ifFalse ifTrue
+        {-# INLINE mergeIfGroup #-}
+
+        mergeIfIf
+          cond'
+          ifTrue
+          condTrue
+          tt
+          tf
+          ifFalse
+          condFalse
+          ft
+          ff =
+            case compareValues (activeLeftMost tt) (activeLeftMost tf) of
+              EQ -> mergeStructural cond' (rebuildStructural ifTrue) ifFalse
+              GT -> mergeStructural cond' (rebuildStructural ifTrue) ifFalse
+              LT ->
+                case compareValues (activeLeftMost ft) (activeLeftMost ff) of
+                  EQ -> mergeStructural cond' ifTrue (rebuildStructural ifFalse)
+                  GT -> mergeStructural cond' ifTrue (rebuildStructural ifFalse)
+                  LT ->
+                    case compareValues (activeLeftMost tt) (activeLeftMost ft) of
+                      LT ->
+                        activeIfWithLeftMost (cond' .&& condTrue) tt $
+                          mergeStructural cond' tf ifFalse
+                      EQ ->
+                        let newCond = symIteMergeGuard cond' condTrue condFalse
+                            newUnionIfTrue = mergeStructural cond' tt ft
+                            newUnionIfFalse = mergeStructural cond' tf ff
+                         in activeIfWithLeftMost
+                              newCond
+                              newUnionIfTrue
+                              newUnionIfFalse
+                      GT ->
+                        activeIfWithLeftMost (symNot cond' .&& condFalse) ft $
+                          mergeStructural cond' ifTrue ff
+        {-# INLINE mergeIfIf #-}
 {-# INLINE ifWithStrategyInv #-}
 
 instance (Mergeable a) => Mergeable (UnionBase a) where
@@ -282,9 +534,21 @@ instance SymBranching UnionBase where
 
 instance UnionView UnionBase where
   singleView (UnionSingle a) = Just a
+  singleView (UnionGroup _ _ inject payloads) =
+    inject <$> singleView payloads
   singleView _ = Nothing
   {-# INLINE singleView #-}
   ifView (UnionIf _ _ cond ifTrue ifFalse) =
     Just (IfViewResult cond ifTrue ifFalse)
+  ifView (UnionGroup key strategy inject payloads) =
+    case ifView payloads of
+      Just (IfViewResult cond ifTrue ifFalse) ->
+        Just
+          ( IfViewResult
+              cond
+              (UnionGroup key strategy inject ifTrue)
+              (UnionGroup key strategy inject ifFalse)
+          )
+      Nothing -> Nothing
   ifView _ = Nothing
   {-# INLINE ifView #-}

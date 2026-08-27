@@ -59,7 +59,8 @@ import Grisette.Internal.SymPrim.FP
     withUnsafeValidFP,
   )
 import Grisette.Internal.SymPrim.GeneralFun
-  ( checkClosedSeqFold,
+  ( checkClosedFocusedSeqFold,
+    checkClosedSeqFold,
     checkClosedSeqFoldWith,
     type (-->) (GeneralFun),
   )
@@ -102,10 +103,19 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
     PEvalRotateTerm,
     PEvalShiftTerm,
     SomeTypedAnySymbol,
+    SomeTypedConstantSymbol,
     SomeTypedSymbol (SomeTypedSymbol),
     SupportedNonFuncPrim,
     SupportedPrim (primTypeRep, withPrim),
     Term,
+    FocusedSeqFoldCallback
+      ( FocusedSeqFoldCallbackBind,
+        FocusedSeqFoldCallbackBody
+      ),
+    FocusedSeqFoldOperands
+      ( FocusedSeqFoldOperand,
+        NoFocusedSeqFoldOperands
+      ),
     TypedAnySymbol,
     TypedConstantSymbol,
     TypedSymbol (TypedSymbol),
@@ -169,7 +179,9 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
     seqRangeTerm,
     seqTailTerm,
     seqLookupTerm,
+    seqLookupValueTerm,
     seqFoldTerm,
+    focusedSeqFoldTerm,
     seqFoldWithTerm,
     pairTerm,
     firstTerm,
@@ -233,7 +245,9 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
     pattern SeqRangeTerm,
     pattern SeqTailTerm,
     pattern SeqLookupTerm,
+    pattern SeqLookupValueTerm,
     pattern SeqFoldTerm,
+    pattern FocusedSeqFoldTerm,
     pattern SeqFoldWithTerm,
     pattern PairTerm,
     pattern FirstTerm,
@@ -1071,6 +1085,12 @@ seqRangeTermTag = 61
 seqTailTermTag :: Word8
 seqTailTermTag = 62
 
+seqLookupValueTermTag :: Word8
+seqLookupValueTermTag = 63
+
+focusedSeqFoldTermTag :: Word8
+focusedSeqFoldTermTag = 64
+
 terminalTag :: Word8
 terminalTag = 255
 
@@ -1551,6 +1571,38 @@ constructFromIntegralTerm (SomeTerm (t1 :: Term a)) retType =
 knownTypeTermId :: Term a -> (KnownType, Id)
 knownTypeTermId t@SupportedTerm = (knownType t, termId t)
 
+data SomeFocusedSpines state element where
+  SomeFocusedSpines ::
+    FocusedSeqFoldCallback captures state element ->
+    FocusedSeqFoldOperands captures ->
+    SomeFocusedSpines state element
+
+buildFocusedSpines
+  :: ( MonadFail m,
+       SupportedNonFuncPrim state,
+       SupportedNonFuncPrim element,
+       SupportedPrim (state --> element --> state)
+     )
+  => [(SomeTypedConstantSymbol, SomeTerm)]
+  -> SomeFocusedSpines state element
+  -> m (SomeFocusedSpines state element)
+buildFocusedSpines [] spines = pure spines
+buildFocusedSpines
+    (( SomeTypedSymbol
+         (symbol@TypedSymbol {} :: TypedConstantSymbol binder),
+       SomeTerm (operand'@SupportedTerm :: Term actual)
+     ) : rest)
+    spines = do
+  tailSpines <- buildFocusedSpines rest spines
+  case eqTypeRep (primTypeRep @binder) (primTypeRep @actual) of
+    Just HRefl -> case tailSpines of
+      SomeFocusedSpines callback operands ->
+        pure $ SomeFocusedSpines
+          (FocusedSeqFoldCallbackBind symbol callback)
+          (FocusedSeqFoldOperand operand' operands)
+    Nothing ->
+      fail "statefulDeserializeSomeTerm: FocusedSeqFold operand type mismatch"
+
 statefulDeserializeSomeTerm ::
   forall m.
   (MonadGet m) =>
@@ -1838,6 +1890,27 @@ statefulDeserializeSomeTerm = do
                         )
                   _ ->
                     fail "statefulDeserializeSomeTerm: SeqLookup type mismatch"
+      | tag == seqLookupValueTermTag -> do
+          seed <- deserializeTerm
+          sequence <- deserializeTerm
+          index <- deserializeTerm
+          withNonFuncTerm seed $ \(seed' :: Term element) ->
+            withListTerm sequence $ \(sequence' :: Term [sequenceElement]) ->
+              case
+                  ( eqTypeRep (typeRep @element) (typeRep @sequenceElement),
+                    castSomeTerm @Integer index
+                  )
+                of
+                  (Just HRefl, Just index') ->
+                    pure $
+                      Just
+                        ( someTerm $
+                            seqLookupValueTerm seed' sequence' index',
+                          ktTmId
+                        )
+                  _ ->
+                    fail
+                      "statefulDeserializeSomeTerm: SeqLookupValue type mismatch"
       | tag == seqFoldTermTag -> do
           step <- deserializeTerm
           initial <- deserializeTerm
@@ -1857,6 +1930,35 @@ statefulDeserializeSomeTerm = do
                                 ktTmId
                               )
                           )
+      | tag == focusedSeqFoldTermTag -> do
+          count <- fromIntegral <$> getWord8
+          entries <- replicateM count $ do
+            symbol <- deserialize @SomeTypedConstantSymbol
+            operand <- deserializeTerm
+            pure (symbol, operand)
+          callbackTerm <- deserializeTerm
+          initial <- deserializeTerm
+          sequence <- deserializeTerm
+          withNonFuncTerm initial $ \(initial' :: Term state) ->
+            withListTerm sequence $ \(sequence' :: Term [element]) ->
+              case castSomeTerm callbackTerm of
+                Nothing ->
+                  fail "statefulDeserializeSomeTerm: FocusedSeqFold callback type mismatch"
+                Just (step@SupportedTerm :: Term (state --> element --> state)) -> do
+                  SomeFocusedSpines callback operands <-
+                    buildFocusedSpines entries
+                      (SomeFocusedSpines
+                        (FocusedSeqFoldCallbackBody step)
+                        NoFocusedSeqFoldOperands)
+                  case checkClosedFocusedSeqFold callback of
+                    Left diagnostic -> fail diagnostic
+                    Right checked ->
+                      pure $ Just
+                        ( someTerm $
+                            focusedSeqFoldTerm
+                              checked operands initial' sequence',
+                          ktTmId
+                        )
       | tag == seqFoldWithTermTag -> do
           step <- deserializeTerm
           environment <- deserializeTerm
@@ -2108,7 +2210,8 @@ deserializeSomeTerm =
     )
 
 serializeSingleSomeTerm ::
-  (MonadPut m) => SomeTerm -> StateT (HS.HashSet (KnownType, Id)) m ()
+  forall m. (MonadPut m) =>
+  SomeTerm -> StateT (HS.HashSet (KnownType, Id)) m ()
 serializeSingleSomeTerm (SomeTerm (tm :: Term t)) = do
   st <- State.get
   let kt = knownType tm
@@ -2301,8 +2404,25 @@ serializeSingleSomeTerm (SomeTerm (tm :: Term t)) = do
           serializeUnary ktTmId seqTailTermTag sequence
         SeqLookupTerm seed sequence index ->
           serializeTernary ktTmId seqLookupTermTag seed sequence index
+        SeqLookupValueTerm seed sequence index ->
+          serializeTernary
+            ktTmId seqLookupValueTermTag seed sequence index
         SeqFoldTerm step initial sequence ->
           serializeTernary ktTmId seqFoldTermTag step initial sequence
+        FocusedSeqFoldTerm callback operands initial sequence -> do
+          serializeFocusedChildren callback operands
+          serializeSingleSomeTerm $ someTerm initial
+          serializeSingleSomeTerm $ someTerm sequence
+          let count = focusedOperandCount operands
+          when (count > fromIntegral (maxBound :: Word8)) $
+            error "serialize FocusedSeqFoldTerm: capture count exceeds Word8"
+          serialize ktTmId
+          serialize focusedSeqFoldTermTag
+          putWord8 (fromIntegral count)
+          serializeFocusedMetadata callback operands
+          serialize $ knownTypeTermId (focusedCallbackTerm callback)
+          serialize $ knownTypeTermId initial
+          serialize $ knownTypeTermId sequence
         SeqFoldWithTerm step environment initial sequence ->
           serializeQuaternary
             ktTmId
@@ -2317,6 +2437,40 @@ serializeSingleSomeTerm (SomeTerm (tm :: Term t)) = do
         SecondTerm pairValue -> serializeUnary ktTmId secondTermTag pairValue
   State.put $ HS.insert ktTmId st
   where
+    focusedCallbackTerm
+      :: FocusedSeqFoldCallback captures state element
+      -> Term (state --> element --> state)
+    focusedCallbackTerm (FocusedSeqFoldCallbackBody step) = step
+    focusedCallbackTerm (FocusedSeqFoldCallbackBind _ rest) =
+      focusedCallbackTerm rest
+    focusedOperandCount :: FocusedSeqFoldOperands captures -> Int
+    focusedOperandCount NoFocusedSeqFoldOperands = 0
+    focusedOperandCount (FocusedSeqFoldOperand _ rest) =
+      1 + focusedOperandCount rest
+    serializeFocusedChildren
+      :: FocusedSeqFoldCallback captures state element
+      -> FocusedSeqFoldOperands captures
+      -> StateT (HS.HashSet (KnownType, Id)) m ()
+    serializeFocusedChildren
+      (FocusedSeqFoldCallbackBody step) NoFocusedSeqFoldOperands =
+        serializeSingleSomeTerm (someTerm step)
+    serializeFocusedChildren
+      (FocusedSeqFoldCallbackBind _ callback)
+      (FocusedSeqFoldOperand operand operands) = do
+        serializeSingleSomeTerm (someTerm operand)
+        serializeFocusedChildren callback operands
+    serializeFocusedMetadata
+      :: FocusedSeqFoldCallback captures state element
+      -> FocusedSeqFoldOperands captures
+      -> StateT (HS.HashSet (KnownType, Id)) m ()
+    serializeFocusedMetadata
+      (FocusedSeqFoldCallbackBody _) NoFocusedSeqFoldOperands = pure ()
+    serializeFocusedMetadata
+      (FocusedSeqFoldCallbackBind symbol callback)
+      (FocusedSeqFoldOperand operand operands) = do
+        serialize (someTypedSymbol symbol :: SomeTypedConstantSymbol)
+        serialize (knownTypeTermId operand)
+        serializeFocusedMetadata callback operands
     serializeQuantified ::
       (MonadPut m) =>
       (KnownType, Id) ->

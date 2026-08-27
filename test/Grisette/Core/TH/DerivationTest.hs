@@ -1,6 +1,7 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
@@ -17,15 +18,20 @@ import Data.Bytes.Get (runGetS)
 import Data.Bytes.Put (runPutS)
 import Data.Bytes.Serial (Serial (deserialize, serialize))
 import Data.Functor.Classes (showsPrec1, showsPrec2)
+import Data.Proxy (Proxy (Proxy))
 import qualified Data.Text as T
 import GHC.TypeLits (KnownNat, type (<=))
 import Grisette
   ( AsKey (AsKey),
     AsKey1 (AsKey1),
     FP32,
-    Mergeable,
+    ITEOp (symIte),
+    Mergeable (rootStrategy),
+    MergingStrategy,
     PPrint (pformat, pformatPrec),
     Solvable (con),
+    SymBool,
+    SymInteger,
     SymEq ((.==)),
     SymOrd (symCompare),
     ValidFP,
@@ -41,12 +47,17 @@ import Grisette
   )
 import Grisette.Core.TH.DerivationData
   ( Extra (Extra),
-    GGG,
+    Ambiguous (Ambiguous),
+    GGG (..),
     Serializable,
     gggToVVV,
     replaceVVVShown,
   )
 import Grisette.Core.TH.PartialEvalMode (PartialEvalMode)
+import Grisette.Internal.Core.Data.UnionBase
+  ( UnionBase (UnionGroup, UnionIf, UnionSingle),
+    ifWithStrategy,
+  )
 import Grisette.TestUtil.SymbolicAssertion ((.@?=))
 import Grisette.Unified
   ( BaseMonad,
@@ -59,6 +70,7 @@ import qualified Grisette.Unified as GU
 import Test.Framework (Test, testGroup)
 import Test.Framework.Providers.HUnit (testCase)
 import Test.Framework.Providers.QuickCheck2 (testProperty)
+import Test.HUnit (assertFailure, (@?=))
 import Test.QuickCheck.Property ((.&.), (===))
 
 #if MIN_VERSION_base(4,16,0)
@@ -96,7 +108,50 @@ derivationExtraTest = []
 derivationTest :: Test
 derivationTest =
   testGroup "Derivation" $
-    [ testProperty "GADT Show instance for regular types" $
+    [ testCase "derived Mergeable retains same-constructor payload groups" $ do
+        let merged =
+              ifWithStrategy
+                (rootStrategy :: MergingStrategy (GGG (AsKey SymBool) Integer))
+                "condition"
+                (UnionSingle (GGG1 "left"))
+                (UnionSingle (GGG1 "right"))
+        case merged of
+          UnionGroup {} -> pure ()
+          _ -> assertFailure "Derived same-constructor merge flattened its typed group"
+        AsKey merged
+          @?= AsKey
+            (UnionSingle (GGG1 (symIte "condition" "left" "right"))),
+      testCase "derived Mergeable keeps different constructors distinct" $ do
+        let merged =
+              ifWithStrategy
+                (rootStrategy :: MergingStrategy (GGG (AsKey SymBool) Integer))
+                "condition"
+                (UnionSingle GGG0)
+                (UnionSingle (GGG1 "right"))
+        case merged of
+          UnionIf {} -> pure ()
+          _ -> assertFailure "Derived different-constructor merge collapsed alternatives",
+      testCase "derived GADT family groups an equal existential witness" $ do
+        let merged =
+              ifWithStrategy
+                (rootStrategy :: MergingStrategy (Ambiguous Integer))
+                "condition"
+                (UnionSingle (Ambiguous (Proxy @SymBool)))
+                (UnionSingle (Ambiguous (Proxy @SymBool)))
+        case merged of
+          UnionGroup {} -> pure ()
+          _ -> assertFailure "Equal existential witnesses did not form a typed group",
+      testCase "derived GADT family separates unequal existential witnesses" $ do
+        let merged =
+              ifWithStrategy
+                (rootStrategy :: MergingStrategy (Ambiguous Integer))
+                "condition"
+                (UnionSingle (Ambiguous (Proxy @SymBool)))
+                (UnionSingle (Ambiguous (Proxy @SymInteger)))
+        case merged of
+          UnionIf {} -> pure ()
+          _ -> assertFailure "Unequal existential witnesses were collapsed",
+      testProperty "GADT Show instance for regular types" $
         \(g :: GGG (GGG Int String) [Int]) ->
           let v = gggToVVV g
            in replaceVVVShown (T.pack (show g))

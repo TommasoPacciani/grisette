@@ -344,7 +344,10 @@ infixr 5 :|
 
 derive
   [''GGG]
-  [ ''Show,
+  [ ''Mergeable,
+    ''Mergeable1,
+    ''Mergeable2,
+    ''Show,
     ''Show1,
     ''Show2,
     ''PPrint,

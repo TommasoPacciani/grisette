@@ -38,13 +38,12 @@ import Grisette.Internal.Core.Data.Class.Solvable
   )
 import Grisette.Internal.Core.Data.Class.UnionView
   ( IfViewResult (IfViewResult),
-    UnionView (ifView, singleView, toGuardedList),
+    UnionView (ifView, singleView),
   )
 import Grisette.Internal.Internal.Decl.Core.Data.Class.Mergeable
   ( Mergeable (rootStrategy, sortIndices),
     Mergeable1 (liftRootStrategy),
     MergingStrategy (SimpleStrategy),
-    resolveStrategy,
     rootStrategy1,
   )
 import Grisette.Internal.Internal.Decl.Core.Data.Class.SimpleMergeable
@@ -59,7 +58,7 @@ import Grisette.Internal.Internal.Decl.Core.Data.Class.TryMerge
     tryMerge,
   )
 import Grisette.Internal.Internal.Decl.Core.Data.UnionBase
-  ( UnionBase (UnionIf, UnionSingle),
+  ( UnionBase (UnionGroup, UnionIf, UnionSingle),
     ifWithLeftMost,
   )
 
@@ -212,6 +211,8 @@ bindUnionBase (UnionIf _ _ cond ifTrue ifFalse) f' =
     cond
     (bindUnionBase ifTrue f')
     (bindUnionBase ifFalse f')
+bindUnionBase (UnionGroup _ _ inject payloads) f' =
+  bindUnionBase payloads (f' . inject)
 {-# INLINE bindUnionBase #-}
 
 instance Monad Union where
@@ -240,7 +241,14 @@ instance (Solvable c t, Mergeable t) => Solvable c (Union t) where
 instance (Mergeable a) => Mergeable (Union a) where
   rootStrategy = rootStrategy1
   {-# INLINE rootStrategy #-}
-  sortIndices = fst . resolveStrategy rootStrategy . snd . head . toGuardedList
+  sortIndices = sortIndices . representative . unionBase
+    where
+      representative :: forall value. UnionBase value -> value
+      representative (UnionSingle value) = value
+      representative (UnionIf value _ _ _ _) = value
+      representative (UnionGroup _ _ inject payloads) =
+        inject (representative payloads)
+  {-# INLINE sortIndices #-}
 
 instance (Mergeable a) => SimpleMergeable (Union a) where
   mrgIte = mrgIf

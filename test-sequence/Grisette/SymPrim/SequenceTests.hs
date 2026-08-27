@@ -1,6 +1,6 @@
 {-# LANGUAGE GHC2024 #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE PatternSynonyms #-}
 
 module Grisette.SymPrim.SequenceTests (sequenceTests) where
 
@@ -11,12 +11,14 @@ import Control.Monad (forM_)
 import qualified Data.Binary as Binary
 import qualified Data.ByteString.Lazy as LazyByteString
 import Data.Int (Int64)
-import Data.List (foldl', isPrefixOf)
+import Data.IORef (atomicModifyIORef', newIORef, readIORef)
+import Data.List (foldl', isInfixOf, isPrefixOf)
 import Data.String (fromString)
 import qualified Data.SBV.Dynamic as SBVD
 import Grisette
   ( AsKey (AsKey),
     EvalSym (evalSym),
+    ExtractSym (extractSym),
     Function ((#)),
     LogicalOp (symNot, (.&&)),
     SimpleMergeable (mrgIte),
@@ -31,6 +33,7 @@ import Grisette
     solve,
   )
 import Grisette.Internal.Backend.Solving (z3)
+import qualified Grisette.Internal.SymPrim.GeneralFun as GeneralFun
 import Grisette.Internal.SymPrim.Quantifier (forallSym)
 import Grisette.Internal.Core.Data.Class.Solver (SolvingFailure (Unsat))
 import Grisette.Internal.SymPrim.Array (Array)
@@ -38,13 +41,27 @@ import Grisette.Internal.SymPrim.Prim.Term
   ( LinkedRep (underlyingTerm, wrapTerm),
     SupportedPrim (parseSMTModelResult),
     Term,
+    FocusedSeqFoldCallback
+      ( FocusedSeqFoldCallbackBind,
+        FocusedSeqFoldCallbackBody
+      ),
+    FocusedSeqFoldOperands
+      ( FocusedSeqFoldOperand,
+        NoFocusedSeqFoldOperands
+      ),
+    conTerm,
     eqTerm,
+    focusedSeqFoldCallbackTerm,
+    focusedSeqFoldTerm,
     pevalNotTerm,
     ssymTerm,
+    symTerm,
     toCurThread,
+    pattern FocusedSeqFoldTerm,
   )
 import Grisette.Internal.SymPrim.Prim.Term (typedConstantSymbol)
-import Grisette.Internal.Core.Data.Symbol (Symbol (IndexedSymbol))
+import Grisette.Internal.SymPrim.Prim.SomeTerm (someTerm)
+import Grisette.Internal.Core.Data.Symbol (Symbol (IndexedSymbol), bound)
 import Grisette.SymPrim
   ( SymArray,
     Nominal,
@@ -64,6 +81,20 @@ import qualified Grisette.Unified as U
 import Test.Framework (Test, testGroup)
 import Test.Framework.Providers.HUnit (testCase)
 import Test.HUnit (Assertion, assertBool, assertEqual, assertFailure)
+import System.IO.Unsafe (unsafePerformIO)
+
+-- A prepared application must carry all symbolic representation evidence.  If
+-- that evidence leaks back into the public application method, this signature
+-- stops compiling before any runtime test can mask the regression.
+applyPreparedWithoutEvidence
+  :: forall mode environment state element.
+     U.UnifiedSeq mode
+  => U.PreparedSeqFoldWith mode environment state element
+  -> environment
+  -> state
+  -> U.GetSeq mode element
+  -> state
+applyPreparedWithoutEvidence = U.applySeqFoldWith @mode
 
 sequenceTests :: Test
 sequenceTests =
@@ -268,6 +299,56 @@ sequenceTests =
         expectModel "symbolic in bounds" 1 True 20
         expectModel "symbolic negative" (-1) False 99
         expectModel "symbolic upper bound" 2 False 99,
+      testCase "authoritative lookup parts contain no solver product" $ do
+        assertEqual "concrete in bounds" (True, 20)
+          (U.lookupSeqParts @'C 2 99 [10, 20 :: Integer] 1)
+        assertEqual "concrete negative" (False, 99)
+          (U.lookupSeqParts @'C 2 99 [10, 20 :: Integer] (-1))
+        assertEqual "concrete upper bound" (False, 99)
+          (U.lookupSeqParts @'C 2 99 [10, 20 :: Integer] 2)
+        let values = "lookup-parts-values" :: SymSeq SymInteger
+            index = "lookup-parts-index" :: SymInteger
+            authoritativeLength = U.lengthSeq @'S values
+            (present, selected) = U.lookupSeqParts @'S
+              authoritativeLength 99 values index
+            old = U.lookupSeq @'S 99 values index
+            encoded = Binary.encode selected
+            decoded = Binary.decode encoded :: SymInteger
+        assertEqual "focused value node"
+          "(seq.lookup-value 99 lookup-parts-values lookup-parts-index)"
+          (show selected)
+        assertEqual "value-only serialization" (AsKey selected) (AsKey decoded)
+        equivalence <- solve z3 $ symNot $
+          (present .== U.first @'S old)
+            .&& (selected .== U.second @'S old)
+        case equivalence of
+          Left Unsat -> pure ()
+          Left failure -> assertFailure $
+            "lookup-parts equivalence failed: " ++ show failure
+          Right _ -> assertFailure "lookup-parts differs from checked lookup",
+      testCase "value-only lookup reduces correlated constructors and sequence ITE" $ do
+        let condition = "lookup-value-condition" :: SymBool
+            left = U.consSeq @'S (10 :: SymInteger) $
+              U.consSeq @'S 20 U.nilSeq
+            right = U.consSeq @'S (30 :: SymInteger) U.nilSeq
+            chosen = mrgIte condition left right
+            selected = U.lookupSeqValue @'S 99 chosen 0
+            expected = mrgIte condition (10 :: SymInteger) 30
+            appended = U.appendSeq @'S left right
+        assertEqual "cons zero" (AsKey (10 :: SymInteger))
+          (AsKey (U.lookupSeqValue @'S 99 left 0))
+        assertEqual "append crosses left length" (AsKey (30 :: SymInteger))
+          (AsKey (U.lookupSeqValue @'S 99 appended 2))
+        assertEqual "tail shifts coordinate" (AsKey (20 :: SymInteger))
+          (AsKey (U.lookupSeqValue @'S 99 (U.tailSeq @'S left) 0))
+        assertEqual "negative returns seed" (AsKey (99 :: SymInteger))
+          (AsKey (U.lookupSeqValue @'S 99 chosen (-1)))
+        result <- solve z3 $ symNot (selected .== expected)
+        case result of
+          Left Unsat -> pure ()
+          Left failure -> assertFailure $
+            "lookup-value ITE reduction failed: " ++ show failure
+          Right _ -> assertFailure "lookup-value did not distribute sequence ITE",
       testCase "native zip truncates unknown sequences and preserves array products" $ do
         assertEqual
           "concrete unequal lengths"
@@ -473,47 +554,247 @@ sequenceTests =
           "fresh private binders retain one alpha-normalized fold term"
           (AsKey firstFold)
           (AsKey secondFold),
-      testCase "location-keyed folds reuse a closed step and reject captures" $ do
-        let key = $$(U.seqFoldKey "sequence-test.reusable")
-            step :: SymInteger -> SymInteger -> SymInteger -> SymInteger
+      testCase "prepared folds build one closed step and reuse it" $ do
+        let step :: SymInteger -> SymInteger -> SymInteger -> SymInteger
             step environment state element = environment + state + element
             candidate = "keyed-fold-candidate" :: SymSeq SymInteger
-            firstFold = U.foldSeqWithKey @'S key step 2 5 candidate
-            secondFold = U.foldSeqWithKey @'S key step 2 5 candidate
-        assertEqual "keyed concrete fold" 20
-          (U.foldSeqWithKey @'C key (\scale acc x -> acc + scale * x)
+            prepared = U.prepareSeqFoldWith @'S step
+            firstFold = applyPreparedWithoutEvidence @'S prepared 2 5 candidate
+            secondFold = applyPreparedWithoutEvidence @'S prepared 2 5 candidate
+            concretePrepared = U.prepareSeqFoldWith @'C
+              (\scale acc x -> acc + scale * x)
+        assertEqual "prepared concrete fold" 20
+          (applyPreparedWithoutEvidence @'C concretePrepared
             2 0 [1 .. 4 :: Integer])
-        assertEqual "keyed symbolic fold is shared"
+        assertEqual "prepared symbolic fold is shared"
           (AsKey firstFold) (AsKey secondFold)
         let hidden = "keyed-hidden" :: SymInteger
             captured :: SymInteger -> SymInteger -> SymInteger -> SymInteger
             captured environment state element =
               environment + state + element + hidden
         result <- try @ErrorCall $ evaluate
-          (U.foldSeqWithKey @'S key captured 1 0 (U.nilSeq @'S @SymInteger))
+          (U.applySeqFoldWith @'S (U.prepareSeqFoldWith @'S captured)
+            1 0 (U.nilSeq @'S @SymInteger))
         case result of
-          Left exception -> assertBool "keyed capture diagnostic"
+          Left exception -> assertBool "prepared capture diagnostic"
             ( "foldSeqWith step function captures solver values:"
                 `isPrefixOf` displayException exception )
-          Right _ -> assertFailure "location-keyed fold accepted a capture",
-      testCase "re-entrant location-keyed folds keep binders distinct" $ do
-        let key = $$(U.seqFoldKey "sequence-test.reentrant")
-            one = U.consSeq @'S (1 :: SymInteger) U.nilSeq
+          Right _ -> assertFailure "prepared fold accepted a capture",
+      testCase "prepared callback is evaluated once across applications" $ do
+        counter <- newIORef (0 :: Int)
+        let countedStep :: SymInteger -> SymInteger -> SymInteger -> SymInteger
+            countedStep environment state element =
+              unsafePerformIO (atomicModifyIORef' counter (\n -> (n + 1, ())))
+                `seq` (environment + state + element)
+            prepared = U.prepareSeqFoldWith @'S countedStep
+            candidate = "counted-fold-candidate" :: SymSeq SymInteger
+        _ <- evaluate (U.applySeqFoldWith @'S prepared 1 0 candidate)
+        _ <- evaluate (U.applySeqFoldWith @'S prepared 2 0 candidate)
+        evaluations <- readIORef counter
+        assertEqual "host callback evaluations" 1 evaluations,
+      testCase "focused callback is prepared once and only substitutes lanes" $ do
+        counter <- newIORef (0 :: Int)
+        let template = U.FocusedCapture
+              ("focused-template" :: SymInteger) U.FocusedNoCaptures
+            countedStep
+              :: U.FocusedCaptures 'S '[SymInteger]
+              -> SymInteger -> SymInteger -> SymInteger
+            countedStep (U.FocusedCapture lane U.FocusedNoCaptures)
+                state element =
+              unsafePerformIO (atomicModifyIORef' counter (\n -> (n + 1, ())))
+                `seq` (state + lane * element)
+            prepared = U.prepareFocusedSeqFold @'S template countedStep
+            driver = U.rangeSeq @'S 4
+            firstCaptures = U.FocusedCapture
+              ("focused-first" :: SymInteger) U.FocusedNoCaptures
+            secondCaptures = U.FocusedCapture
+              ("focused-second" :: SymInteger) U.FocusedNoCaptures
+            first = U.applyFocusedSeqFold @'S
+              prepared firstCaptures 0 driver
+            repeated = U.applyFocusedSeqFold @'S
+              prepared firstCaptures 0 driver
+            second = U.applyFocusedSeqFold @'S
+              prepared secondCaptures 0 driver
+        _ <- evaluate first
+        _ <- evaluate repeated
+        _ <- evaluate second
+        evaluations <- readIORef counter
+        assertEqual "focused host callback evaluations" 1 evaluations
+        assertEqual "repeated focused application is interned"
+          (AsKey first) (AsKey repeated)
+        case underlyingTerm first of
+          FocusedSeqFoldTerm callback
+              (FocusedSeqFoldOperand operand NoFocusedSeqFoldOperands) _ _ -> do
+            assertEqual "capture is an explicit operand"
+              (show (underlyingTerm ("focused-first" :: SymInteger)))
+              (show operand)
+            assertBool "actual capture leaked free into callback"
+              (not ("focused-first" `isInfixOf`
+                show (focusedSeqFoldCallbackTerm callback)))
+          _ -> assertFailure "focused application did not retain its operand spine",
+      testCase "focused symbol extraction respects private capture binders" $ do
+        let captureSymbol = typedConstantSymbol (bound "arg" 0)
+              :: TypedConstantSymbol Integer
+            stateSymbol = typedConstantSymbol (bound "arg" 2)
+              :: TypedConstantSymbol Integer
+            elementSymbol = typedConstantSymbol (bound "arg" 3)
+              :: TypedConstantSymbol Integer
+            callbackBody = underlyingTerm $
+              (wrapTerm (symTerm captureSymbol) :: SymInteger)
+                + wrapTerm (symTerm stateSymbol)
+                + wrapTerm (symTerm elementSymbol)
+                + ("focused-extract.hidden" :: SymInteger)
+            callbackStep = conTerm $
+              GeneralFun.GeneralFun stateSymbol $
+                conTerm $ GeneralFun.GeneralFun elementSymbol callbackBody
+            operand = underlyingTerm
+              ("focused-extract.operand" :: SymInteger)
+            sequenceValue = underlyingTerm
+              ("focused-extract.sequence" :: SymSeq SymInteger)
+            focusedTerm = focusedSeqFoldTerm
+              (FocusedSeqFoldCallbackBind captureSymbol $
+                FocusedSeqFoldCallbackBody callbackStep)
+              (FocusedSeqFoldOperand operand NoFocusedSeqFoldOperands)
+              (conTerm (0 :: Integer))
+              sequenceValue
+            focused = wrapTerm focusedTerm :: SymInteger
+            expectedSymbols = extractSym
+              ( ("focused-extract.hidden" :: SymInteger)
+              , ( "focused-extract.operand" :: SymInteger
+                , "focused-extract.sequence" :: SymSeq SymInteger ) )
+        assertEqual "focused free symbols" expectedSymbols (extractSym focused)
+        assertEqual "fresh binder avoids focused callback binder"
+          (typedConstantSymbol (bound "arg" 1) :: TypedConstantSymbol Integer)
+          (GeneralFun.freshArgSymbol @Integer [someTerm focusedTerm]),
+      testCase "heterogeneous focused captures solve and round-trip" $ do
+        let template = U.FocusedCapture (0 :: SymInteger) $
+              U.FocusedCapture (con False :: SymBool) U.FocusedNoCaptures
+            step
+              :: U.FocusedCaptures 'S '[SymInteger, SymBool]
+              -> SymInteger -> SymInteger -> SymInteger
+            step
+                (U.FocusedCapture scale
+                  (U.FocusedCapture enabled U.FocusedNoCaptures))
+                state element =
+              mrgIte enabled (state + scale * element) state
+            prepared = U.prepareFocusedSeqFold @'S template step
+            scale = "heterogeneous-focused-scale" :: SymInteger
+            enabled = "heterogeneous-focused-enabled" :: SymBool
+            captures = U.FocusedCapture scale $
+              U.FocusedCapture enabled U.FocusedNoCaptures
+            sequenceValue = "heterogeneous-focused-sequence"
+              :: SymSeq SymInteger
+            concreteSequence = foldr
+              (U.consSeq @'S . fromInteger) U.nilSeq [0, 1, 2]
+            folded = U.applyFocusedSeqFold @'S
+              prepared captures 0 sequenceValue
+            roundTrip = Binary.decode (Binary.encode folded) :: SymInteger
+            substituted =
+              substSym
+                ("heterogeneous-focused-sequence" :: TypedConstantSymbol [Integer])
+                concreteSequence $
+              substSym
+                ("heterogeneous-focused-enabled" :: TypedConstantSymbol Bool)
+                (con True :: SymBool) $
+              substSym
+                ("heterogeneous-focused-scale" :: TypedConstantSymbol Integer)
+                (2 :: SymInteger)
+                folded
+        assertEqual "focused binary round-trip" (AsKey folded) (AsKey roundTrip)
+        assertEqual "focused substitution/evaluation"
+          (Just 6) (toCon substituted :: Maybe Integer)
+        solved <- solve z3 $
+          (scale .== 2)
+            .&& enabled
+            .&& (sequenceValue .== concreteSequence)
+            .&& (folded .== 6)
+        case solved of
+          Left failure -> assertFailure $
+            "heterogeneous focused fold did not solve: " ++ show failure
+          Right _ -> pure (),
+      testCase "zero captures canonicalize and concrete sequences fold eagerly" $ do
+        let zeroPrepared = U.prepareFocusedSeqFold @'S U.FocusedNoCaptures $
+              \U.FocusedNoCaptures state element -> state + element
+            zeroFold = U.applyFocusedSeqFold @'S zeroPrepared
+              U.FocusedNoCaptures 0
+              ("zero-focused-sequence" :: SymSeq SymInteger)
+            captureTemplate = U.FocusedCapture
+              (0 :: SymInteger) U.FocusedNoCaptures
+            capturePrepared = U.prepareFocusedSeqFold @'S captureTemplate $
+              \(U.FocusedCapture scale U.FocusedNoCaptures) state element ->
+                state + scale * element
+            concreteSequence = foldr
+              (U.consSeq @'S . fromInteger) U.nilSeq [1, 2]
+            eager = U.applyFocusedSeqFold @'S capturePrepared
+              (U.FocusedCapture
+                ("eager-focused-scale" :: SymInteger) U.FocusedNoCaptures)
+              0 concreteSequence
+        assertBool "zero-capture fold did not canonicalize to SeqFoldTerm"
+          ("(seq.foldl " `isPrefixOf` show zeroFold)
+        assertBool "concrete focused sequence retained a fold node"
+          (not ("seq.focused-foldl" `isInfixOf` show eager)),
+      testCase "focused operand application avoids callback capture" $ do
+        let template = U.FocusedCapture
+              (0 :: SymInteger) U.FocusedNoCaptures
+            prepared = U.prepareFocusedSeqFold @'S template $
+              \(U.FocusedCapture lane U.FocusedNoCaptures) state
+                (_ :: SymInteger) ->
+                  state .&& forallSym
+                    ("focused-quantified" :: SymInteger)
+                    (("focused-quantified" :: SymInteger) .> lane)
+            one = U.consSeq @'S (0 :: SymInteger) U.nilSeq
+            folded = U.applyFocusedSeqFold @'S prepared
+              (U.FocusedCapture
+                ("focused-quantified" :: SymInteger) U.FocusedNoCaptures)
+              (con True) one
+            captured = forallSym
+              ("focused-quantified" :: SymInteger)
+              (("focused-quantified" :: SymInteger)
+                .> ("focused-quantified" :: SymInteger))
+        assertBool "focused operand was captured by callback quantifier"
+          (AsKey folded /= AsKey captured),
+      testCase "general substitution traverses an unchecked focused callback" $ do
+        let stateSymbol = typedConstantSymbol "raw-focused.state"
+              :: TypedConstantSymbol Integer
+            elementSymbol = typedConstantSymbol "raw-focused.element"
+              :: TypedConstantSymbol Integer
+            body = underlyingTerm $
+              (wrapTerm (symTerm stateSymbol) :: SymInteger)
+                + ("raw-focused.hidden" :: SymInteger)
+            rawStep = conTerm $
+              GeneralFun.GeneralFun stateSymbol $
+                conTerm $ GeneralFun.GeneralFun elementSymbol body
+            raw = wrapTerm $
+              focusedSeqFoldTerm
+                (FocusedSeqFoldCallbackBody rawStep)
+                NoFocusedSeqFoldOperands
+                (conTerm (0 :: Integer))
+                (underlyingTerm
+                  ("raw-focused.sequence" :: SymSeq SymInteger))
+            substituted = substSym
+              ("raw-focused.hidden" :: TypedConstantSymbol Integer)
+              (1 :: SymInteger)
+              (raw :: SymInteger)
+        assertBool "raw focused callback was skipped by substitution"
+          (not ("raw-focused.hidden" `isInfixOf` show substituted)),
+      testCase "nested prepared folds reject enclosing binder captures" $ do
+        let one = U.consSeq @'S (1 :: SymInteger) U.nilSeq
             outerStep
               :: SymInteger -> SymInteger -> SymInteger -> SymInteger
             outerStep environment state element =
-              state + element + U.foldSeqWithKey @'S key
-                (\_ innerState innerElement ->
-                  innerState + innerElement + environment)
-                (0 :: SymInteger) 0 one
+              let inner = U.prepareSeqFoldWith @'S
+                    (\_ innerState innerElement ->
+                      innerState + innerElement + environment)
+              in state + element + U.applySeqFoldWith @'S inner
+                   (0 :: SymInteger) 0 one
         result <- try @ErrorCall $ evaluate
-          (U.foldSeqWithKey @'S key outerStep 1 0 one)
+          (U.applySeqFoldWith @'S (U.prepareSeqFoldWith @'S outerStep) 1 0 one)
         case result of
-          Left exception -> assertBool "re-entrant capture diagnostic"
+          Left exception -> assertBool "nested capture diagnostic"
             ( "foldSeqWith step function captures solver values:"
                 `isPrefixOf` displayException exception )
           Right _ -> assertFailure
-            "re-entrant keyed fold captured an enclosing binder",
+            "nested prepared fold captured an enclosing binder",
       testCase "captured scalar solver values are rejected before folding nil" $ do
         let hidden = "hidden" :: SymInteger
             capturedStep :: SymInteger -> SymInteger -> SymInteger

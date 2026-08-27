@@ -200,8 +200,10 @@ module Grisette.Unified
     SeqStepWith,
     SeqStepValue,
     SeqStepWithValue,
-    SeqFoldKey,
-    seqFoldKey,
+    PreparedSeqFold,
+    PreparedSeqFoldWith,
+    FocusedCaptures (..),
+    PreparedFocusedSeqFold,
     UnifiedSeq (..),
     UnifiedPair (..),
 
@@ -394,7 +396,10 @@ import Grisette.Internal.Unified.UnifiedArray
 import Grisette.Internal.Unified.UnifiedSeq
   ( GetPair,
     GetSeq,
-    SeqFoldKey,
+    FocusedCaptures (..),
+    PreparedFocusedSeqFold,
+    PreparedSeqFold,
+    PreparedSeqFoldWith,
     SeqStep,
     SeqStepValue,
     SeqStepWith,
@@ -403,7 +408,6 @@ import Grisette.Internal.Unified.UnifiedSeq
     SolverValue,
     UnifiedPair (..),
     UnifiedSeq (..),
-    seqFoldKey,
   )
 import Grisette.Internal.Unified.UnifiedFun
   ( GetFun,

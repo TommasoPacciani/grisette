@@ -255,13 +255,13 @@ genSymTests =
                   testCase "max length = 3" $
                     AsKey1 (genSym (3 :: Integer) "a" :: Union [AsKey SymBool])
                       @?= mrgIf
-                        (isym "a" 3)
+                        (isym "a" 5)
                         (mrgSingle [])
                         ( mrgIf
                             (isym "a" 4)
                             (mrgSingle [isym "a" 2])
                             ( mrgIf
-                                (isym "a" 5)
+                                (isym "a" 3)
                                 (mrgSingle [isym "a" 1, isym "a" 2])
                                 ( mrgSingle
                                     [ isym "a" 0,
@@ -277,10 +277,10 @@ genSymTests =
                 [ testCase "min length = 1, max length = 3" $
                     AsKey1 (genSym (ListSpec 1 3 ()) "a" :: Union [AsKey SymBool])
                       @?= mrgIf
-                        (isym "a" 3)
+                        (isym "a" 4)
                         (mrgSingle [isym "a" 2])
                         ( mrgIf
-                            (isym "a" 4)
+                            (isym "a" 3)
                             (mrgSingle [isym "a" 1, isym "a" 2])
                             ( mrgSingle
                                 [ isym "a" 0,

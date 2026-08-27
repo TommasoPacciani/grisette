@@ -6,6 +6,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -29,6 +30,10 @@ module Grisette.Internal.Core.Control.Monad.CBMCExcept
     mapCBMCExceptT,
     withCBMCExceptT,
     OrigExcept.MonadError (..),
+
+    -- * Internal structural law witnesses (not re-exported by the public facade)
+    CBMCEitherFamily (..),
+    CBMCExceptTWrapper (CBMCExceptTWrapper),
   )
 where
 
@@ -79,8 +84,13 @@ import Grisette.Internal.Core.Data.Class.GenSym
 import Grisette.Internal.Core.Data.Class.Mergeable
   ( Mergeable (rootStrategy),
     Mergeable1 (liftRootStrategy),
-    MergingStrategy (NoStrategy, SimpleStrategy, SortedStrategy),
+    MergingStrategy (SimpleStrategy),
+    StructuralCase (StructuralCase),
+    StructuralFamily (compareStructural, compareStructuralShape),
+    StructuralOrdering (StructuralEQ, StructuralGT, StructuralLT),
+    StructuralWrapper (unwrapValue, wrapValue),
     rootStrategy1,
+    structuralStrategy,
     wrapStrategy,
   )
 import Grisette.Internal.Core.Data.Class.SimpleMergeable
@@ -154,46 +164,54 @@ instance (ToSym e1 e2, ToSym a1 a2) => ToSym (CBMCEither e1 a1) (CBMCEither e2 a
 instance (ToSym e1 e2, ToSym a1 a2) => ToSym (CBMCEither e1 a1) (Either e2 a2) where
   toSym (CBMCEither a) = toSym a
 
-data EitherIdx idx = L idx | R deriving (Eq, Ord, Show)
+data CBMCEitherFamily value payload where
+  CBMCLeftFamily :: CBMCEitherFamily (CBMCEither e a) e
+  CBMCRightFamily :: CBMCEitherFamily (CBMCEither e a) a
+
+instance StructuralFamily CBMCEitherFamily where
+  compareStructural CBMCLeftFamily CBMCLeftFamily = StructuralEQ
+  compareStructural CBMCLeftFamily CBMCRightFamily = StructuralLT
+  compareStructural CBMCRightFamily CBMCLeftFamily = StructuralGT
+  compareStructural CBMCRightFamily CBMCRightFamily = StructuralEQ
+
+  compareStructuralShape CBMCLeftFamily CBMCLeftFamily = EQ
+  compareStructuralShape CBMCLeftFamily CBMCRightFamily = LT
+  compareStructuralShape CBMCRightFamily CBMCLeftFamily = GT
+  compareStructuralShape CBMCRightFamily CBMCRightFamily = EQ
+
+cbmcEitherStrategy ::
+  forall e a.
+  MergingStrategy e ->
+  MergingStrategy a ->
+  MergingStrategy (CBMCEither e a)
+cbmcEitherStrategy errorStrategy valueStrategy =
+  structuralStrategy splitCBMCEither payloadStrategy injectCBMCEither
+  where
+    splitCBMCEither ::
+      CBMCEither e a -> StructuralCase CBMCEitherFamily (CBMCEither e a)
+    splitCBMCEither (CBMCEither (Left value)) =
+      StructuralCase CBMCLeftFamily value
+    splitCBMCEither (CBMCEither (Right value)) =
+      StructuralCase CBMCRightFamily value
+
+    payloadStrategy ::
+      forall payload.
+      CBMCEitherFamily (CBMCEither e a) payload -> MergingStrategy payload
+    payloadStrategy CBMCLeftFamily = errorStrategy
+    payloadStrategy CBMCRightFamily = valueStrategy
+
+    injectCBMCEither ::
+      forall payload.
+      CBMCEitherFamily (CBMCEither e a) payload -> payload -> CBMCEither e a
+    injectCBMCEither CBMCLeftFamily = CBMCEither . Left
+    injectCBMCEither CBMCRightFamily = CBMCEither . Right
+{-# INLINE cbmcEitherStrategy #-}
 
 instance (Mergeable e, Mergeable a) => Mergeable (CBMCEither e a) where
   rootStrategy = rootStrategy1
 
 instance (Mergeable e) => Mergeable1 (CBMCEither e) where
-  liftRootStrategy ms = case rootStrategy of
-    SimpleStrategy m ->
-      SortedStrategy
-        ( \(CBMCEither e) -> case e of
-            Left _ -> False
-            Right _ -> True
-        )
-        ( \case
-            False -> SimpleStrategy $
-              \cond (CBMCEither le) (CBMCEither re) -> case (le, re) of
-                (Left l, Left r) -> CBMCEither $ Left $ m cond l r
-                _ -> error "impossible"
-            True -> wrapStrategy ms (CBMCEither . Right) (\case (CBMCEither (Right x)) -> x; _ -> error "impossible")
-        )
-    NoStrategy ->
-      SortedStrategy
-        ( \(CBMCEither e) -> case e of
-            Left _ -> False
-            Right _ -> True
-        )
-        ( \case
-            False -> NoStrategy
-            True -> wrapStrategy ms (CBMCEither . Right) (\case (CBMCEither (Right x)) -> x; _ -> error "impossible")
-        )
-    SortedStrategy idx sub ->
-      SortedStrategy
-        ( \(CBMCEither e) -> case e of
-            Left v -> L $ idx v
-            Right _ -> R
-        )
-        ( \case
-            L i -> wrapStrategy (sub i) (CBMCEither . Left) (\case (CBMCEither (Left x)) -> x; _ -> error "impossible")
-            R -> wrapStrategy ms (CBMCEither . Right) (\case (CBMCEither (Right x)) -> x; _ -> error "impossible")
-        )
+  liftRootStrategy = cbmcEitherStrategy rootStrategy
 
 cbmcEither :: forall a c b. (a -> c) -> (b -> c) -> CBMCEither a b -> c
 cbmcEither l r v = either l r (unsafeCoerce v)
@@ -213,6 +231,18 @@ withCBMCExceptT f = mapCBMCExceptT $ fmap $ either (Left . f) Right
 -- | Similar to 'Control.Monad.Except.ExceptT', but with different error
 -- handling mechanism.
 newtype CBMCExceptT e m a = CBMCExceptT {runCBMCExceptT :: m (CBMCEither e a)} deriving stock (Generic, Generic1)
+
+data CBMCExceptTWrapper target source where
+  CBMCExceptTWrapper ::
+    CBMCExceptTWrapper (CBMCExceptT error monad value) (monad (CBMCEither error value))
+
+instance StructuralFamily CBMCExceptTWrapper where
+  compareStructural CBMCExceptTWrapper CBMCExceptTWrapper = StructuralEQ
+  compareStructuralShape CBMCExceptTWrapper CBMCExceptTWrapper = EQ
+
+instance StructuralWrapper CBMCExceptTWrapper where
+  wrapValue CBMCExceptTWrapper = CBMCExceptT
+  unwrapValue CBMCExceptTWrapper = runCBMCExceptT
 
 instance (Eq e, Eq1 m) => Eq1 (CBMCExceptT e m) where
   liftEq eq (CBMCExceptT x) (CBMCExceptT y) = liftEq (liftEq eq) x y
@@ -373,11 +403,12 @@ instance
   (Mergeable1 m, Mergeable e, Mergeable a) =>
   Mergeable (CBMCExceptT e m a)
   where
-  rootStrategy = wrapStrategy rootStrategy1 CBMCExceptT runCBMCExceptT
+  rootStrategy = wrapStrategy CBMCExceptTWrapper rootStrategy1
   {-# INLINE rootStrategy #-}
 
 instance (Mergeable1 m, Mergeable e) => Mergeable1 (CBMCExceptT e m) where
-  liftRootStrategy m = wrapStrategy (liftRootStrategy (liftRootStrategy m)) CBMCExceptT runCBMCExceptT
+  liftRootStrategy m =
+    wrapStrategy CBMCExceptTWrapper (liftRootStrategy (liftRootStrategy m))
   {-# INLINE liftRootStrategy #-}
 
 instance

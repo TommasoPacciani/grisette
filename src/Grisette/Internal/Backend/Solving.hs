@@ -221,6 +221,14 @@ import Grisette.Internal.SymPrim.Prim.Term
       ),
     SymbolKind (AnyKind),
     Term,
+    FocusedSeqFoldCallback
+      ( FocusedSeqFoldCallbackBind,
+        FocusedSeqFoldCallbackBody
+      ),
+    FocusedSeqFoldOperands
+      ( FocusedSeqFoldOperand,
+        NoFocusedSeqFoldOperands
+      ),
     TypedConstantSymbol,
     TypedSymbol (TypedSymbol),
     someTypedSymbol,
@@ -284,7 +292,9 @@ import Grisette.Internal.SymPrim.Prim.Term
     pattern SeqRangeTerm,
     pattern SeqTailTerm,
     pattern SeqLookupTerm,
+    pattern SeqLookupValueTerm,
     pattern SeqFoldTerm,
+    pattern FocusedSeqFoldTerm,
     pattern SeqFoldWithTerm,
     pattern PairTerm,
     pattern FirstTerm,
@@ -928,6 +938,24 @@ lowerSinglePrimCached t' m' = do
                in SBVTuple.tuple (present, selected)
       goCachedIntermediate
         qs
+        (SeqLookupValueTerm seed (sequence :: Term [element]) index) =
+          withNonFuncPrim @element $ do
+            seed' <- goCached qs seed
+            sequence' <- goCached qs sequence
+            index' <- goCached qs index
+            pure $ \qst ->
+              let seedValue = seed' qst
+                  sequenceValue = sequence' qst
+                  indexValue = index' qst
+                  present =
+                    (0 SBV..<= indexValue)
+                      SBV..&& (indexValue SBV..< SBVL.length sequenceValue)
+               in SBV.ite
+                    present
+                    (SBVL.elemAt sequenceValue indexValue)
+                    seedValue
+      goCachedIntermediate
+        qs
         (SeqFoldTerm (step :: Term (state --> element --> state)) initial sequence) =
           withNonFuncPrim @state $ withNonFuncPrim @element $ do
             step' <-
@@ -940,6 +968,47 @@ lowerSinglePrimCached t' m' = do
             initial' <- goCached qs initial
             sequence' <- goCached qs sequence
             pure $ \qst -> SBVL.foldl (step' qst) (initial' qst) (sequence' qst)
+      goCachedIntermediate
+        qs
+        ( FocusedSeqFoldTerm
+            callback
+            operands
+            (initial :: Term state)
+            (sequence :: Term [element])
+          ) =
+          withNonFuncPrim @state $ withNonFuncPrim @element $ do
+            step' <- lowerFocusedCallback qs qs callback operands
+            initial' <- goCached qs initial
+            sequence' <- goCached qs sequence
+            pure $ \qst -> SBVL.foldl (step' qst) (initial' qst) (sequence' qst)
+          where
+            lowerFocusedCallback
+              :: forall captures state element.
+                 QuantifiedSymbols
+              -> QuantifiedSymbols
+              -> FocusedSeqFoldCallback captures state element
+              -> FocusedSeqFoldOperands captures
+              -> m (QuantifiedStack -> SBVType (state --> element --> state))
+            lowerFocusedCallback _ callbackSymbols
+                (FocusedSeqFoldCallbackBody step)
+                NoFocusedSeqFoldOperands =
+              goGeneralFunBinder @state @(element --> state)
+                (goGeneralFunBinder @element @state $ \symbols term@SupportedTerm ->
+                  goCached symbols term)
+                callbackSymbols
+                step
+            lowerFocusedCallback operandSymbols callbackSymbols
+                (FocusedSeqFoldCallbackBind symbol rest)
+                (FocusedSeqFoldOperand (operand :: Term capture) restOperands) =
+              withNonFuncPrim @capture $ do
+                operand' <- goCached operandSymbols operand
+                lowered <- lowerFocusedCallback
+                  operandSymbols
+                  (addQuantifiedSymbol symbol callbackSymbols)
+                  rest
+                  restOperands
+                pure $ \qst ->
+                  lowered (addQuantified symbol (toDyn (operand' qst)) qst)
       goCachedIntermediate
         qs
         ( SeqFoldWithTerm

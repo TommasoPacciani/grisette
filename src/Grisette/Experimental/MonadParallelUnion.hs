@@ -30,7 +30,9 @@ import Grisette.Internal.Core.Control.Monad.Union (Union, unionBase)
 import Grisette.Internal.Core.Data.Class.Mergeable (Mergeable)
 import Grisette.Internal.Core.Data.Class.SimpleMergeable (mrgIf)
 import Grisette.Internal.Core.Data.Class.TryMerge (TryMerge, tryMerge)
-import Grisette.Internal.Core.Data.UnionBase (UnionBase (UnionIf, UnionSingle))
+import Grisette.Internal.Internal.Decl.Core.Data.UnionBase
+  ( UnionBase (UnionGroup, UnionIf, UnionSingle),
+  )
 
 -- | Parallel union monad.
 --
@@ -126,6 +128,8 @@ instance
 
 parBindUnion'' :: (Mergeable b, NFData b) => UnionBase a -> (a -> Union b) -> Union b
 parBindUnion'' (UnionSingle a) f = tryMerge $ f a
+parBindUnion'' (UnionGroup _ _ inject payloads) f =
+  parBindUnion'' payloads (f . inject)
 parBindUnion'' u f = parBindUnion' u f
 
 parBindUnion' :: (Mergeable b, NFData b) => UnionBase a -> (a -> Union b) -> Union b
@@ -136,6 +140,8 @@ parBindUnion' (UnionIf _ _ cond ifTrue ifFalse) f' = runEval $ do
   l' <- rseq l
   r' <- rseq r
   rseq $ mrgIf cond l' r'
+parBindUnion' (UnionGroup _ _ inject payloads) f' =
+  parBindUnion' payloads (f' . inject)
 {-# INLINE parBindUnion' #-}
 
 instance MonadParallelUnion Union where

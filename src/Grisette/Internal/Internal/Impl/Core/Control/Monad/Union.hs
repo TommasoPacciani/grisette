@@ -135,7 +135,8 @@ import Grisette.Internal.Internal.Decl.Core.Data.Class.SymEq
     symEq1,
   )
 import Grisette.Internal.Internal.Decl.Core.Data.UnionBase
-  ( UnionBase (UnionIf, UnionSingle),
+  ( UnionBase (UnionGroup, UnionIf, UnionSingle),
+    eraseUnionGroups,
   )
 import Grisette.Internal.Internal.Impl.Core.Data.UnionBase ()
 import Grisette.Internal.SymPrim.AllSyms
@@ -213,6 +214,8 @@ liftShowsPrecUnion sp sl i (UnionIf _ _ cond t f) =
       . sp1 11 f
   where
     sp1 = liftShowsPrecUnion sp sl
+liftShowsPrecUnion sp sl i group@UnionGroup {} =
+  liftShowsPrecUnion sp sl i (eraseUnionGroups group)
 
 wrapBracket :: Char -> Char -> ShowS -> ShowS
 wrapBracket l r p = showChar l . p . showChar r
@@ -328,6 +331,7 @@ instance ToCon1 Union Identity where
           Nothing -> Nothing
           Just True -> go t
           Just False -> go f
+      go group@UnionGroup {} = go (eraseUnionGroups group)
 
 instance (ToCon a b) => ToCon (Union a) (Union b) where
   toCon = toCon1
@@ -342,6 +346,7 @@ instance ToCon1 Union Union where
         t' <- go t
         f' <- go f
         return $ mrgIfPropagatedStrategy c t' f'
+      go group@UnionGroup {} = go (eraseUnionGroups group)
 
 instance (EvalSym a) => EvalSym (Union a) where
   evalSym = evalSym1
@@ -352,6 +357,7 @@ instance EvalSym1 Union where
       go (UnionSingle v) = single $ f fillDefault model v
       go (UnionIf _ _ cond t f) =
         unionIf (evalSym fillDefault model cond) (go t) (go f)
+      go group@UnionGroup {} = go (eraseUnionGroups group)
       strategy = unionMergingStrategy x
       single = maybe return mrgSingleWithStrategy strategy
       unionIf = maybe mrgIfPropagatedStrategy mrgIfWithStrategy strategy
@@ -368,6 +374,7 @@ instance SubstSym1 Union where
           (substSym sym val cond)
           (go t)
           (go f)
+      go group@UnionGroup {} = go (eraseUnionGroups group)
       strategy = unionMergingStrategy x
       single = maybe return mrgSingleWithStrategy strategy
       unionIf = maybe mrgIfPropagatedStrategy mrgIfWithStrategy strategy
@@ -380,6 +387,7 @@ instance ExtractSym1 Union where
     where
       go (UnionSingle x) = e x
       go (UnionIf _ _ cond t f) = extractSymMaybe cond <> go t <> go f
+      go group@UnionGroup {} = go (eraseUnionGroups group)
 
 instance (Eq a, Hashable a) => KeyHashable (Union a) where
   keyHashWithSalt = liftKeyHashWithSalt hashWithSalt
@@ -458,6 +466,7 @@ unionSize = unionSize' . unionBase
   where
     unionSize' (UnionSingle _) = 1
     unionSize' (UnionIf _ _ _ l r) = unionSize' l + unionSize' r
+    unionSize' group@UnionGroup {} = unionSize' (eraseUnionGroups group)
 
 #if !MIN_VERSION_base(4,16,0)
 instance SymBranching (AsKey1 Union) where

@@ -178,6 +178,8 @@ validateSpec' ::
   SymBool ->
   a ->
   Assertion
+validateSpec' _ _ a
+  | norewriteVer a == rewriteVer a = pure ()
 validateSpec' config precond a = do
   r <- solve config (precond .&& SymBool (counterExample a))
   rs <- solve config (precond .&& SymBool (same a))

@@ -34,6 +34,9 @@ module Grisette.Internal.SymPrim.SomeBV
     SomeBVKey,
     SomeBVException (..),
 
+    -- * Internal structural law witness (not re-exported by the public facade)
+    SomeBVFamily (..),
+
     -- * Constructing and pattern matching on SomeBV
     unsafeSomeBV,
     conBV,
@@ -155,8 +158,11 @@ import Grisette.Internal.Core.Data.Class.GenSym
 import Grisette.Internal.Core.Data.Class.ITEOp (ITEOp (symIte))
 import Grisette.Internal.Core.Data.Class.Mergeable
   ( Mergeable (rootStrategy),
-    MergingStrategy (SimpleStrategy, SortedStrategy),
-    wrapStrategy,
+    MergingStrategy (SimpleStrategy),
+    StructuralCase (StructuralCase),
+    StructuralFamily (compareStructural, compareStructuralShape),
+    StructuralOrdering (StructuralEQ, StructuralGT, StructuralLT),
+    structuralStrategy,
   )
 import Grisette.Internal.Core.Data.Class.PPrint
   ( PPrint (pformat),
@@ -229,7 +235,6 @@ import Grisette.Internal.Utils.Parameterized
 import Grisette.Lib.Data.Functor (mrgFmap)
 import Language.Haskell.TH.Syntax (Lift (liftTyped))
 import Test.QuickCheck (Arbitrary (arbitrary), Gen)
-import Unsafe.Coerce (unsafeCoerce)
 
 -- | An exception that would be thrown when operations are performed on
 -- incompatible bit widths.
@@ -908,49 +913,65 @@ instance
   pformat (SomeBVLit i) = "bvlit(" <> pformat i <> ")"
   {-# INLINE pformat #-}
 
-data CompileTimeNat where
-  CompileTimeNat :: (KnownNat n, 1 <= n) => Proxy n -> CompileTimeNat
+data SomeBVFamily value payload where
+  LiteralSomeBVFamily :: SomeBVFamily (SomeBV bv) SomeBVLit
+  SizedSomeBVFamily ::
+    (KnownNat n, 1 <= n) =>
+    Proxy n ->
+    SomeBVFamily (SomeBV bv) (bv n)
 
-instance Show CompileTimeNat where
-  show (CompileTimeNat (Proxy :: Proxy n)) = show (natVal (Proxy @n))
-  {-# INLINE show #-}
+instance StructuralFamily SomeBVFamily where
+  compareStructural LiteralSomeBVFamily LiteralSomeBVFamily = StructuralEQ
+  compareStructural LiteralSomeBVFamily SizedSomeBVFamily {} = StructuralLT
+  compareStructural SizedSomeBVFamily {} LiteralSomeBVFamily = StructuralGT
+  compareStructural
+    (SizedSomeBVFamily (_ :: Proxy left))
+    (SizedSomeBVFamily (_ :: Proxy right)) =
+      case sameNat (Proxy @left) (Proxy @right) of
+        Just Refl -> StructuralEQ
+        Nothing ->
+          if natVal (Proxy @left) < natVal (Proxy @right)
+            then StructuralLT
+            else StructuralGT
 
-instance Eq CompileTimeNat where
-  CompileTimeNat (Proxy :: Proxy n) == CompileTimeNat (Proxy :: Proxy m) =
-    case sameNat (Proxy @n) (Proxy @m) of
-      Just Refl -> True
-      Nothing -> False
-  {-# INLINE (==) #-}
-
-instance Ord CompileTimeNat where
-  compare
-    (CompileTimeNat (Proxy :: Proxy n))
-    (CompileTimeNat (Proxy :: Proxy m)) =
-      compare (natVal (Proxy @n)) (natVal (Proxy @m))
-  {-# INLINE compare #-}
+  compareStructuralShape LiteralSomeBVFamily LiteralSomeBVFamily = EQ
+  compareStructuralShape LiteralSomeBVFamily SizedSomeBVFamily {} = LT
+  compareStructuralShape SizedSomeBVFamily {} LiteralSomeBVFamily = GT
+  compareStructuralShape
+    (SizedSomeBVFamily (_ :: Proxy left))
+    (SizedSomeBVFamily (_ :: Proxy right)) =
+      compare (natVal (Proxy @left)) (natVal (Proxy @right))
 
 instance
+  forall bv.
   (forall n. (KnownNat n, 1 <= n) => Mergeable (bv n)) =>
   Mergeable (SomeBV bv)
   where
   rootStrategy =
-    SortedStrategy @(Maybe CompileTimeNat)
-      ( \case
-          (SomeBVLit _) -> Nothing
-          (SomeBV (_ :: bv n)) -> Just (CompileTimeNat (Proxy @n))
-      )
-      ( \case
-          Nothing -> SimpleStrategy $
-            \c (SomeBVLit l) (SomeBVLit r) ->
-              SomeBVLit $
-                SomeBVCondLit $
-                  mrgIf c (toUnionInteger l) (toUnionInteger r)
-          Just (CompileTimeNat (_ :: proxy n)) ->
-            wrapStrategy
-              (rootStrategy @(bv n))
-              SomeBV
-              (\(SomeBV x) -> unsafeCoerce x)
-      )
+    structuralStrategy splitSomeBV payloadStrategy injectSomeBV
+    where
+      splitSomeBV ::
+        SomeBV bv -> StructuralCase SomeBVFamily (SomeBV bv)
+      splitSomeBV (SomeBVLit literal) =
+        StructuralCase LiteralSomeBVFamily literal
+      splitSomeBV (SomeBV (value :: bv n)) =
+        StructuralCase (SizedSomeBVFamily (Proxy @n)) value
+
+      payloadStrategy ::
+        forall payload.
+        SomeBVFamily (SomeBV bv) payload -> MergingStrategy payload
+      payloadStrategy LiteralSomeBVFamily =
+        SimpleStrategy $ \guard left right ->
+          SomeBVCondLit $
+            mrgIf guard (toUnionInteger left) (toUnionInteger right)
+      payloadStrategy (SizedSomeBVFamily (_ :: proxy n)) =
+        rootStrategy @(bv n)
+
+      injectSomeBV ::
+        forall payload.
+        SomeBVFamily (SomeBV bv) payload -> payload -> SomeBV bv
+      injectSomeBV LiteralSomeBVFamily literal = SomeBVLit literal
+      injectSomeBV SizedSomeBVFamily {} value = SomeBV value
 
 -- | The 'symDistinct' instance for t'SomeBV' will have the following behavior:
 --

@@ -11,6 +11,11 @@
 module Grisette.Internal.Core.Data.Class.Mergeable
   ( -- * Merging strategy
     MergingStrategy (..),
+    StructuralOrdering (..),
+    StructuralFamily (..),
+    StructuralWrapper (..),
+    StructuralCase (..),
+    structuralStrategy,
 
     -- * Mergeable
     Mergeable (..),
@@ -29,15 +34,52 @@ module Grisette.Internal.Core.Data.Class.Mergeable
 
     -- * Combinators for manually building merging strategies
     wrapStrategy,
+    pairStrategy,
     product2Strategy,
     DynamicSortedIdx (..),
-    StrategyList (..),
-    buildStrategyList,
+    ResolvedStrategy (..),
     resolveStrategy,
     resolveStrategy',
     resolveMergeable1,
+
+    -- * Internal structural law witnesses
+    GenericProductWrapper (GenericProductWrapper),
+    M1Wrapper (M1Wrapper),
+    K1Wrapper (K1Wrapper),
+    Par1Wrapper (Par1Wrapper),
+    Rec1Wrapper (Rec1Wrapper),
+    Comp1Wrapper (Comp1Wrapper),
+    DefaultWrapper (DefaultWrapper),
+    GenericWrapper (GenericWrapper),
+    Default1Wrapper (Default1Wrapper),
+    Generic1Wrapper (Generic1Wrapper),
+    AsKeyWrapper (AsKeyWrapper),
+    AsKey1Wrapper (AsKey1Wrapper),
+    NominalWrapper (NominalWrapper),
+    ReaderTWrapper (ReaderTWrapper),
+    IdentityTWrapper (IdentityTWrapper),
+    ContTWrapper (ContTWrapper),
+    LazyRWSTWrapper (LazyRWSTWrapper),
+    StrictRWSTWrapper (StrictRWSTWrapper),
+    ComposeWrapper (ComposeWrapper),
+    EndoWrapper (EndoWrapper),
+    ListFamily (..),
+    EitherFamily (..),
+    MaybeFamily (..),
   )
 where
 
 import Grisette.Internal.Internal.Decl.Core.Data.Class.Mergeable
-import Grisette.Internal.Internal.Impl.Core.Data.Class.Mergeable ()
+import Grisette.Internal.Internal.Impl.Core.Data.Class.Mergeable
+  ( ComposeWrapper (ComposeWrapper),
+    ContTWrapper (ContTWrapper),
+    EitherFamily (..),
+    EndoWrapper (EndoWrapper),
+    IdentityTWrapper (IdentityTWrapper),
+    LazyRWSTWrapper (LazyRWSTWrapper),
+    ListFamily (..),
+    MaybeFamily (..),
+    NominalWrapper (NominalWrapper),
+    ReaderTWrapper (ReaderTWrapper),
+    StrictRWSTWrapper (StrictRWSTWrapper),
+  )

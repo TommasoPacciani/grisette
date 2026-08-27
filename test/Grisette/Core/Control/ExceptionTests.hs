@@ -13,8 +13,6 @@ import Grisette
     EvalSym (evalSym),
     ExtractSym (extractSym),
     LogicalOp (symNot),
-    Mergeable (rootStrategy),
-    MergingStrategy (SimpleStrategy),
     ModelOps (emptyModel),
     SimpleMergeable (mrgIte),
     Solvable (con),
@@ -61,10 +59,9 @@ exceptionTests =
           testCase "SimpleMergeable" $ do
             mrgIte "a" AssertionError AssertionError @?= AssertionError,
           testCase "Mergeable" $ do
-            let SimpleStrategy s =
-                  rootStrategy ::
-                    MergingStrategy AssertionError
-            s "a" AssertionError AssertionError @?= AssertionError,
+            AsKey1
+              (mrgIf "a" (mrgSingle AssertionError) (mrgSingle AssertionError))
+              @?= (mrgSingle AssertionError :: AsKey1 Union AssertionError),
           testCase "Transform AssertionError to VerificationConditions" $ do
             transformError AssertionError @?= AssertionViolation,
           testCase "Transform AssertionError to AssertionError" $ do

@@ -1,5 +1,4 @@
 {-# LANGUAGE GHC2024 #-}
-{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeFamilyDependencies #-}
 
 -- |
@@ -17,17 +16,17 @@ module Grisette.Internal.Unified.UnifiedSeq
     SeqStepWith,
     SeqStepValue,
     SeqStepWithValue,
-    SeqFoldKey,
-    seqFoldKey,
+    PreparedSeqFold,
+    PreparedSeqFoldWith,
+    FocusedCaptures (..),
+    PreparedFocusedSeqFold,
     UnifiedSeq (..),
     UnifiedPair (..),
   )
 where
 
 import Data.Foldable (foldl')
-import Data.Kind (Constraint)
-import qualified Data.Text as T
-import Grisette.Internal.Core.Data.Symbol (Identifier, withLocation)
+import Data.Kind (Constraint, Type)
 import Grisette.Internal.SymPrim.Prim.Term
   ( ConRep (ConType),
     SupportedPrim,
@@ -42,22 +41,7 @@ import qualified Grisette.Internal.SymPrim.SymSeq as SSeq
 import Grisette.Internal.Unified.EvalModeTag (EvalModeTag (C, S))
 import Grisette.Internal.Unified.UnifiedBool (UnifiedBool (GetBool))
 import Grisette.Internal.Unified.UnifiedInteger (GetInteger)
-import Language.Haskell.TH.Syntax.Compat (SpliceQ)
 import qualified Prelude as P
-
--- | A statically unique identity for one closed host-authored sequence fold.
---
--- The constructor stays private: sharing a key between different fold bodies
--- could make a nested abstraction bind the wrong private variables.  Use
--- 'seqFoldKey', which incorporates the splice location as well as its label.
-newtype SeqFoldKey = SeqFoldKey Identifier
-
--- | Construct a fold key whose identity is the source location of the splice.
--- Repeated executions at that location intentionally reuse the same closed
--- function term.
-seqFoldKey :: P.String -> SpliceQ SeqFoldKey
-seqFoldKey label =
-  [||SeqFoldKey $$(withLocation (T.pack label))||]
 
 type SolverValue a =
   ( SupportedNonFuncPrim (ConType a),
@@ -75,6 +59,18 @@ type family GetPair (mode :: EvalModeTag) a b = product | product -> mode a b wh
 type family SeqValue (mode :: EvalModeTag) a :: Constraint where
   SeqValue 'C _a = ()
   SeqValue 'S a = SolverValue a
+
+-- | A heterogeneous bundle whose symbolic members are guaranteed to be
+-- first-order solver values.  Concrete mode needs no solver dictionaries.
+data FocusedCaptures (mode :: EvalModeTag) (captures :: [Type]) where
+  FocusedNoCaptures :: FocusedCaptures mode '[]
+  FocusedCapture
+    :: SeqValue mode value
+    => !value
+    -> !(FocusedCaptures mode rest)
+    -> FocusedCaptures mode (value ': rest)
+
+infixr 5 `FocusedCapture`
 
 -- | What a mode needs in order to turn a fold step into what its fold consumes.
 --
@@ -118,6 +114,44 @@ type SeqStep state element = state -> element -> state
 type SeqStepWith environment state element =
   environment -> state -> element -> state
 
+-- | A host-authored sequence step prepared for repeated application.  The
+-- constructors are private so symbolic callers cannot forge an unchecked
+-- function term.
+data family PreparedSeqFold
+  (mode :: EvalModeTag) state element :: Type
+
+newtype instance PreparedSeqFold 'C state element =
+  ConcretePreparedSeqFold (SeqStep state element)
+
+newtype instance PreparedSeqFold 'S state element =
+  SymbolicPreparedSeqFold (SSeq.PreparedSeqFold state element)
+
+-- | 'PreparedSeqFold' with a first-order environment.
+data family PreparedSeqFoldWith
+  (mode :: EvalModeTag) environment state element :: Type
+
+newtype instance PreparedSeqFoldWith 'C environment state element =
+  ConcretePreparedSeqFoldWith (SeqStepWith environment state element)
+
+newtype instance PreparedSeqFoldWith 'S environment state element =
+  SymbolicPreparedSeqFoldWith
+    (SSeq.PreparedSeqFoldWith environment state element)
+
+-- | A prepared scalar-driver fold whose symbolic program may read a fixed
+-- heterogeneous bundle of first-order solver values.  Preparation constructs
+-- the callback body and its binders once; application only supplies the current
+-- primitive captures, initial state, and driver sequence.
+data family PreparedFocusedSeqFold
+  (mode :: EvalModeTag) (captures :: [Type]) state element :: Type
+
+newtype instance PreparedFocusedSeqFold 'C captures state element =
+  ConcretePreparedFocusedSeqFold
+    (FocusedCaptures 'C captures -> SeqStep state element)
+
+newtype instance PreparedFocusedSeqFold 'S captures state element =
+  SymbolicPreparedFocusedSeqFold
+    (SSeq.PreparedFocusedSeqFold captures state element)
+
 class UnifiedSeq (mode :: EvalModeTag) where
   nilSeq :: SeqValue mode a => GetSeq mode a
   consSeq :: SeqValue mode a => a -> GetSeq mode a -> GetSeq mode a
@@ -131,6 +165,22 @@ class UnifiedSeq (mode :: EvalModeTag) where
     GetSeq mode a ->
     GetInteger mode ->
     GetPair mode (GetBool mode) a
+  -- | Total value-only lookup; absence returns the supplied seed.
+  lookupSeqValue ::
+    SeqValue mode a =>
+    a ->
+    GetSeq mode a ->
+    GetInteger mode ->
+    a
+  -- | Compute one presence scalar from the authoritative length and pair it at
+  -- the host level with a value-only lookup.  No solver product is introduced.
+  lookupSeqParts ::
+    SeqValue mode a =>
+    GetInteger mode ->
+    a ->
+    GetSeq mode a ->
+    GetInteger mode ->
+    (GetBool mode, a)
   zipSeq ::
     ( SeqValue mode a,
       SeqValue mode b,
@@ -159,14 +209,46 @@ class UnifiedSeq (mode :: EvalModeTag) where
     state ->
     GetSeq mode element ->
     state
-  foldSeqWithKey ::
+  -- | Prepare a focused scalar-driver fold.  The template fixes only the
+  -- capture types; concrete values supplied here are not retained as runtime
+  -- inputs.  In symbolic mode the callback is evaluated exactly once.
+  prepareFocusedSeqFold ::
+    ( SeqValue mode state,
+      SeqValue mode element,
+      SeqStepValue mode state element
+    ) =>
+    FocusedCaptures mode captures ->
+    (FocusedCaptures mode captures -> state -> element -> state) ->
+    PreparedFocusedSeqFold mode captures state element
+  -- | Apply a retained focused fold without rebuilding its symbolic callback.
+  applyFocusedSeqFold ::
+    PreparedFocusedSeqFold mode captures state element ->
+    FocusedCaptures mode captures ->
+    state ->
+    GetSeq mode element ->
+    state
+  prepareSeqFold ::
+    ( SeqValue mode state,
+      SeqValue mode element,
+      SeqStepValue mode state element
+    ) =>
+    SeqStep state element ->
+    PreparedSeqFold mode state element
+  applySeqFold ::
+    PreparedSeqFold mode state element ->
+    state ->
+    GetSeq mode element ->
+    state
+  prepareSeqFoldWith ::
     ( SeqValue mode environment,
       SeqValue mode state,
       SeqValue mode element,
       SeqStepWithValue mode environment state element
     ) =>
-    SeqFoldKey ->
     SeqStepWith environment state element ->
+    PreparedSeqFoldWith mode environment state element
+  applySeqFoldWith ::
+    PreparedSeqFoldWith mode environment state element ->
     environment ->
     state ->
     GetSeq mode element ->
@@ -186,10 +268,21 @@ instance UnifiedSeq 'C where
       go (_ : rest) current
         | current P.> 0 = go rest (current P.- 1)
       go _ _ = (P.False, seed)
+  lookupSeqValue seed values index = P.snd (lookupSeq seed values index)
+  lookupSeqParts authoritativeLength seed values index =
+    (0 P.<= index P.&& index P.< authoritativeLength,
+      lookupSeqValue seed values index)
   zipSeq = P.zip
-  foldSeq = foldl'
-  foldSeqWith step environment = foldl' (step environment)
-  foldSeqWithKey _ step environment = foldl' (step environment)
+  foldSeq step = applySeqFold (prepareSeqFold step)
+  foldSeqWith step = applySeqFoldWith (prepareSeqFoldWith step)
+  prepareFocusedSeqFold _ = ConcretePreparedFocusedSeqFold
+  applyFocusedSeqFold (ConcretePreparedFocusedSeqFold step) captures =
+    foldl' (step captures)
+  prepareSeqFold = ConcretePreparedSeqFold
+  applySeqFold (ConcretePreparedSeqFold step) = foldl' step
+  prepareSeqFoldWith = ConcretePreparedSeqFoldWith
+  applySeqFoldWith (ConcretePreparedSeqFoldWith step) environment =
+    foldl' (step environment)
 
 instance UnifiedSeq 'S where
   nilSeq = SSeq.nil
@@ -199,10 +292,40 @@ instance UnifiedSeq 'S where
   rangeSeq = SSeq.range
   tailSeq = SSeq.tail
   lookupSeq = SSeq.lookup
+  lookupSeqValue = SSeq.lookupValue
+  lookupSeqParts = SSeq.lookupParts
   zipSeq = SSeq.zip
-  foldSeq = SSeq.foldHost
-  foldSeqWith = SSeq.foldWithHost
-  foldSeqWithKey (SeqFoldKey key) = SSeq.foldWithHostKey key
+  foldSeq step = applySeqFold (prepareSeqFold step)
+  foldSeqWith step = applySeqFoldWith (prepareSeqFoldWith step)
+  prepareFocusedSeqFold template step =
+    SymbolicPreparedFocusedSeqFold
+      (SSeq.prepareFocusedFoldHost (toSymbolicCaptures template)
+        (step P.. fromSymbolicCaptures))
+  applyFocusedSeqFold (SymbolicPreparedFocusedSeqFold prepared) captures =
+    SSeq.applyPreparedFocusedFold prepared
+      (toSymbolicCaptures captures)
+  prepareSeqFold step =
+    SymbolicPreparedSeqFold (SSeq.prepareFoldHost step)
+  applySeqFold (SymbolicPreparedSeqFold prepared) =
+    SSeq.applyPreparedFold prepared
+  prepareSeqFoldWith step =
+    SymbolicPreparedSeqFoldWith (SSeq.prepareFoldWithHost step)
+  applySeqFoldWith (SymbolicPreparedSeqFoldWith prepared) =
+    SSeq.applyPreparedFoldWith prepared
+
+toSymbolicCaptures
+  :: FocusedCaptures 'S captures
+  -> SSeq.SymbolicFocusedCaptures captures
+toSymbolicCaptures FocusedNoCaptures = SSeq.FocusedNoCaptures
+toSymbolicCaptures (FocusedCapture value rest) =
+  SSeq.FocusedCapture value (toSymbolicCaptures rest)
+
+fromSymbolicCaptures
+  :: SSeq.SymbolicFocusedCaptures captures
+  -> FocusedCaptures 'S captures
+fromSymbolicCaptures SSeq.FocusedNoCaptures = FocusedNoCaptures
+fromSymbolicCaptures (SSeq.FocusedCapture value rest) =
+  FocusedCapture value (fromSymbolicCaptures rest)
 
 class UnifiedPair (mode :: EvalModeTag) where
   pair ::

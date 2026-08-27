@@ -79,7 +79,9 @@ module Grisette.Internal.SymPrim.Prim.Internal.Term
     pevalSeqRangeTerm,
     pevalSeqTailTerm,
     pevalSeqLookupTerm,
+    pevalSeqLookupValueTerm,
     pevalSeqFoldTerm,
+    pevalFocusedSeqFoldTerm,
     pevalSeqFoldWithTerm,
     pevalPairTerm,
     pevalFirstTerm,
@@ -109,6 +111,11 @@ module Grisette.Internal.SymPrim.Prim.Internal.Term
     FPRoundingBinaryOp (..),
     FloatingUnaryOp (..),
     Term (..),
+    FocusedSeqFoldBinderSymbols (..),
+    FocusedSeqFoldCallback (..),
+    FocusedSeqFoldOperands (..),
+    mapFocusedSeqFoldCallbackTerm,
+    focusedSeqFoldCallbackTerm,
     defaultValueDynamic,
     pattern DynTerm,
     toCurThread,
@@ -191,7 +198,9 @@ module Grisette.Internal.SymPrim.Prim.Internal.Term
     seqRangeTerm,
     seqTailTerm,
     seqLookupTerm,
+    seqLookupValueTerm,
     seqFoldTerm,
+    focusedSeqFoldTerm,
     seqFoldWithTerm,
     pairTerm,
     firstTerm,
@@ -261,7 +270,9 @@ module Grisette.Internal.SymPrim.Prim.Internal.Term
     pattern SeqRangeTerm,
     pattern SeqTailTerm,
     pattern SeqLookupTerm,
+    pattern SeqLookupValueTerm,
     pattern SeqFoldTerm,
+    pattern FocusedSeqFoldTerm,
     pattern SeqFoldWithTerm,
     pattern PairTerm,
     pattern FirstTerm,
@@ -431,6 +442,7 @@ import Grisette.Internal.Core.Data.Class.IEEEFP
   ( fpIsNegativeZero,
     fpIsPositiveZero,
   )
+import Grisette.Internal.Core.Data.MemoUtils (weakStableMemo3)
 import Grisette.Internal.Core.Data.Symbol
   ( Identifier,
     Symbol (BoundSymbol, IndexedSymbol, SimpleSymbol),
@@ -1527,6 +1539,76 @@ instance NFData CachedInfo where
     rnf tid `seq` rnf digest `seq` rnf id `seq` rnf stableIdent
 
 -- | Internal representation for Grisette symbolic terms.
+-- | Capture binders used while constructing a focused callback.
+data FocusedSeqFoldBinderSymbols (captures :: [Type]) where
+  NoFocusedSeqFoldBinderSymbols :: FocusedSeqFoldBinderSymbols '[]
+  FocusedSeqFoldBinderSymbol ::
+    SupportedNonFuncPrim capture =>
+    !(TypedConstantSymbol capture) ->
+    !(FocusedSeqFoldBinderSymbols rest) ->
+    FocusedSeqFoldBinderSymbols (capture ': rest)
+
+-- | A closed curried focused callback. Capture binders are explicit and the
+-- final body is the ordinary @state --> element --> state@ fold step.
+data FocusedSeqFoldCallback (captures :: [Type]) state element where
+  FocusedSeqFoldCallbackBody ::
+    ( SupportedNonFuncPrim state,
+      SupportedNonFuncPrim element,
+      SupportedPrim (state --> element --> state)
+    ) =>
+    !(Term (state --> element --> state)) ->
+    FocusedSeqFoldCallback '[] state element
+  FocusedSeqFoldCallbackBind ::
+    ( SupportedNonFuncPrim capture,
+      SupportedNonFuncPrim state,
+      SupportedNonFuncPrim element,
+      SupportedPrim (state --> element --> state)
+    ) =>
+    !(TypedConstantSymbol capture) ->
+    !(FocusedSeqFoldCallback rest state element) ->
+    FocusedSeqFoldCallback (capture ': rest) state element
+
+-- | Ordered, heterogeneous operands for a focused callback.
+data FocusedSeqFoldOperands (captures :: [Type]) where
+  NoFocusedSeqFoldOperands :: FocusedSeqFoldOperands '[]
+  FocusedSeqFoldOperand ::
+    SupportedNonFuncPrim capture =>
+    !(Term capture) ->
+    !(FocusedSeqFoldOperands rest) ->
+    FocusedSeqFoldOperands (capture ': rest)
+
+focusedSeqFoldCallbackTerm ::
+  FocusedSeqFoldCallback captures state element ->
+  Term (state --> element --> state)
+focusedSeqFoldCallbackTerm (FocusedSeqFoldCallbackBody step) = step
+focusedSeqFoldCallbackTerm (FocusedSeqFoldCallbackBind _ rest) =
+  focusedSeqFoldCallbackTerm rest
+
+mapFocusedSeqFoldCallbackTerm ::
+  (Term (state --> element --> state) -> Term (state --> element --> state)) ->
+  FocusedSeqFoldCallback captures state element ->
+  FocusedSeqFoldCallback captures state element
+mapFocusedSeqFoldCallbackTerm f (FocusedSeqFoldCallbackBody step) =
+  FocusedSeqFoldCallbackBody (f step)
+mapFocusedSeqFoldCallbackTerm f (FocusedSeqFoldCallbackBind symbol rest) =
+  FocusedSeqFoldCallbackBind symbol (mapFocusedSeqFoldCallbackTerm f rest)
+
+instance Lift (FocusedSeqFoldBinderSymbols captures) where
+  liftTyped NoFocusedSeqFoldBinderSymbols = [||NoFocusedSeqFoldBinderSymbols||]
+  liftTyped (FocusedSeqFoldBinderSymbol symbol rest) =
+    [||FocusedSeqFoldBinderSymbol symbol rest||]
+
+instance Lift (FocusedSeqFoldCallback captures state element) where
+  liftTyped (FocusedSeqFoldCallbackBody step) =
+    [||FocusedSeqFoldCallbackBody step||]
+  liftTyped (FocusedSeqFoldCallbackBind symbol rest) =
+    [||FocusedSeqFoldCallbackBind symbol rest||]
+
+instance Lift (FocusedSeqFoldOperands captures) where
+  liftTyped NoFocusedSeqFoldOperands = [||NoFocusedSeqFoldOperands||]
+  liftTyped (FocusedSeqFoldOperand operand rest) =
+    [||FocusedSeqFoldOperand operand rest||]
+
 data Term t where
   ConTerm' ::
     (SupportedPrim t) =>
@@ -1898,6 +1980,16 @@ data Term t where
     !(Term [a]) ->
     !(Term Integer) ->
     Term (Bool, a)
+  -- | Value-only sequence lookup.  This intentionally has the element sort as
+  -- its result: column-major physical sequences must not manufacture a solver
+  -- pair merely to project the selected value back out of it.
+  SeqLookupValueTerm' ::
+    SupportedNonFuncPrim a =>
+    {-# UNPACK #-} !CachedInfo ->
+    !(Term a) ->
+    !(Term [a]) ->
+    !(Term Integer) ->
+    Term a
   SeqFoldTerm' ::
     ( SupportedNonFuncPrim state,
       SupportedNonFuncPrim element,
@@ -1905,6 +1997,17 @@ data Term t where
     ) =>
     {-# UNPACK #-} !CachedInfo ->
     !(Term (state --> element --> state)) ->
+    !(Term state) ->
+    !(Term [element]) ->
+    Term state
+  FocusedSeqFoldTerm' ::
+    ( SupportedNonFuncPrim state,
+      SupportedNonFuncPrim element,
+      SupportedPrim (state --> element --> state)
+    ) =>
+    {-# UNPACK #-} !CachedInfo ->
+    !(FocusedSeqFoldCallback captures state element) ->
+    !(FocusedSeqFoldOperands captures) ->
     !(Term state) ->
     !(Term [element]) ->
     Term state
@@ -3048,6 +3151,22 @@ pattern SeqLookupTerm seed sequence index <-
     SeqLookupTerm seed sequence index =
       pevalSeqLookupTerm seed sequence index
 
+-- | Pattern synonym for the focused value-only sequence lookup.
+pattern SeqLookupValueTerm ::
+  forall ret.
+  () =>
+  forall a.
+  (SupportedNonFuncPrim a, ret ~ a) =>
+  Term a ->
+  Term [a] ->
+  Term Integer ->
+  Term ret
+pattern SeqLookupValueTerm seed sequence index <-
+  SeqLookupValueTerm' _ seed sequence index
+  where
+    SeqLookupValueTerm seed sequence index =
+      pevalSeqLookupValueTerm seed sequence index
+
 pattern SeqFoldTerm ::
   forall ret.
   () =>
@@ -3064,6 +3183,26 @@ pattern SeqFoldTerm ::
 pattern SeqFoldTerm step initial sequence <- SeqFoldTerm' _ step initial sequence
   where
     SeqFoldTerm step initial sequence = pevalSeqFoldTerm step initial sequence
+
+pattern FocusedSeqFoldTerm ::
+  forall ret.
+  () =>
+  forall captures state element.
+  ( SupportedNonFuncPrim state,
+    SupportedNonFuncPrim element,
+    SupportedPrim (state --> element --> state),
+    ret ~ state
+  ) =>
+  FocusedSeqFoldCallback captures state element ->
+  FocusedSeqFoldOperands captures ->
+  Term state ->
+  Term [element] ->
+  Term ret
+pattern FocusedSeqFoldTerm callback operands initial sequence <-
+  FocusedSeqFoldTerm' _ callback operands initial sequence
+  where
+    FocusedSeqFoldTerm callback operands initial sequence =
+      pevalFocusedSeqFoldTerm callback operands initial sequence
 
 pattern SeqFoldWithTerm ::
   forall ret.
@@ -3180,7 +3319,9 @@ pattern SecondTerm value <- SecondTerm' _ value
   SeqRangeTerm,
   SeqTailTerm,
   SeqLookupTerm,
+  SeqLookupValueTerm,
   SeqFoldTerm,
+  FocusedSeqFoldTerm,
   SeqFoldWithTerm,
   PairTerm,
   FirstTerm,
@@ -3248,7 +3389,9 @@ pattern SecondTerm value <- SecondTerm' _ value
   SeqRangeTerm,
   SeqTailTerm,
   SeqLookupTerm,
+  SeqLookupValueTerm,
   SeqFoldTerm,
+  FocusedSeqFoldTerm,
   SeqFoldWithTerm,
   PairTerm,
   FirstTerm,
@@ -3316,7 +3459,9 @@ termInfo (SeqLengthTerm' i _) = i
 termInfo (SeqRangeTerm' i _) = i
 termInfo (SeqTailTerm' i _) = i
 termInfo (SeqLookupTerm' i _ _ _) = i
+termInfo (SeqLookupValueTerm' i _ _ _) = i
 termInfo (SeqFoldTerm' i _ _ _) = i
+termInfo (FocusedSeqFoldTerm' i _ _ _ _) = i
 termInfo (SeqFoldWithTerm' i _ _ _ _) = i
 termInfo (PairTerm' i _ _) = i
 termInfo (FirstTerm' i _) = i
@@ -3452,7 +3597,9 @@ introSupportedPrimConstraint0 SeqLengthTerm' {} x = x
 introSupportedPrimConstraint0 SeqRangeTerm' {} x = x
 introSupportedPrimConstraint0 SeqTailTerm' {} x = x
 introSupportedPrimConstraint0 SeqLookupTerm' {} x = x
+introSupportedPrimConstraint0 SeqLookupValueTerm' {} x = x
 introSupportedPrimConstraint0 SeqFoldTerm' {} x = x
+introSupportedPrimConstraint0 FocusedSeqFoldTerm' {} x = x
 introSupportedPrimConstraint0 SeqFoldWithTerm' {} x = x
 introSupportedPrimConstraint0 PairTerm' {} x = x
 introSupportedPrimConstraint0 FirstTerm' {} x = x
@@ -3539,6 +3686,14 @@ pformatTerm (SeqLookupTerm seed sequence index) =
     ++ " "
     ++ pformatTerm index
     ++ ")"
+pformatTerm (SeqLookupValueTerm seed sequence index) =
+  "(seq.lookup-value "
+    ++ pformatTerm seed
+    ++ " "
+    ++ pformatTerm sequence
+    ++ " "
+    ++ pformatTerm index
+    ++ ")"
 pformatTerm (SeqFoldTerm step initial sequence) =
   "(seq.foldl "
     ++ pformatTerm step
@@ -3547,6 +3702,31 @@ pformatTerm (SeqFoldTerm step initial sequence) =
     ++ " "
     ++ pformatTerm sequence
     ++ ")"
+pformatTerm (FocusedSeqFoldTerm callback operands initial sequence) =
+  "(seq.focused-foldl "
+    ++ pformatFocusedCallback callback
+    ++ " "
+    ++ pformatFocusedOperands operands
+    ++ " "
+    ++ pformatTerm initial
+    ++ " "
+    ++ pformatTerm sequence
+    ++ ")"
+  where
+    pformatFocusedCallback
+      :: FocusedSeqFoldCallback cs s e -> String
+    pformatFocusedCallback (FocusedSeqFoldCallbackBody step) = pformatTerm step
+    pformatFocusedCallback (FocusedSeqFoldCallbackBind symbol rest) =
+      "(\\(" ++ show symbol ++ ") -> " ++ pformatFocusedCallback rest ++ ")"
+    pformatFocusedOperands :: FocusedSeqFoldOperands cs -> String
+    pformatFocusedOperands NoFocusedSeqFoldOperands = "[]"
+    pformatFocusedOperands values = "[" ++ go values ++ "]"
+      where
+        go :: FocusedSeqFoldOperands remaining -> String
+        go NoFocusedSeqFoldOperands = ""
+        go (FocusedSeqFoldOperand value NoFocusedSeqFoldOperands) = pformatTerm value
+        go (FocusedSeqFoldOperand value rest@FocusedSeqFoldOperand {}) =
+          pformatTerm value ++ ", " ++ go rest
 pformatTerm (SeqFoldWithTerm step environment initial sequence) =
   "(seq.foldl-with "
     ++ pformatTerm step
@@ -3644,8 +3824,12 @@ instance Lift (Term t) where
   liftTyped (SeqTailTerm sequence) = [||seqTailTerm sequence||]
   liftTyped (SeqLookupTerm seed sequence index) =
     [||seqLookupTerm seed sequence index||]
+  liftTyped (SeqLookupValueTerm seed sequence index) =
+    [||seqLookupValueTerm seed sequence index||]
   liftTyped (SeqFoldTerm step initial sequence) =
     [||seqFoldTerm step initial sequence||]
+  liftTyped (FocusedSeqFoldTerm callback operands initial sequence) =
+    [||focusedSeqFoldTerm callback operands initial sequence||]
   liftTyped (SeqFoldWithTerm step environment initial sequence) =
     [||seqFoldWithTerm step environment initial sequence||]
   liftTyped (PairTerm firstValue secondValue) = [||pairTerm firstValue secondValue||]
@@ -4181,10 +4365,36 @@ instance Show (Term ty) where
     "SeqLookupTerm{tid=" ++ show (termThreadId t) ++ ", id=" ++ show (termId t)
       ++ ", seed=" ++ show seed ++ ", sequence=" ++ show sequence
       ++ ", index=" ++ show index ++ "}"
+  show t@(SeqLookupValueTerm seed sequence index) =
+    "SeqLookupValueTerm{tid=" ++ show (termThreadId t)
+      ++ ", id=" ++ show (termId t)
+      ++ ", seed=" ++ show seed ++ ", sequence=" ++ show sequence
+      ++ ", index=" ++ show index ++ "}"
   show t@(SeqFoldTerm step initial sequence) =
     "SeqFoldTerm{tid=" ++ show (termThreadId t) ++ ", id=" ++ show (termId t)
       ++ ", step=" ++ show step ++ ", initial=" ++ show initial
       ++ ", sequence=" ++ show sequence ++ "}"
+  show t@(FocusedSeqFoldTerm callback operands initial sequence) =
+    "FocusedSeqFoldTerm{tid=" ++ show (termThreadId t)
+      ++ ", id=" ++ show (termId t)
+      ++ ", callback=" ++ showFocusedCallback callback
+      ++ ", operands=" ++ showFocusedOperands operands
+      ++ ", initial=" ++ show initial ++ ", sequence=" ++ show sequence ++ "}"
+    where
+      showFocusedCallback
+        :: FocusedSeqFoldCallback cs s e -> String
+      showFocusedCallback (FocusedSeqFoldCallbackBody step) = show step
+      showFocusedCallback (FocusedSeqFoldCallbackBind symbol rest) =
+        "(" ++ show symbol ++ " --> " ++ showFocusedCallback rest ++ ")"
+      showFocusedOperands :: FocusedSeqFoldOperands cs -> String
+      showFocusedOperands NoFocusedSeqFoldOperands = "[]"
+      showFocusedOperands values = "[" ++ go values ++ "]"
+        where
+          go :: FocusedSeqFoldOperands remaining -> String
+          go NoFocusedSeqFoldOperands = ""
+          go (FocusedSeqFoldOperand value NoFocusedSeqFoldOperands) = show value
+          go (FocusedSeqFoldOperand value rest@FocusedSeqFoldOperand {}) =
+            show value ++ ", " ++ go rest
   show t@(SeqFoldWithTerm step environment initial sequence) =
     "SeqFoldWithTerm{tid=" ++ show (termThreadId t) ++ ", id=" ++ show (termId t)
       ++ ", step=" ++ show step ++ ", environment=" ++ show environment
@@ -4468,12 +4678,28 @@ data UTerm t where
     !(Term [a]) ->
     !(Term Integer) ->
     UTerm (Bool, a)
+  USeqLookupValueTerm ::
+    SupportedNonFuncPrim a =>
+    !(Term a) ->
+    !(Term [a]) ->
+    !(Term Integer) ->
+    UTerm a
   USeqFoldTerm ::
     ( SupportedNonFuncPrim state,
       SupportedNonFuncPrim element,
       SupportedPrim (state --> element --> state)
     ) =>
     !(Term (state --> element --> state)) ->
+    !(Term state) ->
+    !(Term [element]) ->
+    UTerm state
+  UFocusedSeqFoldTerm ::
+    ( SupportedNonFuncPrim state,
+      SupportedNonFuncPrim element,
+      SupportedPrim (state --> element --> state)
+    ) =>
+    !(FocusedSeqFoldCallback captures state element) ->
+    !(FocusedSeqFoldOperands captures) ->
     !(Term state) ->
     !(Term [element]) ->
     UTerm state
@@ -4804,9 +5030,53 @@ preHashSeqLookupDescription seed sequence index =
   fromIntegral
     (63 `hashWithSalt` seed `hashWithSalt` sequence `hashWithSalt` index)
 
+preHashSeqLookupValueDescription :: HashId -> HashId -> HashId -> Digest
+preHashSeqLookupValueDescription seed sequence index =
+  fromIntegral
+    (66 `hashWithSalt` seed `hashWithSalt` sequence `hashWithSalt` index)
+
 preHashSeqFoldDescription :: TypeHashId -> HashId -> HashId -> Digest
 preHashSeqFoldDescription step initial sequence =
   fromIntegral (57 `hashWithSalt` step `hashWithSalt` initial `hashWithSalt` sequence)
+
+data FocusedSeqFoldCallbackSummary = FocusedSeqFoldCallbackSummary
+  ![SomeTypedConstantSymbol]
+  !TypeHashId
+  deriving (Eq)
+
+focusedSeqFoldCallbackSummary ::
+  FocusedSeqFoldCallback captures state element ->
+  FocusedSeqFoldCallbackSummary
+focusedSeqFoldCallbackSummary = go []
+  where
+    go
+      :: [SomeTypedConstantSymbol]
+      -> FocusedSeqFoldCallback cs s e
+      -> FocusedSeqFoldCallbackSummary
+    go symbols (FocusedSeqFoldCallbackBody step) =
+      FocusedSeqFoldCallbackSummary (reverse symbols) (termTypeHashId step)
+    go symbols (FocusedSeqFoldCallbackBind symbol rest) =
+      go (someTypedSymbol symbol : symbols) rest
+
+focusedSeqFoldOperandTypeHashIds ::
+  FocusedSeqFoldOperands captures -> [TypeHashId]
+focusedSeqFoldOperandTypeHashIds NoFocusedSeqFoldOperands = []
+focusedSeqFoldOperandTypeHashIds (FocusedSeqFoldOperand operand rest) =
+  termTypeHashId operand : focusedSeqFoldOperandTypeHashIds rest
+
+preHashFocusedSeqFoldDescription ::
+  FocusedSeqFoldCallbackSummary -> [TypeHashId] -> HashId -> HashId -> Digest
+preHashFocusedSeqFoldDescription callback operands initial sequence =
+  fromIntegral
+    ( 67 `hashWithSalt` callback
+        `hashWithSalt` operands
+        `hashWithSalt` initial
+        `hashWithSalt` sequence
+    )
+
+instance Hashable FocusedSeqFoldCallbackSummary where
+  hashWithSalt salt (FocusedSeqFoldCallbackSummary symbols step) =
+    salt `hashWithSalt` symbols `hashWithSalt` step
 
 preHashSeqFoldWithDescription :: TypeHashId -> HashId -> HashId -> HashId -> Digest
 preHashSeqFoldWithDescription step environment initial sequence =
@@ -5124,9 +5394,22 @@ instance Interned (Term t) where
       {-# UNPACK #-} !HashId ->
       {-# UNPACK #-} !HashId ->
       Description (Term (Bool, a))
+    DSeqLookupValueTerm ::
+      {-# UNPACK #-} !Digest ->
+      {-# UNPACK #-} !HashId ->
+      {-# UNPACK #-} !HashId ->
+      {-# UNPACK #-} !HashId ->
+      Description (Term a)
     DSeqFoldTerm ::
       {-# UNPACK #-} !Digest ->
       {-# UNPACK #-} !TypeHashId ->
+      {-# UNPACK #-} !HashId ->
+      {-# UNPACK #-} !HashId ->
+      Description (Term state)
+    DFocusedSeqFoldTerm ::
+      {-# UNPACK #-} !Digest ->
+      !FocusedSeqFoldCallbackSummary ->
+      ![TypeHashId] ->
       {-# UNPACK #-} !HashId ->
       {-# UNPACK #-} !HashId ->
       Description (Term state)
@@ -5520,6 +5803,19 @@ instance Interned (Term t) where
           seedHashId
           sequenceHashId
           indexHashId
+  describe (USeqLookupValueTerm seed sequence index) =
+    let seedHashId = termHashId seed
+        sequenceHashId = termHashId sequence
+        indexHashId = termHashId index
+     in DSeqLookupValueTerm
+          ( preHashSeqLookupValueDescription
+              seedHashId
+              sequenceHashId
+              indexHashId
+          )
+          seedHashId
+          sequenceHashId
+          indexHashId
   describe (USeqFoldTerm step initial sequence) =
     let stepHashId = termTypeHashId step
         initialHashId = termHashId initial
@@ -5527,6 +5823,18 @@ instance Interned (Term t) where
      in DSeqFoldTerm
           (preHashSeqFoldDescription stepHashId initialHashId sequenceHashId)
           stepHashId
+          initialHashId
+          sequenceHashId
+  describe (UFocusedSeqFoldTerm callback operands initial sequence) =
+    let callbackSummary = focusedSeqFoldCallbackSummary callback
+        operandIds = focusedSeqFoldOperandTypeHashIds operands
+        initialHashId = termHashId initial
+        sequenceHashId = termHashId sequence
+     in DFocusedSeqFoldTerm
+          (preHashFocusedSeqFoldDescription
+            callbackSummary operandIds initialHashId sequenceHashId)
+          callbackSummary
+          operandIds
           initialHashId
           sequenceHashId
   describe (USeqFoldWithTerm step environment initial sequence) =
@@ -5633,8 +5941,12 @@ instance Interned (Term t) where
       go (USeqTailTerm sequence) = SeqTailTerm' info sequence
       go (USeqLookupTerm seed sequence index) =
         SeqLookupTerm' info seed sequence index
+      go (USeqLookupValueTerm seed sequence index) =
+        SeqLookupValueTerm' info seed sequence index
       go (USeqFoldTerm step initial sequence) =
         SeqFoldTerm' info step initial sequence
+      go (UFocusedSeqFoldTerm callback operands initial sequence) =
+        FocusedSeqFoldTerm' info callback operands initial sequence
       go (USeqFoldWithTerm step environment initial sequence) =
         SeqFoldWithTerm' info step environment initial sequence
       go (UPairTerm firstValue secondValue) = PairTerm' info firstValue secondValue
@@ -5704,7 +6016,9 @@ instance Interned (Term t) where
   descriptionDigest (DSeqRangeTerm h _) = h
   descriptionDigest (DSeqTailTerm h _) = h
   descriptionDigest (DSeqLookupTerm h _ _ _) = h
+  descriptionDigest (DSeqLookupValueTerm h _ _ _) = h
   descriptionDigest (DSeqFoldTerm h _ _ _) = h
+  descriptionDigest (DFocusedSeqFoldTerm h _ _ _ _) = h
   descriptionDigest (DSeqFoldWithTerm h _ _ _ _) = h
   descriptionDigest (DPairTerm h _ _) = h
   descriptionDigest (DFirstTerm h _) = h
@@ -5961,8 +6275,16 @@ instance Eq (Description (Term t)) where
       eqHashId lseed rseed
         && eqHashId lsequence rsequence
         && eqHashId lindex rindex
+  DSeqLookupValueTerm _ lseed lsequence lindex
+    == DSeqLookupValueTerm _ rseed rsequence rindex =
+      eqHashId lseed rseed
+        && eqHashId lsequence rsequence
+        && eqHashId lindex rindex
   DSeqFoldTerm _ lf li ls == DSeqFoldTerm _ rf ri rs =
     lf == rf && eqHashId li ri && eqHashId ls rs
+  DFocusedSeqFoldTerm _ lc lo li ls
+    == DFocusedSeqFoldTerm _ rc ro ri rs =
+      lc == rc && lo == ro && eqHashId li ri && eqHashId ls rs
   DSeqFoldWithTerm _ lf le li ls == DSeqFoldWithTerm _ rf re ri rs =
     lf == rf && eqHashId le re && eqHashId li ri && eqHashId ls rs
   DPairTerm _ lf ls == DPairTerm _ rf rs = eqHashId lf rf && eqHashId ls rs
@@ -6198,8 +6520,33 @@ fullReconstructTermUncached memo (SeqTailTerm sequence) =
   fullReconstructTerm1 memo curThreadSeqTailTerm sequence
 fullReconstructTermUncached memo (SeqLookupTerm seed sequence index) =
   fullReconstructTerm3 memo curThreadSeqLookupTerm seed sequence index
+fullReconstructTermUncached memo (SeqLookupValueTerm seed sequence index) =
+  fullReconstructTerm3 memo curThreadSeqLookupValueTerm seed sequence index
 fullReconstructTermUncached memo (SeqFoldTerm step initial sequence) =
   fullReconstructTerm3 memo curThreadSeqFoldTerm step initial sequence
+fullReconstructTermUncached memo
+    (FocusedSeqFoldTerm callback operands initial sequence) = do
+  callback' <- reconstructFocusedCallback callback
+  operands' <- reconstructFocusedOperands operands
+  initial' <- fullReconstructTermWithMemo memo initial
+  sequence' <- fullReconstructTermWithMemo memo sequence
+  curThreadFocusedSeqFoldTerm callback' operands' initial' sequence'
+  where
+    reconstructFocusedCallback
+      :: FocusedSeqFoldCallback cs s e
+      -> IO (FocusedSeqFoldCallback cs s e)
+    reconstructFocusedCallback (FocusedSeqFoldCallbackBody step) =
+      FocusedSeqFoldCallbackBody <$> fullReconstructTermWithMemo memo step
+    reconstructFocusedCallback (FocusedSeqFoldCallbackBind symbol rest) =
+      FocusedSeqFoldCallbackBind symbol <$> reconstructFocusedCallback rest
+    reconstructFocusedOperands
+      :: FocusedSeqFoldOperands cs -> IO (FocusedSeqFoldOperands cs)
+    reconstructFocusedOperands NoFocusedSeqFoldOperands =
+      pure NoFocusedSeqFoldOperands
+    reconstructFocusedOperands (FocusedSeqFoldOperand operand rest) =
+      FocusedSeqFoldOperand
+        <$> fullReconstructTermWithMemo memo operand
+        <*> reconstructFocusedOperands rest
 fullReconstructTermUncached memo (SeqFoldWithTerm step environment initial sequence) = do
   step' <- fullReconstructTermWithMemo memo step
   environment' <- fullReconstructTermWithMemo memo environment
@@ -6707,6 +7054,15 @@ curThreadSeqLookupTerm ::
 curThreadSeqLookupTerm seed sequence index =
   intern $ USeqLookupTerm seed sequence index
 
+curThreadSeqLookupValueTerm ::
+  SupportedNonFuncPrim a =>
+  Term a ->
+  Term [a] ->
+  Term Integer ->
+  IO (Term a)
+curThreadSeqLookupValueTerm seed sequence index =
+  intern $ USeqLookupValueTerm seed sequence index
+
 curThreadSeqFoldTerm ::
   ( SupportedNonFuncPrim state,
     SupportedNonFuncPrim element,
@@ -6717,6 +7073,19 @@ curThreadSeqFoldTerm ::
   Term [element] ->
   IO (Term state)
 curThreadSeqFoldTerm step initial sequence = intern $ USeqFoldTerm step initial sequence
+
+curThreadFocusedSeqFoldTerm ::
+  ( SupportedNonFuncPrim state,
+    SupportedNonFuncPrim element,
+    SupportedPrim (state --> element --> state)
+  ) =>
+  FocusedSeqFoldCallback captures state element ->
+  FocusedSeqFoldOperands captures ->
+  Term state ->
+  Term [element] ->
+  IO (Term state)
+curThreadFocusedSeqFoldTerm callback operands initial sequence =
+  intern $ UFocusedSeqFoldTerm callback operands initial sequence
 
 curThreadSeqFoldWithTerm ::
   ( SupportedNonFuncPrim environment,
@@ -7373,6 +7742,15 @@ seqLookupTerm ::
 seqLookupTerm = unsafeInCurThread3 curThreadSeqLookupTerm
 {-# NOINLINE seqLookupTerm #-}
 
+seqLookupValueTerm ::
+  SupportedNonFuncPrim a =>
+  Term a ->
+  Term [a] ->
+  Term Integer ->
+  Term a
+seqLookupValueTerm = unsafeInCurThread3 curThreadSeqLookupValueTerm
+{-# NOINLINE seqLookupValueTerm #-}
+
 seqFoldTerm ::
   ( SupportedNonFuncPrim state,
     SupportedNonFuncPrim element,
@@ -7384,6 +7762,37 @@ seqFoldTerm ::
   Term state
 seqFoldTerm = unsafeInCurThread3 curThreadSeqFoldTerm
 {-# NOINLINE seqFoldTerm #-}
+
+focusedSeqFoldTerm ::
+  ( SupportedNonFuncPrim state,
+    SupportedNonFuncPrim element,
+    SupportedPrim (state --> element --> state)
+  ) =>
+  FocusedSeqFoldCallback captures state element ->
+  FocusedSeqFoldOperands captures ->
+  Term state ->
+  Term [element] ->
+  Term state
+focusedSeqFoldTerm callback operands initial sequence = unsafePerformIO $ do
+  callback' <- toCurCallback callback
+  operands' <- toCurOperands operands
+  initial' <- toCurThread initial
+  sequence' <- toCurThread sequence
+  curThreadFocusedSeqFoldTerm callback' operands' initial' sequence'
+  where
+    toCurCallback
+      :: FocusedSeqFoldCallback cs s e
+      -> IO (FocusedSeqFoldCallback cs s e)
+    toCurCallback (FocusedSeqFoldCallbackBody step) =
+      FocusedSeqFoldCallbackBody <$> toCurThread step
+    toCurCallback (FocusedSeqFoldCallbackBind symbol rest) =
+      FocusedSeqFoldCallbackBind symbol <$> toCurCallback rest
+    toCurOperands
+      :: FocusedSeqFoldOperands cs -> IO (FocusedSeqFoldOperands cs)
+    toCurOperands NoFocusedSeqFoldOperands = pure NoFocusedSeqFoldOperands
+    toCurOperands (FocusedSeqFoldOperand operand rest) =
+      FocusedSeqFoldOperand <$> toCurThread operand <*> toCurOperands rest
+{-# NOINLINE focusedSeqFoldTerm #-}
 
 seqFoldWithTerm ::
   ( SupportedNonFuncPrim environment,
@@ -8391,6 +8800,69 @@ instance SupportedNonFuncPrim Integer where
   withNonFuncPrim r = r
   sbvToCon = id
 
+-- Integer evaluator instances live with the evaluator classes.  Term-level
+-- sequence normalization needs these dictionaries while this module is being
+-- compiled, so keeping them in downstream orphan-instance modules creates an
+-- import-cycle boundary that cannot discharge the constraints.
+instance PEvalNumTerm Integer where
+  pevalAddNumTerm = pevalDefaultAddNumTerm
+  pevalNegNumTerm = pevalDefaultNegNumTerm
+  pevalMulNumTerm = pevalDefaultMulNumTerm
+  pevalAbsNumTerm = unaryUnfoldOnce doPevalNoOverflowAbsNumTerm absNumTerm
+  pevalSignumNumTerm =
+    unaryUnfoldOnce doPevalNoOverflowSignumNumTerm signumNumTerm
+  withSbvNumTermConstraint r = r
+
+instance PEvalOrdTerm Integer where
+  pevalLtOrdTerm = binaryUnfoldOnce doPevalLtOrdTerm ltOrdTerm
+    where
+      doPevalLtOrdTerm l r =
+        msum
+          [ doPevalIntegerLtOrdTerm l r,
+            case (l, r) of
+              (ConTerm l, AddNumTerm (ConTerm j) k) ->
+                Just $ pevalLtOrdTerm (conTerm $ l - j) k
+              (AddNumTerm (ConTerm i) j, ConTerm k) ->
+                Just $ pevalLtOrdTerm j (conTerm $ k - i)
+              (AddNumTerm (ConTerm j) k, l) ->
+                Just $
+                  pevalLtOrdTerm
+                    (conTerm j)
+                    (pevalSubNumTerm l k)
+              (j, AddNumTerm (ConTerm k) l) ->
+                Just $ pevalLtOrdTerm (conTerm $ -k) (pevalSubNumTerm l j)
+              (l, ConTerm r) ->
+                Just $ pevalLtOrdTerm (conTerm $ -r) (pevalNegNumTerm l)
+              _ -> Nothing
+          ]
+  pevalLeOrdTerm = binaryUnfoldOnce doPevalLeOrdTerm leOrdTerm
+    where
+      doPevalLeOrdTerm l r =
+        msum
+          [ doPevalIntegerLeOrdTerm l r,
+            case (l, r) of
+              (ConTerm l, AddNumTerm (ConTerm j) k) ->
+                Just $ pevalLeOrdTerm (conTerm $ l - j) k
+              (AddNumTerm (ConTerm i) j, ConTerm k) ->
+                Just $ pevalLeOrdTerm j (conTerm $ k - i)
+              (AddNumTerm (ConTerm j) k, l) ->
+                Just $ pevalLeOrdTerm (conTerm j) (pevalSubNumTerm l k)
+              (j, AddNumTerm (ConTerm k) l) ->
+                Just $ pevalLeOrdTerm (conTerm $ -k) (pevalSubNumTerm l j)
+              (l, ConTerm r) ->
+                Just $ pevalLeOrdTerm (conTerm $ -r) (pevalNegNumTerm l)
+              _ -> Nothing
+          ]
+  withSbvOrdTermConstraint r = r
+
+doPevalIntegerLtOrdTerm :: Term Integer -> Term Integer -> Maybe (Term Bool)
+doPevalIntegerLtOrdTerm (ConTerm a) (ConTerm b) = Just $ conTerm $ a < b
+doPevalIntegerLtOrdTerm _ _ = Nothing
+
+doPevalIntegerLeOrdTerm :: Term Integer -> Term Integer -> Maybe (Term Bool)
+doPevalIntegerLeOrdTerm (ConTerm a) (ConTerm b) = Just $ conTerm $ a <= b
+doPevalIntegerLeOrdTerm _ _ = Nothing
+
 -- Uninterpreted (abstract) sort, named at the type level by @n@. Lowers to the
 -- SBV empty-ADT kind @KADT name [] []@ (see
 -- 'Grisette.Internal.SymPrim.Uninterp.Uninterp'). It supports only fresh-symbol
@@ -9167,6 +9639,77 @@ pevalSeqLookupTerm seed sequence (ConTerm index)
 pevalSeqLookupTerm seed sequence index =
   seqLookupTerm seed sequence index
 
+-- | Focused sequence lookup whose result is the element sort itself.  It is
+-- intentionally separate from 'pevalSeqLookupTerm': projecting the second
+-- component of that operation leaves an opaque solver product in the term DAG
+-- and in the SBV lowering path.  Column-major carriers already own presence via
+-- one authoritative length, so manufacturing that product is both redundant
+-- and asymptotically harmful.
+--
+-- The structural rules preserve the existing total lookup semantics: negative
+-- and out-of-range indices return the exact seed.  Choice is distributed only
+-- when the sequence itself is an ITE; this is an opt-in eliminator, not a global
+-- sequence rewrite.  The weak identity memo shares repeated lane reads without
+-- keeping reclaimed terms alive.
+pevalSeqLookupValueTerm ::
+  SupportedNonFuncPrim a =>
+  Term a ->
+  Term [a] ->
+  Term Integer ->
+  Term a
+pevalSeqLookupValueTerm = weakStableMemo3 pevalSeqLookupValueTermUncached
+{-# NOINLINE pevalSeqLookupValueTerm #-}
+
+pevalSeqLookupValueTermUncached ::
+  SupportedNonFuncPrim a =>
+  Term a ->
+  Term [a] ->
+  Term Integer ->
+  Term a
+pevalSeqLookupValueTermUncached seed sequence index = case index of
+  ConTerm concreteIndex
+    | concreteIndex < 0 -> seed
+    | ConTerm values <- sequence ->
+        maybe seed conTerm (atIndex values concreteIndex)
+    | otherwise -> structural
+  _ -> structural
+  where
+    zero = conTerm (0 :: Integer)
+    one = conTerm (1 :: Integer)
+    negative = pevalLtOrdTerm index zero
+
+    structural = case sequence of
+      ConTerm [] -> seed
+      ITETerm condition left right ->
+        pevalITETerm
+          condition
+          (pevalSeqLookupValueTerm seed left index)
+          (pevalSeqLookupValueTerm seed right index)
+      SeqConsTerm element rest ->
+        pevalITETerm negative seed $
+          pevalITETerm
+            (pevalEqTerm index zero)
+            element
+            (pevalSeqLookupValueTerm
+              seed rest (pevalSubNumTerm index one))
+      SeqAppendTerm left right ->
+        let leftLength = pevalSeqLengthTerm left
+         in pevalITETerm negative seed $
+              pevalITETerm
+                (pevalLtOrdTerm index leftLength)
+                (pevalSeqLookupValueTerm seed left index)
+                (pevalSeqLookupValueTerm
+                  seed right (pevalSubNumTerm index leftLength))
+      SeqTailTerm source ->
+        pevalITETerm negative seed $
+          pevalSeqLookupValueTerm
+            seed source (pevalAddNumTerm index one)
+      _ -> seqLookupValueTerm seed sequence index
+
+    atIndex [] _ = Nothing
+    atIndex (value : _) 0 = Just value
+    atIndex (_ : rest) current = atIndex rest (current - 1)
+
 pevalSeqFoldTerm ::
   ( SupportedNonFuncPrim state,
     SupportedNonFuncPrim element,
@@ -9177,6 +9720,24 @@ pevalSeqFoldTerm ::
   Term [element] ->
   Term state
 pevalSeqFoldTerm step initial sequence = seqFoldTerm step initial sequence
+
+pevalFocusedSeqFoldTerm ::
+  ( SupportedNonFuncPrim state,
+    SupportedNonFuncPrim element,
+    SupportedPrim (state --> element --> state)
+  ) =>
+  FocusedSeqFoldCallback captures state element ->
+  FocusedSeqFoldOperands captures ->
+  Term state ->
+  Term [element] ->
+  Term state
+pevalFocusedSeqFoldTerm
+    (FocusedSeqFoldCallbackBody step)
+    NoFocusedSeqFoldOperands
+    initial
+    sequence = pevalSeqFoldTerm step initial sequence
+pevalFocusedSeqFoldTerm callback operands initial sequence =
+  focusedSeqFoldTerm callback operands initial sequence
 
 pevalSeqFoldWithTerm ::
   ( SupportedNonFuncPrim environment,

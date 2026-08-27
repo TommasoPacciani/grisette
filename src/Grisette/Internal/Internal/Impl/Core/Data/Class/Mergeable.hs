@@ -28,7 +28,21 @@
 -- Maintainer  :   siruilu@cs.washington.edu
 -- Stability   :   Experimental
 -- Portability :   GHC only
-module Grisette.Internal.Internal.Impl.Core.Data.Class.Mergeable () where
+module Grisette.Internal.Internal.Impl.Core.Data.Class.Mergeable
+  ( -- * Internal structural law witnesses (not re-exported by the public facade)
+    NominalWrapper (NominalWrapper),
+    ReaderTWrapper (ReaderTWrapper),
+    IdentityTWrapper (IdentityTWrapper),
+    ContTWrapper (ContTWrapper),
+    LazyRWSTWrapper (LazyRWSTWrapper),
+    StrictRWSTWrapper (StrictRWSTWrapper),
+    ComposeWrapper (ComposeWrapper),
+    EndoWrapper (EndoWrapper),
+    ListFamily (..),
+    EitherFamily (..),
+    MaybeFamily (..),
+  )
+where
 
 import Control.Exception (ArithException)
 import Control.Monad.Cont (ContT (ContT))
@@ -59,16 +73,17 @@ import qualified Data.Text as T
 import Data.Typeable (Proxy, Typeable)
 import Data.Word (Word16, Word32, Word64, Word8)
 import GHC.TypeNats (KnownNat, type (+), type (<=))
+import Numeric.Natural (Natural)
 import Generics.Deriving
   ( Default (Default),
     Default1 (Default1),
-    K1 (K1),
-    M1 (M1),
-    Par1 (Par1),
-    Rec1 (Rec1),
+    K1,
+    M1,
+    Par1,
+    Rec1,
     U1,
     V1,
-    (:.:) (Comp1),
+    type (:.:),
     type (:*:),
     type (:+:),
   )
@@ -83,9 +98,12 @@ import Grisette.Internal.Internal.Decl.Core.Data.Class.Mergeable
     Mergeable1 (liftRootStrategy),
     Mergeable2 (liftRootStrategy2),
     Mergeable3 (liftRootStrategy3),
-    MergingStrategy (NoStrategy, SimpleStrategy, SortedStrategy),
-    StrategyList (StrategyList),
-    buildStrategyList,
+    MergingStrategy (NoStrategy, SimpleStrategy, SortedStrategy, StructuralStrategy),
+    StructuralCase (StructuralCase),
+    StructuralFamily (compareStructural, compareStructuralShape),
+    StructuralOrdering (StructuralEQ, StructuralGT, StructuralLT),
+    StructuralWrapper (unwrapValue, wrapValue),
+    pairStrategy,
     rootStrategy1,
     wrapStrategy,
   )
@@ -125,7 +143,104 @@ import Grisette.Internal.SymPrim.SymInteger (SymInteger)
 import Grisette.Internal.SymPrim.SymTabularFun (type (=~>))
 import Grisette.Internal.SymPrim.TabularFun (type (=->))
 import Grisette.Internal.TH.Derivation.Derive (derive)
-import Unsafe.Coerce (unsafeCoerce)
+
+data NominalWrapper target source where
+  NominalWrapper :: NominalWrapper (Nominal domain value) value
+
+instance StructuralFamily NominalWrapper where
+  compareStructural NominalWrapper NominalWrapper = StructuralEQ
+  compareStructuralShape NominalWrapper NominalWrapper = EQ
+
+instance StructuralWrapper NominalWrapper where
+  wrapValue NominalWrapper = Nominal
+  unwrapValue NominalWrapper = unNominal
+
+data ReaderTWrapper target source where
+  ReaderTWrapper ::
+    ReaderTWrapper (ReaderT environment monad value) (environment -> monad value)
+
+instance StructuralFamily ReaderTWrapper where
+  compareStructural ReaderTWrapper ReaderTWrapper = StructuralEQ
+  compareStructuralShape ReaderTWrapper ReaderTWrapper = EQ
+
+instance StructuralWrapper ReaderTWrapper where
+  wrapValue ReaderTWrapper = ReaderT
+  unwrapValue ReaderTWrapper = runReaderT
+
+data IdentityTWrapper target source where
+  IdentityTWrapper :: IdentityTWrapper (IdentityT monad value) (monad value)
+
+instance StructuralFamily IdentityTWrapper where
+  compareStructural IdentityTWrapper IdentityTWrapper = StructuralEQ
+  compareStructuralShape IdentityTWrapper IdentityTWrapper = EQ
+
+instance StructuralWrapper IdentityTWrapper where
+  wrapValue IdentityTWrapper = IdentityT
+  unwrapValue IdentityTWrapper = runIdentityT
+
+data ContTWrapper target source where
+  ContTWrapper ::
+    ContTWrapper
+      (ContT result monad value)
+      ((value -> monad result) -> monad result)
+
+instance StructuralFamily ContTWrapper where
+  compareStructural ContTWrapper ContTWrapper = StructuralEQ
+  compareStructuralShape ContTWrapper ContTWrapper = EQ
+
+instance StructuralWrapper ContTWrapper where
+  wrapValue ContTWrapper = ContT
+  unwrapValue ContTWrapper (ContT value) = value
+
+data LazyRWSTWrapper target source where
+  LazyRWSTWrapper ::
+    LazyRWSTWrapper
+      (RWSLazy.RWST environment writer state monad value)
+      (environment -> state -> monad (value, state, writer))
+
+instance StructuralFamily LazyRWSTWrapper where
+  compareStructural LazyRWSTWrapper LazyRWSTWrapper = StructuralEQ
+  compareStructuralShape LazyRWSTWrapper LazyRWSTWrapper = EQ
+
+instance StructuralWrapper LazyRWSTWrapper where
+  wrapValue LazyRWSTWrapper = RWSLazy.RWST
+  unwrapValue LazyRWSTWrapper (RWSLazy.RWST value) = value
+
+data StrictRWSTWrapper target source where
+  StrictRWSTWrapper ::
+    StrictRWSTWrapper
+      (RWSStrict.RWST environment writer state monad value)
+      (environment -> state -> monad (value, state, writer))
+
+instance StructuralFamily StrictRWSTWrapper where
+  compareStructural StrictRWSTWrapper StrictRWSTWrapper = StructuralEQ
+  compareStructuralShape StrictRWSTWrapper StrictRWSTWrapper = EQ
+
+instance StructuralWrapper StrictRWSTWrapper where
+  wrapValue StrictRWSTWrapper = RWSStrict.RWST
+  unwrapValue StrictRWSTWrapper (RWSStrict.RWST value) = value
+
+data ComposeWrapper target source where
+  ComposeWrapper :: ComposeWrapper (Compose outer inner value) (outer (inner value))
+
+instance StructuralFamily ComposeWrapper where
+  compareStructural ComposeWrapper ComposeWrapper = StructuralEQ
+  compareStructuralShape ComposeWrapper ComposeWrapper = EQ
+
+instance StructuralWrapper ComposeWrapper where
+  wrapValue ComposeWrapper = Compose
+  unwrapValue ComposeWrapper = getCompose
+
+data EndoWrapper target source where
+  EndoWrapper :: EndoWrapper (Endo value) (value -> value)
+
+instance StructuralFamily EndoWrapper where
+  compareStructural EndoWrapper EndoWrapper = StructuralEQ
+  compareStructuralShape EndoWrapper EndoWrapper = EQ
+
+instance StructuralWrapper EndoWrapper where
+  wrapValue EndoWrapper = Endo
+  unwrapValue EndoWrapper = appEndo
 
 #define CONCRETE_ORD_MERGEABLE(type) \
 instance Mergeable type where \
@@ -142,6 +257,7 @@ instance (KnownNat n, 1 <= n) => Mergeable (type n) where \
 #if 1
 CONCRETE_ORD_MERGEABLE(Bool)
 CONCRETE_ORD_MERGEABLE(Integer)
+CONCRETE_ORD_MERGEABLE(Natural)
 CONCRETE_ORD_MERGEABLE(Char)
 CONCRETE_ORD_MERGEABLE(Int)
 CONCRETE_ORD_MERGEABLE(Int8)
@@ -231,7 +347,7 @@ instance
   rootStrategy = SimpleStrategy symIte
 
 instance (Mergeable value) => Mergeable (Nominal domain value) where
-  rootStrategy = wrapStrategy (rootStrategy @value) Nominal unNominal
+  rootStrategy = wrapStrategy NominalWrapper (rootStrategy @value)
 
 instance
   ( SupportedNonFuncPrim ca,
@@ -274,59 +390,158 @@ instance Mergeable2 ((->)) where
     _ -> NoStrategy
   {-# INLINE liftRootStrategy2 #-}
 
--- List
+data ListFamily value payload where
+  EmptyListFamily :: ListFamily [a] ()
+  ConsListFamily :: ListFamily [a] (a, [a])
+
+instance StructuralFamily ListFamily where
+  compareStructural EmptyListFamily EmptyListFamily = StructuralEQ
+  compareStructural EmptyListFamily ConsListFamily = StructuralLT
+  compareStructural ConsListFamily EmptyListFamily = StructuralGT
+  compareStructural ConsListFamily ConsListFamily = StructuralEQ
+
+  compareStructuralShape EmptyListFamily EmptyListFamily = EQ
+  compareStructuralShape EmptyListFamily ConsListFamily = LT
+  compareStructuralShape ConsListFamily EmptyListFamily = GT
+  compareStructuralShape ConsListFamily ConsListFamily = EQ
+
+listStrategy :: forall a. MergingStrategy a -> MergingStrategy [a]
+listStrategy elementStrategy =
+  StructuralStrategy splitList payloadStrategy injectList
+  where
+    splitList :: [a] -> StructuralCase ListFamily [a]
+    splitList [] = StructuralCase EmptyListFamily ()
+    splitList (value : values) =
+      StructuralCase ConsListFamily (value, values)
+
+    payloadStrategy ::
+      forall payload. ListFamily [a] payload -> MergingStrategy payload
+    payloadStrategy EmptyListFamily =
+      SimpleStrategy $ \_ selected _ -> selected
+    payloadStrategy ConsListFamily =
+      pairStrategy elementStrategy (listStrategy elementStrategy)
+
+    injectList :: forall payload. ListFamily [a] payload -> payload -> [a]
+    injectList EmptyListFamily () = []
+    injectList ConsListFamily (value, values) = value : values
+{-# INLINE listStrategy #-}
 
 instance (Mergeable a) => Mergeable [a] where
-  rootStrategy = case rootStrategy :: MergingStrategy a of
-    SimpleStrategy m ->
-      SortedStrategy length $ \_ ->
-        SimpleStrategy $ \cond -> zipWith (m cond)
-    NoStrategy ->
-      SortedStrategy length $ const NoStrategy
-    _ -> SortedStrategy length $ \_ ->
-      SortedStrategy (buildStrategyList rootStrategy) $
-        \(StrategyList _ strategies) ->
-          let s :: [MergingStrategy a] = unsafeCoerce strategies
-              allSimple = all (\case SimpleStrategy _ -> True; _ -> False) s
-           in if allSimple
-                then SimpleStrategy $ \cond l r ->
-                  ( \case
-                      (SimpleStrategy f, l1, r1) -> f cond l1 r1
-                      _ -> error "impossible"
-                  )
-                    <$> zip3 s l r
-                else NoStrategy
+  rootStrategy = listStrategy rootStrategy
   {-# INLINE rootStrategy #-}
 
 instance Mergeable1 [] where
-  liftRootStrategy (ms :: MergingStrategy a) = case ms of
-    SimpleStrategy m ->
-      SortedStrategy length $ \_ ->
-        SimpleStrategy $ \cond -> zipWith (m cond)
-    NoStrategy ->
-      SortedStrategy length $ const NoStrategy
-    _ -> SortedStrategy length $ \_ ->
-      SortedStrategy (buildStrategyList ms) $ \(StrategyList _ strategies) ->
-        let s :: [MergingStrategy a] = unsafeCoerce strategies
-            allSimple = all (\case SimpleStrategy _ -> True; _ -> False) s
-         in if allSimple
-              then SimpleStrategy $ \cond l r ->
-                ( \case
-                    (SimpleStrategy f, l1, r1) -> f cond l1 r1
-                    _ -> error "impossible"
-                )
-                  <$> zip3 s l r
-              else NoStrategy
+  liftRootStrategy = listStrategy
   {-# INLINE liftRootStrategy #-}
 
 instance Mergeable () where
   rootStrategy = SimpleStrategy $ \_ t _ -> t
 
-derive
-  [ ''Either,
-    ''(,)
-  ]
-  [''Mergeable, ''Mergeable1, ''Mergeable2]
+data EitherFamily value payload where
+  LeftEitherFamily :: EitherFamily (Either a b) a
+  RightEitherFamily :: EitherFamily (Either a b) b
+
+instance StructuralFamily EitherFamily where
+  compareStructural LeftEitherFamily LeftEitherFamily = StructuralEQ
+  compareStructural LeftEitherFamily RightEitherFamily = StructuralLT
+  compareStructural RightEitherFamily LeftEitherFamily = StructuralGT
+  compareStructural RightEitherFamily RightEitherFamily = StructuralEQ
+
+  compareStructuralShape LeftEitherFamily LeftEitherFamily = EQ
+  compareStructuralShape LeftEitherFamily RightEitherFamily = LT
+  compareStructuralShape RightEitherFamily LeftEitherFamily = GT
+  compareStructuralShape RightEitherFamily RightEitherFamily = EQ
+
+eitherStrategy ::
+  forall a b.
+  MergingStrategy a ->
+  MergingStrategy b ->
+  MergingStrategy (Either a b)
+eitherStrategy leftStrategy rightStrategy =
+  StructuralStrategy splitEither payloadStrategy injectEither
+  where
+    splitEither :: Either a b -> StructuralCase EitherFamily (Either a b)
+    splitEither (Left value) = StructuralCase LeftEitherFamily value
+    splitEither (Right value) = StructuralCase RightEitherFamily value
+
+    payloadStrategy ::
+      forall payload.
+      EitherFamily (Either a b) payload -> MergingStrategy payload
+    payloadStrategy LeftEitherFamily = leftStrategy
+    payloadStrategy RightEitherFamily = rightStrategy
+
+    injectEither ::
+      forall payload. EitherFamily (Either a b) payload -> payload -> Either a b
+    injectEither LeftEitherFamily = Left
+    injectEither RightEitherFamily = Right
+{-# INLINE eitherStrategy #-}
+
+instance (Mergeable a, Mergeable b) => Mergeable (Either a b) where
+  rootStrategy = eitherStrategy rootStrategy rootStrategy
+  {-# INLINE rootStrategy #-}
+
+instance (Mergeable a) => Mergeable1 (Either a) where
+  liftRootStrategy = eitherStrategy rootStrategy
+  {-# INLINE liftRootStrategy #-}
+
+instance Mergeable2 Either where
+  liftRootStrategy2 = eitherStrategy
+  {-# INLINE liftRootStrategy2 #-}
+
+data MaybeFamily value payload where
+  NothingMaybeFamily :: MaybeFamily (Maybe a) ()
+  JustMaybeFamily :: MaybeFamily (Maybe a) a
+
+instance StructuralFamily MaybeFamily where
+  compareStructural NothingMaybeFamily NothingMaybeFamily = StructuralEQ
+  compareStructural NothingMaybeFamily JustMaybeFamily = StructuralLT
+  compareStructural JustMaybeFamily NothingMaybeFamily = StructuralGT
+  compareStructural JustMaybeFamily JustMaybeFamily = StructuralEQ
+
+  compareStructuralShape NothingMaybeFamily NothingMaybeFamily = EQ
+  compareStructuralShape NothingMaybeFamily JustMaybeFamily = LT
+  compareStructuralShape JustMaybeFamily NothingMaybeFamily = GT
+  compareStructuralShape JustMaybeFamily JustMaybeFamily = EQ
+
+maybeStrategy :: forall a. MergingStrategy a -> MergingStrategy (Maybe a)
+maybeStrategy valueStrategy =
+  StructuralStrategy splitMaybe payloadStrategy injectMaybe
+  where
+    splitMaybe :: Maybe a -> StructuralCase MaybeFamily (Maybe a)
+    splitMaybe Nothing = StructuralCase NothingMaybeFamily ()
+    splitMaybe (Just value) = StructuralCase JustMaybeFamily value
+
+    payloadStrategy ::
+      forall payload. MaybeFamily (Maybe a) payload -> MergingStrategy payload
+    payloadStrategy NothingMaybeFamily =
+      SimpleStrategy $ \_ selected _ -> selected
+    payloadStrategy JustMaybeFamily = valueStrategy
+
+    injectMaybe ::
+      forall payload. MaybeFamily (Maybe a) payload -> payload -> Maybe a
+    injectMaybe NothingMaybeFamily () = Nothing
+    injectMaybe JustMaybeFamily value = Just value
+{-# INLINE maybeStrategy #-}
+
+instance (Mergeable a) => Mergeable (Maybe a) where
+  rootStrategy = maybeStrategy rootStrategy
+  {-# INLINE rootStrategy #-}
+
+instance Mergeable1 Maybe where
+  liftRootStrategy = maybeStrategy
+  {-# INLINE liftRootStrategy #-}
+
+instance (Mergeable a, Mergeable b) => Mergeable (a, b) where
+  rootStrategy = pairStrategy rootStrategy rootStrategy
+  {-# INLINE rootStrategy #-}
+
+instance (Mergeable a) => Mergeable1 ((,) a) where
+  liftRootStrategy = pairStrategy rootStrategy
+  {-# INLINE liftRootStrategy #-}
+
+instance Mergeable2 (,) where
+  liftRootStrategy2 = pairStrategy
+  {-# INLINE liftRootStrategy2 #-}
 
 derive
   [ ''(,,),
@@ -346,8 +561,7 @@ derive
   [''Mergeable, ''Mergeable1, ''Mergeable2, ''Mergeable3]
 
 derive
-  [ ''Maybe,
-    ''Identity,
+  [ ''Identity,
     ''Monoid.Dual,
     ''Monoid.Sum,
     ''Monoid.Product,
@@ -384,10 +598,7 @@ instance
 
 instance (Mergeable1 m) => Mergeable1 (ReaderT s m) where
   liftRootStrategy m =
-    wrapStrategy
-      (liftRootStrategy (liftRootStrategy m))
-      ReaderT
-      runReaderT
+    wrapStrategy ReaderTWrapper (liftRootStrategy (liftRootStrategy m))
   {-# INLINE liftRootStrategy #-}
 
 -- IdentityT
@@ -396,24 +607,18 @@ instance (Mergeable1 m, Mergeable a) => Mergeable (IdentityT m a) where
   {-# INLINE rootStrategy #-}
 
 instance (Mergeable1 m) => Mergeable1 (IdentityT m) where
-  liftRootStrategy m = wrapStrategy (liftRootStrategy m) IdentityT runIdentityT
+  liftRootStrategy m = wrapStrategy IdentityTWrapper (liftRootStrategy m)
   {-# INLINE liftRootStrategy #-}
 
 -- ContT -- separately implemented as we don't need Mergeable a
 instance (Mergeable1 m, Mergeable r) => Mergeable (ContT r m a) where
   rootStrategy =
-    wrapStrategy
-      (liftRootStrategy rootStrategy1)
-      ContT
-      (\(ContT v) -> v)
+    wrapStrategy ContTWrapper (liftRootStrategy rootStrategy1)
   {-# INLINE rootStrategy #-}
 
 instance (Mergeable1 m, Mergeable r) => Mergeable1 (ContT r m) where
   liftRootStrategy _ =
-    wrapStrategy
-      (liftRootStrategy rootStrategy1)
-      ContT
-      (\(ContT v) -> v)
+    wrapStrategy ContTWrapper (liftRootStrategy rootStrategy1)
   {-# INLINE liftRootStrategy #-}
 
 -- RWS -- separately implemented as we don't need Mergeable r
@@ -430,11 +635,10 @@ instance
   where
   liftRootStrategy m =
     wrapStrategy
+      LazyRWSTWrapper
       ( liftRootStrategy . liftRootStrategy . liftRootStrategy $
           liftRootStrategy3 m rootStrategy rootStrategy
       )
-      RWSLazy.RWST
-      (\(RWSLazy.RWST rws) -> rws)
   {-# INLINE liftRootStrategy #-}
 
 instance
@@ -450,11 +654,10 @@ instance
   where
   liftRootStrategy m =
     wrapStrategy
+      StrictRWSTWrapper
       ( liftRootStrategy . liftRootStrategy . liftRootStrategy $
           liftRootStrategy3 m rootStrategy rootStrategy
       )
-      RWSStrict.RWST
-      (\(RWSStrict.RWST rws) -> rws)
   {-# INLINE liftRootStrategy #-}
 
 -- Product
@@ -487,7 +690,7 @@ deriving via
 
 instance (Mergeable1 f, Mergeable1 g) => Mergeable1 (Compose f g) where
   liftRootStrategy s =
-    wrapStrategy (liftRootStrategy (liftRootStrategy s)) Compose getCompose
+    wrapStrategy ComposeWrapper (liftRootStrategy (liftRootStrategy s))
   {-# INLINE liftRootStrategy #-}
 
 -- Const
@@ -530,7 +733,7 @@ instance (Mergeable a) => Mergeable (Endo a) where
 
 instance Mergeable1 Endo where
   liftRootStrategy strategy =
-    wrapStrategy (liftRootStrategy strategy) Endo appEndo
+    wrapStrategy EndoWrapper (liftRootStrategy strategy)
 
 -- Generic
 deriving via (Default (U1 p)) instance Mergeable (U1 p)

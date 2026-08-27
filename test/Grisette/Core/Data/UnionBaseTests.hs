@@ -1,32 +1,43 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
 
 module Grisette.Core.Data.UnionBaseTests (unionBaseTests) where
 
 import Data.String (fromString)
 import GHC.Generics (Generic)
+import qualified GHC.Generics as G
 import Grisette
   ( AsKey (AsKey),
     ITEOp (symIte),
     LogicalOp (symNot, (.&&), (.||)),
     Mergeable (rootStrategy),
-    MergingStrategy (SortedStrategy),
+    MergingStrategy (NoStrategy),
+    StructuralCase (StructuralCase),
+    StructuralFamily (compareStructural, compareStructuralShape),
+    StructuralOrdering (StructuralEQ, StructuralGT, StructuralLT),
     Solvable (con),
     SymInteger,
     termSize,
     termsSize,
-    wrapStrategy,
+    structuralStrategy,
   )
 import Grisette.Internal.Core.Data.UnionBase
   ( UnionBase (UnionIf, UnionSingle),
     fullReconstruct,
     ifWithLeftMost,
     ifWithStrategy,
+  )
+import Grisette.Internal.Core.Data.UnionBase
+  ( UnionBase (UnionGroup),
+    eraseUnionGroups,
   )
 import Grisette.Internal.SymPrim.Prim.Internal.Term
   ( iteTerm,
@@ -40,25 +51,166 @@ import Test.HUnit (assertFailure, (@?=))
 
 data TripleSum a b c = TS1 a | TS2 b | TS3 c deriving (Show, Eq, Generic)
 
+data TripleSumFamily value payload where
+  TS1Family :: TripleSumFamily (TripleSum a b c) a
+  TS2Family :: TripleSumFamily (TripleSum a b c) b
+  TS3Family :: TripleSumFamily (TripleSum a b c) c
+
+instance StructuralFamily TripleSumFamily where
+  compareStructural TS1Family TS1Family = StructuralEQ
+  compareStructural TS1Family _ = StructuralLT
+  compareStructural TS2Family TS1Family = StructuralGT
+  compareStructural TS2Family TS2Family = StructuralEQ
+  compareStructural TS2Family TS3Family = StructuralLT
+  compareStructural TS3Family TS3Family = StructuralEQ
+  compareStructural TS3Family _ = StructuralGT
+
+  compareStructuralShape TS1Family TS1Family = EQ
+  compareStructuralShape TS1Family _ = LT
+  compareStructuralShape TS2Family TS1Family = GT
+  compareStructuralShape TS2Family TS2Family = EQ
+  compareStructuralShape TS2Family TS3Family = LT
+  compareStructuralShape TS3Family TS3Family = EQ
+  compareStructuralShape TS3Family _ = GT
+
+data ForeignTripleSumFamily value payload where
+  ForeignTS1Family :: ForeignTripleSumFamily (TripleSum a b c) a
+  ForeignTS2Family :: ForeignTripleSumFamily (TripleSum a b c) b
+  ForeignTS3Family :: ForeignTripleSumFamily (TripleSum a b c) c
+
+instance StructuralFamily ForeignTripleSumFamily where
+  compareStructural ForeignTS1Family ForeignTS1Family = StructuralEQ
+  compareStructural ForeignTS1Family _ = StructuralGT
+  compareStructural ForeignTS2Family ForeignTS1Family = StructuralLT
+  compareStructural ForeignTS2Family ForeignTS2Family = StructuralEQ
+  compareStructural ForeignTS2Family ForeignTS3Family = StructuralGT
+  compareStructural ForeignTS3Family ForeignTS3Family = StructuralEQ
+  compareStructural ForeignTS3Family _ = StructuralLT
+  compareStructuralShape ForeignTS1Family ForeignTS1Family = EQ
+  compareStructuralShape ForeignTS1Family _ = GT
+  compareStructuralShape ForeignTS2Family ForeignTS1Family = LT
+  compareStructuralShape ForeignTS2Family ForeignTS2Family = EQ
+  compareStructuralShape ForeignTS2Family ForeignTS3Family = GT
+  compareStructuralShape ForeignTS3Family ForeignTS3Family = EQ
+  compareStructuralShape ForeignTS3Family _ = LT
+
+foreignTripleSumSplit ::
+  TripleSum Integer Integer Integer ->
+  StructuralCase
+    ForeignTripleSumFamily
+    (TripleSum Integer Integer Integer)
+foreignTripleSumSplit (TS1 value) = StructuralCase ForeignTS1Family value
+foreignTripleSumSplit (TS2 value) = StructuralCase ForeignTS2Family value
+foreignTripleSumSplit (TS3 value) = StructuralCase ForeignTS3Family value
+
+foreignTripleSumPayloadStrategy ::
+  forall payload.
+  ForeignTripleSumFamily
+    (TripleSum Integer Integer Integer)
+    payload ->
+  MergingStrategy payload
+foreignTripleSumPayloadStrategy ForeignTS1Family = NoStrategy
+foreignTripleSumPayloadStrategy ForeignTS2Family = NoStrategy
+foreignTripleSumPayloadStrategy ForeignTS3Family = NoStrategy
+
+foreignTripleSumInject ::
+  forall payload.
+  ForeignTripleSumFamily
+    (TripleSum Integer Integer Integer)
+    payload ->
+  payload ->
+  TripleSum Integer Integer Integer
+foreignTripleSumInject ForeignTS1Family = TS1
+foreignTripleSumInject ForeignTS2Family = TS2
+foreignTripleSumInject ForeignTS3Family = TS3
+
+foreignTripleSumStrategy :: MergingStrategy (TripleSum Integer Integer Integer)
+foreignTripleSumStrategy =
+  structuralStrategy
+    foreignTripleSumSplit
+    foreignTripleSumPayloadStrategy
+    foreignTripleSumInject
+
+tripleSumSplit ::
+  TripleSum a b c ->
+  StructuralCase TripleSumFamily (TripleSum a b c)
+tripleSumSplit (TS1 value) = StructuralCase TS1Family value
+tripleSumSplit (TS2 value) = StructuralCase TS2Family value
+tripleSumSplit (TS3 value) = StructuralCase TS3Family value
+
+tripleSumPayloadStrategy ::
+  forall a b c payload.
+  (Mergeable a, Mergeable b, Mergeable c) =>
+  TripleSumFamily (TripleSum a b c) payload ->
+  MergingStrategy payload
+tripleSumPayloadStrategy TS1Family = rootStrategy
+tripleSumPayloadStrategy TS2Family = rootStrategy
+tripleSumPayloadStrategy TS3Family = rootStrategy
+
+tripleSumInject ::
+  forall a b c payload.
+  TripleSumFamily (TripleSum a b c) payload ->
+  payload ->
+  TripleSum a b c
+tripleSumInject TS1Family = TS1
+tripleSumInject TS2Family = TS2
+tripleSumInject TS3Family = TS3
+
 instance
   (Mergeable a, Mergeable b, Mergeable c) =>
   Mergeable (TripleSum a b c)
   where
   rootStrategy =
-    SortedStrategy
-      (\case TS1 _ -> (0 :: Int); TS2 _ -> (1 :: Int); TS3 _ -> (2 :: Int))
-      ( \case
-          0 -> wrapStrategy rootStrategy TS1 (\(TS1 x) -> x)
-          1 -> wrapStrategy rootStrategy TS2 (\(TS2 x) -> x)
-          2 -> wrapStrategy rootStrategy TS3 (\(TS3 x) -> x)
-          _ -> error "Bad"
-      )
+    structuralStrategy
+      tripleSumSplit
+      tripleSumPayloadStrategy
+      tripleSumInject
 
 unionBaseTests :: Test
 unionBaseTests =
   testGroup
     "UnionBase"
-    [ testGroup
+    [ testCase "structural normalization checks both NoStrategy branches" $ do
+        let active = ifWithStrategy rootStrategy "active-family"
+              (UnionSingle (TS1 1)) (UnionSingle (TS1 2))
+            foreignUnion = ifWithStrategy foreignTripleSumStrategy "foreign-family"
+              (UnionSingle (TS1 3)) (UnionSingle (TS1 4))
+            mixed = ifWithStrategy NoStrategy "mixed-family" active foreignUnion
+            normalized = ifWithStrategy rootStrategy "normalize-family" active mixed
+            canonicalForeign =
+              fullReconstruct rootStrategy (eraseUnionGroups foreignUnion)
+            canonicalMixed =
+              ifWithStrategy NoStrategy "mixed-family" active canonicalForeign
+            expected =
+              ifWithStrategy rootStrategy "normalize-family" active canonicalMixed
+        case normalized of
+          UnionGroup {} -> pure ()
+          _ -> assertFailure "root normalization did not rebuild a typed group"
+        AsKey normalized @?= AsKey expected,
+      testCase "transparent Generic metadata remains UnionBase metadata" $ do
+        let singleRepresentation = G.from (UnionSingle (1 :: Integer))
+        G.datatypeName singleRepresentation @?= "UnionBase"
+        G.moduleName singleRepresentation
+          @?= "Grisette.Internal.Internal.Decl.Core.Data.UnionBase"
+        G.packageName singleRepresentation @?= "grisette"
+        case singleRepresentation of
+          G.M1 (G.L1 constructorRepresentation) ->
+            G.conName constructorRepresentation @?= "UnionSingle"
+          _ -> assertFailure "UnionSingle used the wrong Generic constructor"
+        let ifRepresentation =
+              G.from
+                ( UnionIf
+                    (1 :: Integer)
+                    True
+                    "condition"
+                    (UnionSingle 1)
+                    (UnionSingle 2)
+                )
+        case ifRepresentation of
+          G.M1 (G.R1 constructorRepresentation) ->
+            G.conName constructorRepresentation @?= "UnionIf"
+          _ -> assertFailure "UnionIf used the wrong Generic constructor",
+      testGroup
         "ifWithLeftMost"
         [ testCase
             "ifWithLeftMost should maintain left most info on Singles"
@@ -957,21 +1109,21 @@ unionBaseTests =
                             (UnionSingle $ TS3 (3 :: Integer))
                         result =
                           ifWithStrategy rootStrategy outerGuard ifTrue ifFalse
-                    case result of
+                    case eraseUnionGroups result of
                       UnionIf
                         (TS1 1)
-                        True
+                        _
                         actualGuard
                         ( UnionIf
                             (TS1 1)
-                            True
+                            _
                             trueBucketGuard
                             (UnionSingle (TS1 1))
                             (UnionSingle (TS1 2))
                           )
                         ( UnionIf
                             (TS2 2)
-                            True
+                            _
                             falseBucketGuard
                             (UnionSingle (TS2 2))
                             (UnionSingle (TS3 3))
@@ -994,7 +1146,7 @@ unionBaseTests =
                             termSize actualTerm
                               @?= termsSize [outerTerm, trueTerm, falseTerm] + 1
                             actualGuard .@?= symIte outerGuard trueGuard falseGuard
-                      _ -> assertFailure "unexpected sorted-union leaf order",
+                      _ -> assertFailure "unexpected structural-union leaf order",
                   testCase "Non-degenerated case when idxtt > idxft" $ do
                     let x =
                           ifWithStrategy

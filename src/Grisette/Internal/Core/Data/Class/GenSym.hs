@@ -62,6 +62,9 @@ module Grisette.Internal.Core.Data.Class.GenSym
     SimpleListSpec (..),
     EnumGenBound (..),
     EnumGenUpperBound (..),
+
+    -- * Internal structural law witness (not re-exported by the public facade)
+    FreshTWrapper (FreshTWrapper),
   )
 where
 
@@ -120,6 +123,9 @@ import Grisette.Internal.Core.Data.Class.Mergeable
     Mergeable1 (liftRootStrategy),
     Mergeable2 (liftRootStrategy2),
     MergingStrategy (SimpleStrategy),
+    StructuralFamily (compareStructural, compareStructuralShape),
+    StructuralOrdering (StructuralEQ),
+    StructuralWrapper (unwrapValue, wrapValue),
     rootStrategy1,
     wrapStrategy,
   )
@@ -137,7 +143,8 @@ import Grisette.Internal.Core.Data.Class.TryMerge
   )
 import Grisette.Internal.Core.Data.Symbol (Identifier)
 import Grisette.Internal.Internal.Decl.Core.Data.UnionBase
-  ( UnionBase (UnionIf, UnionSingle),
+  ( UnionBase (UnionGroup, UnionIf, UnionSingle),
+    eraseUnionGroups,
   )
 import Grisette.Internal.SymPrim.BV (IntN, WordN)
 import Grisette.Internal.SymPrim.FP (FP, FPRoundingMode, ValidFP)
@@ -238,24 +245,34 @@ newtype FreshT m a = FreshT
   { runFreshTFromIndex :: Identifier -> FreshIndex -> m (a, FreshIndex)
   }
 
+data FreshTWrapper target source where
+  FreshTWrapper ::
+    FreshTWrapper
+      (FreshT monad value)
+      (Identifier -> FreshIndex -> monad (value, FreshIndex))
+
+instance StructuralFamily FreshTWrapper where
+  compareStructural FreshTWrapper FreshTWrapper = StructuralEQ
+  compareStructuralShape FreshTWrapper FreshTWrapper = EQ
+
+instance StructuralWrapper FreshTWrapper where
+  wrapValue FreshTWrapper = FreshT
+  unwrapValue FreshTWrapper = runFreshTFromIndex
+
 instance
   (Mergeable a, Mergeable1 m) =>
   Mergeable (FreshT m a)
   where
   rootStrategy =
-    wrapStrategy
-      (liftRootStrategy (liftRootStrategy rootStrategy1))
-      FreshT
-      runFreshTFromIndex
+    wrapStrategy FreshTWrapper (liftRootStrategy (liftRootStrategy rootStrategy1))
 
 instance (Mergeable1 m) => Mergeable1 (FreshT m) where
   liftRootStrategy m =
     wrapStrategy
+      FreshTWrapper
       ( liftRootStrategy . liftRootStrategy . liftRootStrategy $
           liftRootStrategy2 m rootStrategy
       )
-      FreshT
-      runFreshTFromIndex
 
 instance
   (SymBranching m, Mergeable a) =>
@@ -1824,6 +1841,7 @@ instance
     where
       go (UnionSingle x) = fresh x
       go (UnionIf _ _ _ t f) = mrgIf <$> simpleFresh () <*> go t <*> go f
+      go group@UnionGroup {} = go (eraseUnionGroups group)
 
 instance {-# INCOHERENT #-} (GenSym a b) => GenSym a (AsKey b) where
   fresh spec = mrgFmap AsKey <$> fresh spec

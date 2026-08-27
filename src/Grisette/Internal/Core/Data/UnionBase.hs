@@ -11,6 +11,7 @@ module Grisette.Internal.Core.Data.UnionBase
 
     -- | Please consider using 'Grisette.Core.Union' instead.
     UnionBase (..),
+    eraseUnionGroups,
     ifWithLeftMost,
     ifWithStrategy,
     fullReconstruct,
@@ -18,7 +19,8 @@ module Grisette.Internal.Core.Data.UnionBase
 where
 
 import Grisette.Internal.Internal.Decl.Core.Data.UnionBase
-  ( UnionBase (UnionIf, UnionSingle),
+  ( UnionBase (UnionGroup, UnionIf, UnionSingle),
+    eraseUnionGroups,
     fullReconstruct,
     ifWithLeftMost,
     ifWithStrategy,
