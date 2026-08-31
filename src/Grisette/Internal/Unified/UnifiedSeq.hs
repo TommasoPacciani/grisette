@@ -258,7 +258,7 @@ instance UnifiedSeq 'C where
   nilSeq = []
   consSeq = (:)
   appendSeq = (P.++)
-  lengthSeq values = P.fromIntegral (P.length values)
+  lengthSeq = foldl' (\count _ -> count P.+ 1) 0
   rangeSeq n = [0 .. n P.- 1]
   tailSeq = P.drop 1
   lookupSeq seed values index = go values index
