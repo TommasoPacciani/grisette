@@ -24,6 +24,7 @@ where
 import Control.Exception (ArithException)
 import Control.Monad.Error.Class (MonadError)
 import Grisette.Internal.Core.Data.Class.SafeFdiv (FdivOr)
+import Grisette.Internal.Core.Data.Class.TryMerge (TryMerge)
 import Grisette.Internal.SymPrim.AlgReal (AlgReal)
 import Grisette.Internal.SymPrim.SymAlgReal (SymAlgReal)
 import Grisette.Internal.SymPrim.SymPrim (Prim)
@@ -50,7 +51,7 @@ class
     Fractional r,
     FdivOr r,
     forall m.
-    (UnifiedBranching mode m, MonadError ArithException m) =>
+    (UnifiedBranching mode m, TryMerge m, MonadError ArithException m) =>
     UnifiedSafeFdiv mode ArithException r m,
     UnifiedFromIntegral mode (GetInteger mode) r
   ) =>

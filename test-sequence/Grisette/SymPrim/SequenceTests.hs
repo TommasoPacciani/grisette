@@ -326,7 +326,7 @@ sequenceTests =
           Left failure -> assertFailure $
             "lookup-parts equivalence failed: " ++ show failure
           Right _ -> assertFailure "lookup-parts differs from checked lookup",
-      testCase "value-only lookup reduces correlated constructors and sequence ITE" $ do
+      testCase "value-only lookup preserves correlated constructors and sequence choice" $ do
         let condition = "lookup-value-condition" :: SymBool
             left = U.consSeq @'S (10 :: SymInteger) $
               U.consSeq @'S 20 U.nilSeq
@@ -347,8 +347,8 @@ sequenceTests =
         case result of
           Left Unsat -> pure ()
           Left failure -> assertFailure $
-            "lookup-value ITE reduction failed: " ++ show failure
-          Right _ -> assertFailure "lookup-value did not distribute sequence ITE",
+            "lookup-value choice equivalence failed: " ++ show failure
+          Right _ -> assertFailure "lookup-value changed sequence choice semantics",
       testCase "native zip truncates unknown sequences and preserves array products" $ do
         assertEqual
           "concrete unequal lengths"
@@ -712,6 +712,33 @@ sequenceTests =
           Left failure -> assertFailure $
             "heterogeneous focused fold did not solve: " ++ show failure
           Right _ -> pure (),
+      testCase "focused sequence operands remain explicit in solver closures" $ do
+        let template = U.FocusedCapture (U.nilSeq @'S @SymInteger) $
+              U.FocusedCapture (0 :: SymInteger) U.FocusedNoCaptures
+            step
+              :: U.FocusedCaptures 'S '[SymSeq SymInteger, SymInteger]
+              -> SymInteger -> SymInteger -> SymInteger
+            step (U.FocusedCapture values
+                    (U.FocusedCapture bias U.FocusedNoCaptures)) total index =
+              total + bias + U.second @'S (U.lookupSeq @'S 0 values index)
+            prepared = U.prepareFocusedSeqFold @'S template step
+            values = "focused-closure-values" :: SymSeq SymInteger
+            indices = "focused-closure-indices" :: SymSeq SymInteger
+            apply bias = U.applyFocusedSeqFold @'S prepared
+              (U.FocusedCapture values $
+                U.FocusedCapture bias U.FocusedNoCaptures) 0 indices
+            inputs = (values .== U.consSeq @'S 10 (U.consSeq @'S 20 U.nilSeq))
+              .&& (indices .== U.consSeq @'S 0 (U.consSeq @'S 1 U.nilSeq))
+            result = (apply 1 .== 32) .&& (apply 2 .== 34)
+        solved <- solve z3 (inputs .&& result)
+        case solved of
+          Left failure -> assertFailure $ "captured sequence SAT failed: " ++ show failure
+          Right _ -> pure ()
+        wrong <- solve z3 (inputs .&& symNot result)
+        case wrong of
+          Left Unsat -> pure ()
+          Left failure -> assertFailure $ "captured sequence UNSAT failed: " ++ show failure
+          Right _ -> assertFailure "focused closure mixed its operands or local binders",
       testCase "zero captures canonicalize and concrete sequences fold eagerly" $ do
         let zeroPrepared = U.prepareFocusedSeqFold @'S U.FocusedNoCaptures $
               \U.FocusedNoCaptures state element -> state + element

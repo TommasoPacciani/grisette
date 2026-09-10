@@ -39,6 +39,7 @@ import Grisette.Internal.Core.Data.Class.SafeDiv
     SafeDiv,
   )
 import qualified Grisette.Internal.Core.Data.Class.SafeDiv
+import Grisette.Internal.Core.Data.Class.TryMerge (TryMerge)
 import Grisette.Internal.SymPrim.BV (IntN, WordN)
 import Grisette.Internal.SymPrim.SomeBV
   ( SomeBVException,
@@ -176,47 +177,68 @@ instance
   withBaseSafeDiv r = r
 
 instance
-  (MonadError ArithException m, UnifiedBranching mode m) =>
+  (MonadError ArithException m, UnifiedBranching mode m, TryMerge m) =>
   UnifiedSafeDiv mode ArithException Integer m
   where
   withBaseSafeDiv r =
     withMode @mode (withBaseBranching @mode @m r) (withBaseBranching @mode @m r)
 
 instance
-  (MonadError ArithException m, UnifiedBranching 'S m) =>
+  (MonadError ArithException m, UnifiedBranching 'S m, TryMerge m) =>
   UnifiedSafeDiv 'S ArithException SymInteger m
   where
   withBaseSafeDiv r = withBaseBranching @'S @m r
 
 instance
-  (MonadError ArithException m, UnifiedBranching mode m, KnownNat n, 1 <= n) =>
+  ( MonadError ArithException m,
+    UnifiedBranching mode m,
+    TryMerge m,
+    KnownNat n,
+    1 <= n
+  ) =>
   UnifiedSafeDiv mode ArithException (IntN n) m
   where
   withBaseSafeDiv r =
     withMode @mode (withBaseBranching @mode @m r) (withBaseBranching @mode @m r)
 
 instance
-  (MonadError ArithException m, UnifiedBranching 'S m, KnownNat n, 1 <= n) =>
+  ( MonadError ArithException m,
+    UnifiedBranching 'S m,
+    TryMerge m,
+    KnownNat n,
+    1 <= n
+  ) =>
   UnifiedSafeDiv 'S ArithException (SymIntN n) m
   where
   withBaseSafeDiv r = withBaseBranching @'S @m r
 
 instance
-  (MonadError ArithException m, UnifiedBranching mode m, KnownNat n, 1 <= n) =>
+  ( MonadError ArithException m,
+    UnifiedBranching mode m,
+    TryMerge m,
+    KnownNat n,
+    1 <= n
+  ) =>
   UnifiedSafeDiv mode ArithException (WordN n) m
   where
   withBaseSafeDiv r =
     withMode @mode (withBaseBranching @mode @m r) (withBaseBranching @mode @m r)
 
 instance
-  (MonadError ArithException m, UnifiedBranching 'S m, KnownNat n, 1 <= n) =>
+  ( MonadError ArithException m,
+    UnifiedBranching 'S m,
+    TryMerge m,
+    KnownNat n,
+    1 <= n
+  ) =>
   UnifiedSafeDiv 'S ArithException (SymWordN n) m
   where
   withBaseSafeDiv r = withBaseBranching @'S @m r
 
 instance
   ( MonadError (Either SomeBVException ArithException) m,
-    UnifiedBranching mode m
+    UnifiedBranching mode m,
+    TryMerge m
   ) =>
   UnifiedSafeDiv
     mode
@@ -229,7 +251,8 @@ instance
 
 instance
   ( MonadError (Either SomeBVException ArithException) m,
-    UnifiedBranching 'S m
+    UnifiedBranching 'S m,
+    TryMerge m
   ) =>
   UnifiedSafeDiv
     'S
@@ -241,7 +264,8 @@ instance
 
 instance
   ( MonadError (Either SomeBVException ArithException) m,
-    UnifiedBranching mode m
+    UnifiedBranching mode m,
+    TryMerge m
   ) =>
   UnifiedSafeDiv
     mode
@@ -254,7 +278,8 @@ instance
 
 instance
   ( MonadError (Either SomeBVException ArithException) m,
-    UnifiedBranching 'S m
+    UnifiedBranching 'S m,
+    TryMerge m
   ) =>
   UnifiedSafeDiv
     'S

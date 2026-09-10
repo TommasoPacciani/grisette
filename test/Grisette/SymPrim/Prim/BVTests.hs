@@ -1,17 +1,16 @@
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE GADTs #-}
+{-# LANGUAGE GHC2024 #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE QuantifiedConstraints #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeApplications #-}
-{-# LANGUAGE TypeOperators #-}
+-- Width-indexed fixtures inherit primitive constraints from their BV family.
 {-# LANGUAGE UndecidableInstances #-}
 
 module Grisette.SymPrim.Prim.BVTests (bvTests) where
 
 import Data.Proxy (Proxy (Proxy))
 import GHC.TypeNats (KnownNat, type (+), type (<=))
+import Grisette (SymBool (SymBool), solve, z3)
+import Grisette.Internal.Core.Data.Class.Solver (SolvingFailure (Unsat))
 import Grisette.Internal.SymPrim.BV (IntN, WordN)
 import Grisette.Internal.SymPrim.Prim.Term
   ( PEvalBVTerm
@@ -27,11 +26,13 @@ import Grisette.Internal.SymPrim.Prim.Term
     bvExtendTerm,
     bvSelectTerm,
     conTerm,
+    pevalNEqTerm,
     ssymTerm,
+    pattern ConTerm,
   )
 import Test.Framework (Test, testGroup)
 import Test.Framework.Providers.HUnit (testCase)
-import Test.HUnit ((@?=))
+import Test.HUnit (assertFailure, (@?=))
 
 data ToSignedTest = ToSignedTest
   { toSignedTestName :: String,
@@ -412,8 +413,17 @@ bvTests =
                       (ssymTerm "a" :: Term (WordN 4))
               }
           ]
-        return . testCase name $
-          pevalBVSelectTerm ix w term @?= expected,
+        return . testCase name $ do
+          let actual = pevalBVSelectTerm ix w term
+          case term of
+            ConTerm {} -> actual @?= expected
+            _ -> do
+              result <- solve z3 (SymBool (pevalNEqTerm actual expected))
+              case result of
+                Left Unsat -> pure ()
+                Left failure -> assertFailure $
+                  name ++ ": BV select equivalence failed: " ++ show failure
+                Right _ -> assertFailure $ name ++ ": BV select changed its value",
       testGroup "pevalBVExtendTerm" $ do
         BVExtendTest name signed pr term expected <-
           [ BVExtendTest

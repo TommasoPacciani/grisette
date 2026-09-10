@@ -30,13 +30,13 @@ import Data.Bits (Bits (shiftL, shiftR), FiniteBits (finiteBitSize))
 import Data.Int (Int16, Int32, Int64, Int8)
 import Data.Word (Word16, Word32, Word64, Word8)
 import GHC.TypeLits (KnownNat, type (<=))
-import Grisette.Internal.Core.Control.Monad.Class.Union (MonadUnion)
 import Grisette.Internal.Core.Data.Class.LogicalOp
   ( LogicalOp ((.&&), (.||)),
   )
 import Grisette.Internal.Core.Data.Class.Mergeable (Mergeable)
 import Grisette.Internal.Core.Data.Class.SimpleMergeable
-  ( mrgIf,
+  ( MergingBranching,
+    mrgIf,
   )
 import Grisette.Internal.Core.Data.Class.SymOrd
   ( SymOrd ((.<), (.>=)),
@@ -155,7 +155,12 @@ instance
   safeSymStrictShiftR = safeSymShiftRConcreteNum False
 
 instance
-  (MonadError ArithException m, MonadUnion m, KnownNat n, 1 <= n) =>
+  ( MonadError ArithException m,
+    MergingBranching m,
+    TryMerge m,
+    KnownNat n,
+    1 <= n
+  ) =>
   SafeSymShift ArithException (SymWordN n) m
   where
   safeSymShiftL (SymWordN a) (SymWordN s) =
@@ -174,7 +179,12 @@ instance
       (return $ SymWordN $ pevalShiftRightTerm ta ts)
 
 instance
-  (MonadError ArithException m, MonadUnion m, KnownNat n, 1 <= n) =>
+  ( MonadError ArithException m,
+    MergingBranching m,
+    TryMerge m,
+    KnownNat n,
+    1 <= n
+  ) =>
   SafeSymShift ArithException (SymIntN n) m
   where
   safeSymShiftL (SymIntN a) ss@(SymIntN s) =

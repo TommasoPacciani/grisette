@@ -100,7 +100,8 @@ import Grisette.Internal.Core.Control.Monad.Union (Union)
 import Grisette.Internal.Core.Data.Class.ITEOp (ITEOp (symIte))
 import Grisette.Internal.Core.Data.Class.LogicalOp (LogicalOp (symNot, (.&&), (.||)))
 import Grisette.Internal.Core.Data.Class.Mergeable (Mergeable)
-import Grisette.Internal.Core.Data.Class.SimpleMergeable (SymBranching, mrgIf)
+import Grisette.Internal.Core.Data.Class.SimpleMergeable (MergingBranching, mrgIf)
+import Grisette.Internal.Core.Data.Class.TryMerge (TryMerge)
 import Grisette.Internal.Core.Data.Class.Solvable (Solvable (con))
 import Grisette.Internal.Core.Data.Class.SymEq (SymEq ((./=), (.==)))
 import Grisette.Internal.Core.Data.Class.SymOrd (SymOrd ((.<=), (.>=)))
@@ -129,7 +130,7 @@ import Grisette.Lib.Data.Foldable
 import Grisette.Lib.Data.Functor (mrgFmap)
 
 symListOpOnSymInt ::
-  (Applicative u, SymBranching u, Mergeable b, Num int, SymOrd int) =>
+  (Applicative u, MergingBranching u, TryMerge u, Mergeable b, Num int, SymOrd int) =>
   Bool ->
   (Int -> [a] -> b) ->
   int ->
@@ -154,7 +155,7 @@ symListOpOnSymInt reversed f x vs = do
 --
 -- Can generate O(n) cases and O(n) sized branch constraints.
 mrgTake ::
-  (Applicative u, SymBranching u, Mergeable a, Num int, SymOrd int) =>
+  (Applicative u, MergingBranching u, TryMerge u, Mergeable a, Num int, SymOrd int) =>
   int ->
   [a] ->
   u [a]
@@ -165,7 +166,7 @@ mrgTake = symListOpOnSymInt False take
 --
 -- Can generate O(n) cases and O(n) sized branch constraints.
 mrgDrop ::
-  (Applicative u, SymBranching u, Mergeable a, Num int, SymOrd int) =>
+  (Applicative u, MergingBranching u, TryMerge u, Mergeable a, Num int, SymOrd int) =>
   int ->
   [a] ->
   u [a]
@@ -188,7 +189,7 @@ mrgSplitAt = symListOpOnSymInt False splitAt
 --
 -- Can generate O(n) cases and O(n) sized branch constraints.
 mrgTakeWhile ::
-  (Applicative u, SymBranching u, Mergeable a) =>
+  (Applicative u, MergingBranching u, TryMerge u, Mergeable a) =>
   (a -> SymBool) ->
   [a] ->
   u [a]
@@ -201,7 +202,7 @@ mrgTakeWhile p (x : xs) =
 --
 -- Can generate O(n) cases and O(n) sized branch constraints.
 mrgDropWhile ::
-  (Applicative u, SymBranching u, Mergeable a) =>
+  (Applicative u, MergingBranching u, TryMerge u, Mergeable a) =>
   (a -> SymBool) ->
   [a] ->
   u [a]
@@ -235,7 +236,7 @@ mrgDropWhileEnd p =
 --
 -- Can generate O(n) cases and O(n) sized branch constraints.
 mrgSpan ::
-  (Applicative u, SymBranching u, Mergeable a) =>
+  (Applicative u, MergingBranching u, TryMerge u, Mergeable a) =>
   (a -> SymBool) ->
   [a] ->
   u ([a], [a])
@@ -248,7 +249,7 @@ mrgSpan p xs@(x : xs') =
 --
 -- Can generate O(n) cases and O(n) sized branch constraints.
 mrgBreak ::
-  (Applicative u, SymBranching u, Mergeable a) =>
+  (Applicative u, MergingBranching u, TryMerge u, Mergeable a) =>
   (a -> SymBool) ->
   [a] ->
   u ([a], [a])
@@ -259,7 +260,7 @@ mrgBreak p = mrgSpan (symNot . p)
 --
 -- Generate O(1) cases and O(len(prefix)) sized branch constraints.
 mrgStripPrefix ::
-  (Applicative u, SymBranching u, Mergeable a, SymEq a) =>
+  (Applicative u, MergingBranching u, TryMerge u, Mergeable a, SymEq a) =>
   [a] ->
   [a] ->
   u (Maybe [a])
@@ -315,7 +316,7 @@ symIsSubsequenceOf a@(x : a') (y : b) =
 -- Can generate O(n) cases and O(n) sized branch constraints.
 mrgLookup ::
   forall a b u.
-  (Applicative u, SymBranching u, Mergeable b, SymEq a) =>
+  (Applicative u, MergingBranching u, TryMerge u, Mergeable b, SymEq a) =>
   a ->
   [(a, b)] ->
   u (Maybe b)
@@ -336,7 +337,7 @@ mrgLookup key l =
 -- This function can be very inefficient on large symbolic lists and generate
 -- O(2^n) cases. Use with caution.
 mrgFilter ::
-  (Applicative u, SymBranching u, Mergeable a) =>
+  (Applicative u, MergingBranching u, TryMerge u, Mergeable a) =>
   (a -> SymBool) ->
   [a] ->
   u [a]
@@ -351,7 +352,7 @@ mrgFilter p (x : xs) =
 -- O(2^n) cases. Use with caution.
 mrgPartition ::
   forall u a.
-  (Applicative u, SymBranching u, Mergeable a) =>
+  (Applicative u, MergingBranching u, TryMerge u, Mergeable a) =>
   (a -> SymBool) ->
   [a] ->
   u ([a], [a])
@@ -414,7 +415,7 @@ mrgElemIndices x = mrgFindIndices (x .==)
 -- Can generate O(n) cases (or O(1) if int is merged), and O(n^2) sized
 -- constraints, assuming the predicate only generates O(1) constraints.
 mrgFindIndex ::
-  (Applicative u, SymBranching u, Mergeable int, SymEq a, Num int) =>
+  (Applicative u, MergingBranching u, TryMerge u, Mergeable int, SymEq a, Num int) =>
   (a -> SymBool) ->
   [a] ->
   u (Maybe int)
@@ -427,7 +428,7 @@ mrgFindIndex p l = mrgFmap listToMaybe $ mrgFindIndices p l
 -- only generates O(1) constraints.
 mrgFindIndices ::
   forall u a int.
-  (Applicative u, SymBranching u, Mergeable int, SymEq a, Num int) =>
+  (Applicative u, MergingBranching u, TryMerge u, Mergeable int, SymEq a, Num int) =>
   (a -> SymBool) ->
   [a] ->
   u [int]
@@ -442,7 +443,7 @@ mrgFindIndices p xs = go $ zip xs $ fromIntegral <$> [0 ..]
 --
 -- Can generate O(n) cases, and O(n^3) sized constraints.
 mrgNub ::
-  (Applicative u, SymBranching u, Mergeable a, SymEq a) =>
+  (Applicative u, MergingBranching u, TryMerge u, Mergeable a, SymEq a) =>
   [a] ->
   u [a]
 mrgNub = mrgNubBy (.==)
@@ -452,7 +453,7 @@ mrgNub = mrgNubBy (.==)
 --
 -- Can generate O(n) cases, and O(n^2) sized constraints.
 mrgDelete ::
-  (Applicative u, SymBranching u, Mergeable a, SymEq a) =>
+  (Applicative u, MergingBranching u, TryMerge u, Mergeable a, SymEq a) =>
   a ->
   [a] ->
   u [a]
@@ -502,7 +503,7 @@ mrgIntersect = mrgIntersectBy (.==)
 -- only generates O(1) constraints.
 mrgNubBy ::
   forall a u.
-  (Applicative u, SymBranching u, Mergeable a) =>
+  (Applicative u, MergingBranching u, TryMerge u, Mergeable a) =>
   (a -> a -> SymBool) ->
   [a] ->
   u [a]
@@ -524,7 +525,7 @@ mrgNubBy eq l = mrgNubBy' l []
 -- Can generate O(n) cases, and O(n^2) sized constraints, assuming the predicate
 -- only generates O(1) constraints.
 mrgDeleteBy ::
-  (Applicative u, SymBranching u, Mergeable a) =>
+  (Applicative u, MergingBranching u, TryMerge u, Mergeable a) =>
   (a -> a -> SymBool) ->
   a ->
   [a] ->

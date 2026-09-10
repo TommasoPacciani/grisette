@@ -24,9 +24,11 @@ import Data.Bits (Bits (rotateL, rotateR), FiniteBits (finiteBitSize))
 import Data.Int (Int16, Int32, Int64, Int8)
 import Data.Word (Word16, Word32, Word64, Word8)
 import GHC.TypeLits (KnownNat, type (<=))
-import Grisette.Internal.Core.Control.Monad.Class.Union (MonadUnion)
 import Grisette.Internal.Core.Data.Class.Mergeable (Mergeable)
-import Grisette.Internal.Core.Data.Class.SimpleMergeable (mrgIf)
+import Grisette.Internal.Core.Data.Class.SimpleMergeable
+  ( MergingBranching,
+    mrgIf,
+  )
 import Grisette.Internal.Core.Data.Class.SymOrd (SymOrd ((.<)))
 import Grisette.Internal.Core.Data.Class.TryMerge
   ( TryMerge,
@@ -125,7 +127,12 @@ instance
     mrgSingle $ SymWordN $ pevalRotateRightTerm ta tr
 
 instance
-  (MonadError ArithException m, MonadUnion m, KnownNat n, 1 <= n) =>
+  ( MonadError ArithException m,
+    MergingBranching m,
+    TryMerge m,
+    KnownNat n,
+    1 <= n
+  ) =>
   SafeSymRotate ArithException (SymIntN n) m
   where
   safeSymRotateL (SymIntN ta) r@(SymIntN tr) =

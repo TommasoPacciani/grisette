@@ -27,13 +27,13 @@ import Data.Bifunctor (Bifunctor (bimap))
 import Data.Int (Int16, Int32, Int64, Int8)
 import Data.Word (Word16, Word32, Word64, Word8)
 import GHC.TypeNats (KnownNat, type (<=))
-import Grisette.Internal.Core.Control.Monad.Class.Union (MonadUnion)
 import Grisette.Internal.Core.Data.Class.AsKey (AsKey (AsKey))
 import Grisette.Internal.Core.Data.Class.ITEOp (ITEOp (symIte))
 import Grisette.Internal.Core.Data.Class.LogicalOp (LogicalOp ((.&&)))
 import Grisette.Internal.Core.Data.Class.Mergeable (Mergeable)
 import Grisette.Internal.Core.Data.Class.SimpleMergeable
-  ( mrgIf,
+  ( MergingBranching,
+    mrgIf,
   )
 import Grisette.Internal.Core.Data.Class.Solvable (Solvable (con))
 import Grisette.Internal.Core.Data.Class.SymEq (SymEq ((.==)))
@@ -234,7 +234,7 @@ instance DivOr SymInteger where
   DIVISION_OR_SYMBOLIC_FUNC2(divModOr, div, mod)
   DIVISION_OR_SYMBOLIC_FUNC2(quotRemOr, quot, rem)
 instance
-  (MonadUnion m, MonadError ArithException m) =>
+  (MergingBranching m, TryMerge m, MonadError ArithException m) =>
   SafeDiv ArithException SymInteger m where
   SAFE_DIVISION_SYMBOLIC_FUNC(safeDiv, div)
   SAFE_DIVISION_SYMBOLIC_FUNC(safeMod, mod)
@@ -280,7 +280,12 @@ instance (KnownNat n, 1 <= n) => DivOr (SymIntN n) where
   DIVISION_OR_SYMBOLIC_FUNC2_BOUNDED_SIGNED(divModOr, div, mod)
   DIVISION_OR_SYMBOLIC_FUNC2_BOUNDED_SIGNED(quotRemOr, quot, rem)
 instance
-  (MonadError ArithException m, MonadUnion m, KnownNat n, 1 <= n) =>
+  ( MonadError ArithException m,
+    MergingBranching m,
+    TryMerge m,
+    KnownNat n,
+    1 <= n
+  ) =>
   SafeDiv ArithException (SymIntN n) m where
   SAFE_DIVISION_SYMBOLIC_FUNC_BOUNDED_SIGNED(safeDiv, div)
   SAFE_DIVISION_SYMBOLIC_FUNC(safeMod, mod)
@@ -299,7 +304,12 @@ instance (KnownNat n, 1 <= n) => DivOr (SymWordN n) where
   DIVISION_OR_SYMBOLIC_FUNC2(divModOr, div, mod)
   DIVISION_OR_SYMBOLIC_FUNC2(quotRemOr, quot, rem)
 instance
-  (MonadError ArithException m, MonadUnion m, KnownNat n, 1 <= n) =>
+  ( MonadError ArithException m,
+    MergingBranching m,
+    TryMerge m,
+    KnownNat n,
+    1 <= n
+  ) =>
   SafeDiv ArithException (SymWordN n) m where
   SAFE_DIVISION_SYMBOLIC_FUNC(safeDiv, div)
   SAFE_DIVISION_SYMBOLIC_FUNC(safeMod, mod)

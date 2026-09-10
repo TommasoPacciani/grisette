@@ -1,16 +1,8 @@
+{-# LANGUAGE GHC2024 #-}
 {-# LANGUAGE AllowAmbiguousTypes #-}
-{-# LANGUAGE ConstraintKinds #-}
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE KindSignatures #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE QuantifiedConstraints #-}
-{-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeFamilyDependencies #-}
-{-# LANGUAGE TypeOperators #-}
+-- Mode-indexed array superclass constraints contain type families.
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE UndecidableSuperClasses #-}
 
@@ -78,10 +70,6 @@ class UnifiedArray (mode :: EvalModeTag) k v where
   -- | Read the value stored at a key.
   selectArray :: GetArray mode k v -> k -> v
 
-  -- | Read after eliminating only array-valued ITEs on the read path.  This is
-  -- the focused normal form used by column-major physical stores.
-  selectArrayThroughIte :: GetArray mode k v -> k -> v
-
   -- | Write a value at a key. Writing a value equal to the array's default is
   -- canonicalized away, so the representation stays canonical.
   storeArray :: GetArray mode k v -> k -> v -> GetArray mode k v
@@ -89,11 +77,9 @@ class UnifiedArray (mode :: EvalModeTag) k v where
 instance (Hashable k, Eq v) => UnifiedArray 'C k v where
   constArray = CArr.const
   selectArray = CArr.select
-  selectArrayThroughIte = CArr.select
   storeArray = CArr.store
   {-# INLINE constArray #-}
   {-# INLINE selectArray #-}
-  {-# INLINE selectArrayThroughIte #-}
   {-# INLINE storeArray #-}
 
 instance
@@ -106,11 +92,9 @@ instance
   where
   constArray = SArr.const
   selectArray = SArr.select
-  selectArrayThroughIte = SArr.selectThroughIte
   storeArray = SArr.store
   {-# INLINE constArray #-}
   {-# INLINE selectArray #-}
-  {-# INLINE selectArrayThroughIte #-}
   {-# INLINE storeArray #-}
 
 -- | The constraint for a fully-featured unified array: the array operations

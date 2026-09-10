@@ -1,12 +1,6 @@
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE GADTs #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE GHC2024 #-}
 {-# LANGUAGE PatternSynonyms #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeApplications #-}
-{-# LANGUAGE TypeOperators #-}
+-- Existing FP instance constraints relate the bit width through type families.
 {-# LANGUAGE UndecidableInstances #-}
 
 -- |
@@ -28,6 +22,7 @@ import Grisette.Internal.Core.Data.Class.BitCast
   ( BitCast (bitCast),
     BitCastOr (bitCastOr),
   )
+import Grisette.Internal.Core.Data.MemoUtils (weakStableMemo)
 import Grisette.Internal.SymPrim.BV (IntN, WordN)
 import Grisette.Internal.SymPrim.FP (FP, ValidFP, withValidFPProofs)
 import Grisette.Internal.SymPrim.Nominal
@@ -37,7 +32,7 @@ import Grisette.Internal.SymPrim.Nominal
 import Grisette.Internal.SymPrim.Prim.Internal.Term
   ( PEvalBitCastOrTerm (pevalBitCastOrTerm, sbvBitCastOr),
     PEvalBitCastTerm (pevalBitCastTerm, sbvBitCast),
-    SupportedPrim,
+    SupportedPrim (pevalITETerm),
     SupportedNonFuncPrim,
     Term,
     bitCastOrTerm,
@@ -46,6 +41,7 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
     pattern BitCastTerm,
     pattern ConTerm,
     pattern DynTerm,
+    pattern ITETerm,
     pattern SupportedTerm,
   )
 import Grisette.Internal.SymPrim.Prim.Internal.Unfold
@@ -113,12 +109,32 @@ instance PEvalBitCastTerm Bool (WordN 1) where
   sbvBitCast x = SBV.ite x (SBV.literal 1) (SBV.literal 0)
 
 instance PEvalBitCastTerm (IntN 1) Bool where
-  pevalBitCastTerm = pevalBitCastGeneral
+  pevalBitCastTerm = pevalInt1ToBool
   sbvBitCast x = SBV.sTestBit x 0
 
 instance PEvalBitCastTerm (WordN 1) Bool where
-  pevalBitCastTerm = pevalBitCastGeneral
+  pevalBitCastTerm = pevalWord1ToBool
   sbvBitCast x = SBV.sTestBit x 0
+
+-- One-bit Boolean views must expose the whole choice DAG, including balanced
+-- choices whose immediate branches are both ITEs. This unary elimination
+-- creates no cross-product of alternatives. Monomorphic roots retain the weak
+-- memo independently of class dictionaries and share common subexpressions.
+pevalBoolChoice :: (Term a -> Term Bool) -> Term a -> Term Bool
+pevalBoolChoice leaf = go
+  where
+    go = weakStableMemo $ \value -> case value of
+      ITETerm condition selected fallback ->
+        pevalITETerm condition (go selected) (go fallback)
+      _ -> leaf value
+
+pevalInt1ToBool :: Term (IntN 1) -> Term Bool
+pevalInt1ToBool = pevalBoolChoice pevalBitCastGeneral
+{-# NOINLINE pevalInt1ToBool #-}
+
+pevalWord1ToBool :: Term (WordN 1) -> Term Bool
+pevalWord1ToBool = pevalBoolChoice pevalBitCastGeneral
+{-# NOINLINE pevalWord1ToBool #-}
 
 instance
   (n ~ (eb + sb), ValidFP eb sb, KnownNat n, 1 <= n) =>

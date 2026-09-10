@@ -97,7 +97,8 @@ import Grisette.Internal.Core.Data.Class.PPrint
     pformatPrec1,
   )
 import Grisette.Internal.Core.Data.Class.SimpleMergeable
-  ( SymBranching (mrgIfPropagatedStrategy, mrgIfWithStrategy),
+  ( MergingBranching (mrgIfWithStrategy),
+    SymBranching (mrgIfPropagatedStrategy),
     mrgIf,
   )
 import Grisette.Internal.Core.Data.Class.Solvable
@@ -469,12 +470,14 @@ unionSize = unionSize' . unionBase
     unionSize' group@UnionGroup {} = unionSize' (eraseUnionGroups group)
 
 #if !MIN_VERSION_base(4,16,0)
-instance SymBranching (AsKey1 Union) where
+instance MergingBranching (AsKey1 Union) where
   mrgIfWithStrategy strategy cond (AsKey1 t) (AsKey1 f) =
     AsKey1 $ mrgIfWithStrategy strategy cond t f
+  {-# INLINE mrgIfWithStrategy #-}
+
+instance SymBranching (AsKey1 Union) where
   mrgIfPropagatedStrategy cond (AsKey1 t) (AsKey1 f) =
     AsKey1 $ mrgIfPropagatedStrategy cond t f
-  {-# INLINE mrgIfWithStrategy #-}
   {-# INLINE mrgIfPropagatedStrategy #-}
 
 instance UnionView (AsKey1 Union) where

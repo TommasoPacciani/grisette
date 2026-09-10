@@ -28,7 +28,8 @@ import Grisette
     Solvable (con, conView, isym, ssym),
     SubstSym (substSym),
     SymBool,
-    SymBranching (mrgIfPropagatedStrategy, mrgIfWithStrategy),
+    MergingBranching (mrgIfWithStrategy),
+    SymBranching (mrgIfPropagatedStrategy),
     SymEq ((.==)),
     SymInteger,
     SymOrd ((.<=)),
@@ -42,6 +43,7 @@ import Grisette
     mrgIf,
     mrgIte1,
     mrgSingle,
+    onUnionMWithStrategy,
     toUnionSym,
     tryMerge,
     unionToCon,
@@ -61,6 +63,10 @@ import Grisette.Internal.Core.Data.UnionBase
     ifWithLeftMost,
   )
 import Grisette.TestUtil.PrettyPrint (compactRenderedAs, renderedAs)
+import Grisette.TestUtil.NoMerge
+  ( MergingOnly (runMergingOnly),
+    MergingTryOnly (runMergingTryOnly),
+  )
 import Grisette.TestUtil.SymbolicAssertion ((.@?=))
 import Test.Framework (Test, testGroup)
 import Test.Framework.Providers.HUnit (testCase)
@@ -122,6 +128,26 @@ unionTests =
               mrgSingle (symIte "u1c" "u1a" "u1b") :: ExceptT () (AsKey1 Union) (AsKey SymInteger)
         liftUnion (getAsKey1 unionSimple1) @?= expected
         liftToMonadUnion (getAsKey1 unionSimple1) @?= expected,
+      testCase "liftUnion needs normalization, not propagated branching" $ do
+        let expected = mrgSingle (symIte "u1c" "u1a" "u1b")
+        runMergingTryOnly
+          (liftUnion (getAsKey1 unionSimple1) :: MergingTryOnly (AsKey SymInteger))
+          @?= expected,
+      testCase "onUnionMWithStrategy merges the complete callback result" $ do
+        let source =
+              mrgIfPropagatedStrategy
+                "condition"
+                (pure ("left" :: AsKey SymBool))
+                (pure "right") ::
+                Union (AsKey SymBool)
+        runMergingOnly
+          ( onUnionMWithStrategy
+              rootStrategy
+              pure
+              source ::
+              MergingOnly (AsKey SymBool)
+          )
+          @?= mrgSingle (symIte "condition" "left" "right"),
       testCase "unionSize" $
         unionSize (getAsKey1 union12Merged) @?= 2,
       testCase "unaryOp" $
@@ -135,7 +161,7 @@ unionTests =
         tryMergeWithStrategy rootStrategy union12 @?= union12Merged,
       testCase "SimpleMerge" $
         mrgIte "u12c" union1 union2 @?= union12Merged,
-      testCase "SymBranching" $ do
+      testCase "MergingBranching" $ do
         let actual = mrgIfWithStrategy rootStrategy "u12c" union1 union2
         actual @?= union12Merged,
       testCase "SimpleMergeable1" $

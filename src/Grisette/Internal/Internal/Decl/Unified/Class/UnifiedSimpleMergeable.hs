@@ -35,10 +35,7 @@ import Grisette.Internal.Internal.Decl.Core.Data.Class.SimpleMergeable
   ( SimpleMergeable,
     SimpleMergeable1,
     SimpleMergeable2,
-    SymBranching,
-  )
-import Grisette.Internal.Internal.Decl.Core.Data.Class.TryMerge
-  ( TryMerge,
+    MergingBranching,
   )
 import Grisette.Internal.Unified.EvalModeTag (EvalModeTag, IsConMode)
 import Grisette.Internal.Unified.Util (DecideEvalMode)
@@ -69,10 +66,10 @@ class (DecideEvalMode mode) => UnifiedSimpleMergeable2 mode f where
 -- | A class that provides a unified branching operation.
 --
 -- We use this type class to help resolve the constraints for
--- `SymBranching`.
+-- `MergingBranching`.
 class
-  (DecideEvalMode mode, TryMerge m) =>
+  (DecideEvalMode mode) =>
   UnifiedBranching (mode :: EvalModeTag) m
   where
   withBaseBranching ::
-    ((If (IsConMode mode) (TryMerge m) (SymBranching m)) => r) -> r
+    ((If (IsConMode mode) (() :: Constraint) (MergingBranching m)) => r) -> r

@@ -30,6 +30,7 @@ import Control.Exception (ArithException)
 import Control.Monad.Error.Class (MonadError)
 import Grisette.Internal.Core.Data.Class.SafeFdiv (SafeFdiv)
 import qualified Grisette.Internal.Core.Data.Class.SafeFdiv
+import Grisette.Internal.Core.Data.Class.TryMerge (TryMerge)
 import Grisette.Internal.SymPrim.AlgReal (AlgReal)
 import Grisette.Internal.SymPrim.SymAlgReal (SymAlgReal)
 import Grisette.Internal.Unified.Class.UnifiedSimpleMergeable
@@ -69,14 +70,14 @@ instance
   withBaseUnifiedSafeFdiv r = r
 
 instance
-  (MonadError ArithException m, UnifiedBranching mode m) =>
+  (MonadError ArithException m, UnifiedBranching mode m, TryMerge m) =>
   UnifiedSafeFdiv mode ArithException AlgReal m
   where
   withBaseUnifiedSafeFdiv r =
     withMode @mode (withBaseBranching @mode @m r) (withBaseBranching @mode @m r)
 
 instance
-  (MonadError ArithException m, UnifiedBranching 'S m) =>
+  (MonadError ArithException m, UnifiedBranching 'S m, TryMerge m) =>
   UnifiedSafeFdiv 'S ArithException SymAlgReal m
   where
   withBaseUnifiedSafeFdiv r = withBaseBranching @'S @m r

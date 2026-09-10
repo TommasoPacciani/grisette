@@ -21,6 +21,7 @@ module Grisette.Internal.Unified.Class.UnifiedSimpleMergeable
     mrgIte2,
     liftMrgIte2,
     simpleMerge,
+    onUnionMWithStrategy,
   )
 where
 

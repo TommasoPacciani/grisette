@@ -19,11 +19,13 @@ where
 
 import Control.Exception (ArithException (RatioZeroDenominator))
 import Control.Monad.Error.Class (MonadError (throwError))
-import Grisette.Internal.Core.Control.Monad.Class.Union (MonadUnion)
 import Grisette.Internal.Core.Data.Class.AsKey (AsKey (AsKey))
 import Grisette.Internal.Core.Data.Class.ITEOp (ITEOp (symIte))
 import Grisette.Internal.Core.Data.Class.Mergeable (Mergeable)
-import Grisette.Internal.Core.Data.Class.SimpleMergeable (mrgIf)
+import Grisette.Internal.Core.Data.Class.SimpleMergeable
+  ( MergingBranching,
+    mrgIf,
+  )
 import Grisette.Internal.Core.Data.Class.SymEq (SymEq ((.==)))
 import Grisette.Internal.Core.Data.Class.TryMerge (TryMerge, mrgSingle)
 import Grisette.Internal.SymPrim.SymAlgReal (SymAlgReal)
@@ -64,7 +66,7 @@ instance LogBaseOr SymAlgReal where
   {-# INLINE logBaseOr #-}
 
 instance
-  (MonadError ArithException m, MonadUnion m) =>
+  (MonadError ArithException m, MergingBranching m, TryMerge m) =>
   SafeLogBase ArithException SymAlgReal m
   where
   safeLogBase base a =

@@ -568,7 +568,18 @@ test-suite sequence-spec
   type: exitcode-stdio-1.0
   main-is: Main.hs
   other-modules:
+      Grisette.Backend.KindRenderingTests
+      Grisette.Backend.KindRegistrationTests
+      Grisette.Backend.ResultContextTests
+      Grisette.Backend.SolverLifecycleTests
+      Grisette.Backend.ScopedLoweringTests
+      Grisette.Backend.LiteralFoldLoweringTests
+      Grisette.Backend.MemoUtilsTests
+      Grisette.Backend.ProjectedModelTests
       Grisette.SymPrim.SequenceTests
+      Grisette.SymPrim.SequenceLaneTests
+      Grisette.SymPrim.IntegerSerializationTests
+      Grisette.SymPrim.TermUtilsTests
   hs-source-dirs:
       test-sequence
   ghc-options: -threaded -rtsopts -with-rtsopts=-N
@@ -576,7 +587,9 @@ test-suite sequence-spec
       HUnit ==1.6.*
     , base >=4.14 && <5
     , binary >=0.8.8 && <0.9
+    , bytes >=0.17.1 && <0.18
     , bytestring >=0.10.12 && <0.13
+    , cereal >=0.5.8.1 && <0.6
     , deepseq >=1.4.4 && <1.6
     , grisette
     , sbv >=13.4

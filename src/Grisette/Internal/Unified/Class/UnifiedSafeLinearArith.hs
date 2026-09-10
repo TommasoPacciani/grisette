@@ -36,6 +36,7 @@ import Grisette.Internal.Core.Data.Class.SafeLinearArith
     SafeLinearArith,
   )
 import qualified Grisette.Internal.Core.Data.Class.SafeLinearArith
+import Grisette.Internal.Core.Data.Class.TryMerge (TryMerge)
 import Grisette.Internal.SymPrim.BV (IntN, WordN)
 import Grisette.Internal.SymPrim.SomeBV
   ( SomeBVException,
@@ -127,47 +128,48 @@ instance
   withBaseSafeLinearArith r = r
 
 instance
-  (MonadError ArithException m, UnifiedBranching mode m) =>
+  (MonadError ArithException m, UnifiedBranching mode m, TryMerge m) =>
   UnifiedSafeLinearArith mode ArithException Integer m
   where
   withBaseSafeLinearArith r =
     withMode @mode (withBaseBranching @mode @m r) (withBaseBranching @mode @m r)
 
 instance
-  (MonadError ArithException m, UnifiedBranching 'S m) =>
+  (MonadError ArithException m, UnifiedBranching 'S m, TryMerge m) =>
   UnifiedSafeLinearArith 'S ArithException SymInteger m
   where
   withBaseSafeLinearArith r = withBaseBranching @'S @m r
 
 instance
-  (MonadError ArithException m, UnifiedBranching mode m, KnownNat n, 1 <= n) =>
+  (MonadError ArithException m, UnifiedBranching mode m, TryMerge m, KnownNat n, 1 <= n) =>
   UnifiedSafeLinearArith mode ArithException (IntN n) m
   where
   withBaseSafeLinearArith r =
     withMode @mode (withBaseBranching @mode @m r) (withBaseBranching @mode @m r)
 
 instance
-  (MonadError ArithException m, UnifiedBranching 'S m, KnownNat n, 1 <= n) =>
+  (MonadError ArithException m, UnifiedBranching 'S m, TryMerge m, KnownNat n, 1 <= n) =>
   UnifiedSafeLinearArith 'S ArithException (SymIntN n) m
   where
   withBaseSafeLinearArith r = withBaseBranching @'S @m r
 
 instance
-  (MonadError ArithException m, UnifiedBranching mode m, KnownNat n, 1 <= n) =>
+  (MonadError ArithException m, UnifiedBranching mode m, TryMerge m, KnownNat n, 1 <= n) =>
   UnifiedSafeLinearArith mode ArithException (WordN n) m
   where
   withBaseSafeLinearArith r =
     withMode @mode (withBaseBranching @mode @m r) (withBaseBranching @mode @m r)
 
 instance
-  (MonadError ArithException m, UnifiedBranching 'S m, KnownNat n, 1 <= n) =>
+  (MonadError ArithException m, UnifiedBranching 'S m, TryMerge m, KnownNat n, 1 <= n) =>
   UnifiedSafeLinearArith 'S ArithException (SymWordN n) m
   where
   withBaseSafeLinearArith r = withBaseBranching @'S @m r
 
 instance
   ( MonadError (Either SomeBVException ArithException) m,
-    UnifiedBranching mode m
+    UnifiedBranching mode m,
+    TryMerge m
   ) =>
   UnifiedSafeLinearArith
     mode
@@ -180,7 +182,8 @@ instance
 
 instance
   ( MonadError (Either SomeBVException ArithException) m,
-    UnifiedBranching 'S m
+    UnifiedBranching 'S m,
+    TryMerge m
   ) =>
   UnifiedSafeLinearArith
     'S
@@ -192,7 +195,8 @@ instance
 
 instance
   ( MonadError (Either SomeBVException ArithException) m,
-    UnifiedBranching mode m
+    UnifiedBranching mode m,
+    TryMerge m
   ) =>
   UnifiedSafeLinearArith
     mode
@@ -205,7 +209,8 @@ instance
 
 instance
   ( MonadError (Either SomeBVException ArithException) m,
-    UnifiedBranching 'S m
+    UnifiedBranching 'S m,
+    TryMerge m
   ) =>
   UnifiedSafeLinearArith
     'S

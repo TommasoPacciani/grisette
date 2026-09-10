@@ -55,7 +55,7 @@ import Grisette.Internal.Internal.Decl.Core.Data.Class.ExtractSym
   ( ExtractSym,
   )
 import Grisette.Internal.Internal.Decl.Core.Data.Class.Mergeable
-  ( Mergeable,
+  ( Mergeable (rootStrategy),
   )
 import Grisette.Internal.Internal.Decl.Core.Data.Class.PPrint
   ( PPrint,
@@ -85,7 +85,7 @@ import Grisette.Internal.Internal.Decl.Unified.Class.UnifiedITEOp
   ( UnifiedITEOp,
   )
 import Grisette.Internal.Internal.Decl.Unified.Class.UnifiedSimpleMergeable
-  ( UnifiedBranching (withBaseBranching),
+  ( UnifiedBranching,
     UnifiedSimpleMergeable,
     UnifiedSimpleMergeable1,
   )
@@ -99,7 +99,7 @@ import Grisette.Internal.Internal.Decl.Unified.Class.UnifiedSymOrd
   )
 import Grisette.Internal.Internal.Impl.Unified.Class.UnifiedITEOp ()
 import Grisette.Internal.Internal.Impl.Unified.Class.UnifiedSimpleMergeable
-  ( liftUnion,
+  ( onUnionMWithStrategy,
   )
 import Grisette.Internal.Internal.Impl.Unified.Class.UnifiedSymEq ()
 import Grisette.Internal.Internal.Impl.Unified.Class.UnifiedSymOrd ()
@@ -167,7 +167,7 @@ class
   wrapData :: (Mergeable v) => v -> u
 
   -- | Extracts a value from the unified data type.
-  extractData :: (Mergeable v, Monad m, UnifiedBranching mode m) => u -> m v
+  extractData :: (Mergeable v, Applicative m, UnifiedBranching mode m) => u -> m v
 
 instance UnifiedDataBase 'C where
   type GetData 'C = Identity
@@ -175,8 +175,8 @@ instance UnifiedDataBase 'C where
 instance UnifiedDataImpl 'C v (Identity v) where
   wrapData = Identity
   extractData ::
-    forall m. (Mergeable v, Monad m, UnifiedBranching C m) => Identity v -> m v
-  extractData = withBaseBranching @'C @m $ return . runIdentity
+    forall m. (Mergeable v, Applicative m, UnifiedBranching C m) => Identity v -> m v
+  extractData = pure . runIdentity
 
 instance UnifiedDataBase 'S where
   type GetData 'S = Union
@@ -184,8 +184,8 @@ instance UnifiedDataBase 'S where
 instance UnifiedDataImpl 'S v (Union v) where
   wrapData = mrgSingle
   extractData ::
-    forall m. (Mergeable v, Monad m, UnifiedBranching S m) => Union v -> m v
-  extractData = liftUnion
+    forall m. (Mergeable v, Applicative m, UnifiedBranching S m) => Union v -> m v
+  extractData = onUnionMWithStrategy @'S rootStrategy pure
 
 -- | This class is needed as constraint in user code prior to GHC 9.2.1.
 -- See the notes in 'Grisette.Internal.Unified.IsMode.IsMode'.

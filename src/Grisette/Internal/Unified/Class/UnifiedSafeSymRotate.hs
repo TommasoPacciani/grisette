@@ -33,6 +33,7 @@ import Control.Monad.Error.Class (MonadError)
 import GHC.TypeLits (KnownNat, type (<=))
 import Grisette.Internal.Core.Data.Class.SafeSymRotate (SafeSymRotate)
 import qualified Grisette.Internal.Core.Data.Class.SafeSymRotate
+import Grisette.Internal.Core.Data.Class.TryMerge (TryMerge)
 import Grisette.Internal.SymPrim.BV (IntN, WordN)
 import Grisette.Internal.SymPrim.SomeBV
   ( SomeBVException,
@@ -104,34 +105,35 @@ instance
   withBaseSafeSymRotate r = r
 
 instance
-  (MonadError ArithException m, UnifiedBranching mode m, KnownNat n, 1 <= n) =>
+  (MonadError ArithException m, UnifiedBranching mode m, TryMerge m, KnownNat n, 1 <= n) =>
   UnifiedSafeSymRotate mode ArithException (IntN n) m
   where
   withBaseSafeSymRotate r =
     withMode @mode (withBaseBranching @mode @m r) (withBaseBranching @mode @m r)
 
 instance
-  (MonadError ArithException m, UnifiedBranching 'S m, KnownNat n, 1 <= n) =>
+  (MonadError ArithException m, UnifiedBranching 'S m, TryMerge m, KnownNat n, 1 <= n) =>
   UnifiedSafeSymRotate 'S ArithException (SymIntN n) m
   where
   withBaseSafeSymRotate r = withBaseBranching @'S @m r
 
 instance
-  (MonadError ArithException m, UnifiedBranching mode m, KnownNat n, 1 <= n) =>
+  (MonadError ArithException m, UnifiedBranching mode m, TryMerge m, KnownNat n, 1 <= n) =>
   UnifiedSafeSymRotate mode ArithException (WordN n) m
   where
   withBaseSafeSymRotate r =
     withMode @mode (withBaseBranching @mode @m r) (withBaseBranching @mode @m r)
 
 instance
-  (MonadError ArithException m, UnifiedBranching 'S m, KnownNat n, 1 <= n) =>
+  (MonadError ArithException m, UnifiedBranching 'S m, TryMerge m, KnownNat n, 1 <= n) =>
   UnifiedSafeSymRotate 'S ArithException (SymWordN n) m
   where
   withBaseSafeSymRotate r = withBaseBranching @'S @m r
 
 instance
   ( MonadError (Either SomeBVException ArithException) m,
-    UnifiedBranching mode m
+    UnifiedBranching mode m,
+    TryMerge m
   ) =>
   UnifiedSafeSymRotate
     mode
@@ -144,7 +146,8 @@ instance
 
 instance
   ( MonadError (Either SomeBVException ArithException) m,
-    UnifiedBranching 'S m
+    UnifiedBranching 'S m,
+    TryMerge m
   ) =>
   UnifiedSafeSymRotate
     'S
@@ -156,7 +159,8 @@ instance
 
 instance
   ( MonadError (Either SomeBVException ArithException) m,
-    UnifiedBranching mode m
+    UnifiedBranching mode m,
+    TryMerge m
   ) =>
   UnifiedSafeSymRotate
     mode
@@ -169,7 +173,8 @@ instance
 
 instance
   ( MonadError (Either SomeBVException ArithException) m,
-    UnifiedBranching 'S m
+    UnifiedBranching 'S m,
+    TryMerge m
   ) =>
   UnifiedSafeSymRotate
     'S

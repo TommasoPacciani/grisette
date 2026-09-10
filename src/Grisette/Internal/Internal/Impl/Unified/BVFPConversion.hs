@@ -26,6 +26,7 @@ where
 
 import Control.Monad.Error.Class (MonadError)
 import GHC.TypeLits (KnownNat, type (+), type (<=))
+import Grisette.Internal.Core.Data.Class.TryMerge (TryMerge)
 import Grisette.Internal.Internal.Decl.Unified.BVFPConversion
   ( AllUnifiedBVFPConversion,
     SafeUnifiedBVFPConversion,
@@ -132,6 +133,7 @@ instance
     UnifiedBVFPConversion mode n eb sb,
     forall n eb sb m.
     ( UnifiedBranching mode m,
+      TryMerge m,
       ValidFP eb sb,
       KnownNat n,
       1 <= n,

@@ -36,6 +36,7 @@ import Grisette.Internal.Core.Data.Class.IEEEFP
     IEEEFPToAlgReal,
   )
 import Grisette.Internal.Core.Data.Class.SymIEEEFP (SymIEEEFPTraits)
+import Grisette.Internal.Core.Data.Class.TryMerge (TryMerge)
 import Grisette.Internal.SymPrim.FP (FP, NotRepresentableFPError, ValidFP)
 import Grisette.Internal.SymPrim.SymFP (SymFP)
 import Grisette.Internal.Unified.BaseConstraint (ConSymConversion)
@@ -130,6 +131,7 @@ class
     forall eb sb m.
     ( ValidFP eb sb,
       UnifiedBranching mode m,
+      TryMerge m,
       MonadError NotRepresentableFPError m
     ) =>
     SafeUnifiedFP mode eb sb m

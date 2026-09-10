@@ -37,6 +37,7 @@ module Grisette.Internal.Internal.Impl.Unified.Class.UnifiedSimpleMergeable
     onUnion2,
     onUnion3,
     onUnion4,
+    onUnionMWithStrategy,
   )
 where
 
@@ -56,12 +57,16 @@ import Data.Type.Bool (If)
 import Grisette.Internal.Core.Control.Exception (AssertionError)
 import Grisette.Internal.Core.Data.Class.Function (Function ((#)))
 import Grisette.Internal.Core.Data.Class.GenSym (FreshT)
-import Grisette.Internal.Core.Data.Class.Mergeable (Mergeable, Mergeable1)
+import Grisette.Internal.Core.Data.Class.Mergeable
+  ( Mergeable,
+    Mergeable1,
+    MergingStrategy,
+  )
 import Grisette.Internal.Core.Data.Class.SimpleMergeable
-  ( SimpleMergeable,
+  ( MergingBranching,
+    SimpleMergeable,
     SimpleMergeable1,
     SimpleMergeable2,
-    SymBranching,
   )
 import qualified Grisette.Internal.Core.Data.Class.SimpleMergeable
 import qualified Grisette.Internal.Core.Data.Class.SimpleMergeable as Grisette
@@ -114,6 +119,7 @@ liftUnion ::
   forall mode a m u.
   ( Applicative m,
     UnifiedBranching mode m,
+    TryMerge m,
     Mergeable a,
     UnionView u,
     UnionViewMode mode u
@@ -122,7 +128,7 @@ liftUnion ::
   m a
 liftUnion b =
   withMode @mode
-    ( withBaseBranching @mode @m $ case b of
+    ( case b of
         Single x -> mrgSingle x
         If {} ->
           error "liftUnion: If case should not happen under concrete mode"
@@ -160,7 +166,6 @@ infixl 9 .#
 
 onUnion ::
   ( UnifiedSimpleMergeable mode r,
-    UnifiedBranching mode u,
     Mergeable a,
     UnionView u,
     UnionViewMode mode u
@@ -170,7 +175,6 @@ onUnion f = simpleMerge . fmap f . tryMerge
 
 onUnion2 ::
   ( UnifiedSimpleMergeable mode r,
-    UnifiedBranching mode u,
     Mergeable a,
     Mergeable b,
     UnionView u,
@@ -181,7 +185,6 @@ onUnion2 f ua ub = simpleMerge $ f <$> tryMerge ua <*> tryMerge ub
 
 onUnion3 ::
   ( UnifiedSimpleMergeable mode r,
-    UnifiedBranching mode u,
     Mergeable a,
     Mergeable b,
     Mergeable c,
@@ -193,7 +196,6 @@ onUnion3 f ua ub uc = simpleMerge $ f <$> tryMerge ua <*> tryMerge ub <*> tryMer
 
 onUnion4 ::
   ( UnifiedSimpleMergeable mode r,
-    UnifiedBranching mode u,
     Mergeable a,
     Mergeable b,
     Mergeable c,
@@ -203,6 +205,30 @@ onUnion4 ::
   ) =>
   (a -> b -> c -> d -> r) -> (u a -> u b -> u c -> u d -> r)
 onUnion4 f ua ub uc ud = simpleMerge $ f <$> tryMerge ua <*> tryMerge ub <*> tryMerge uc <*> tryMerge ud
+
+-- | Unified effectful elimination of a union with an explicit result strategy.
+onUnionMWithStrategy ::
+  forall mode u m a b.
+  ( UnionView u,
+    UnionViewMode mode u,
+    Mergeable a,
+    UnifiedBranching mode m
+  ) =>
+  MergingStrategy b ->
+  (a -> m b) ->
+  u a ->
+  m b
+onUnionMWithStrategy strategy use union =
+  withMode @mode
+    ( case union of
+        Single x -> use x
+        If {} ->
+          error "onUnionMWithStrategy: If case should not happen under concrete mode"
+    )
+    ( withBaseBranching @mode @m $
+        Grisette.onUnionMWithStrategy strategy use union
+    )
+{-# INLINE onUnionMWithStrategy #-}
 
 -- | Unified `Grisette.mrgIte`.
 mrgIte ::
@@ -293,8 +319,7 @@ liftMrgIte2 f g c t e =
 instance
   {-# INCOHERENT #-}
   ( DecideEvalMode mode,
-    TryMerge m,
-    If (IsConMode mode) ((TryMerge m) :: Constraint) (SymBranching m)
+    If (IsConMode mode) (() :: Constraint) (MergingBranching m)
   ) =>
   UnifiedBranching mode m
   where

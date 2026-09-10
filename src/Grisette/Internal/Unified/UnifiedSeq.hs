@@ -159,6 +159,10 @@ class UnifiedSeq (mode :: EvalModeTag) where
   lengthSeq :: SeqValue mode a => GetSeq mode a -> GetInteger mode
   rangeSeq :: GetInteger mode -> GetSeq mode (GetInteger mode)
   tailSeq :: SeqValue mode a => GetSeq mode a -> GetSeq mode a
+  -- | Keep exactly max(0, count) elements, padding missing positions with seed.
+  resizeSeq :: SeqValue mode a => a -> GetInteger mode -> GetSeq mode a -> GetSeq mode a
+  -- | Replace one existing position; negative and out-of-range indices are unchanged.
+  updateSeq :: SeqValue mode a => GetInteger mode -> a -> GetSeq mode a -> GetSeq mode a
   lookupSeq ::
     SeqValue mode a =>
     a ->
@@ -261,6 +265,18 @@ instance UnifiedSeq 'C where
   lengthSeq = foldl' (\count _ -> count P.+ 1) 0
   rangeSeq n = [0 .. n P.- 1]
   tailSeq = P.drop 1
+  resizeSeq seed = go
+    where
+      go count _ | count P.<= 0 = []
+      go count [] = seed : go (count P.- 1) []
+      go count (value : rest) = value : go (count P.- 1) rest
+  updateSeq index replacement source
+    | index P.< 0 = source
+    | P.otherwise = go index source
+    where
+      go _ [] = []
+      go 0 (_ : rest) = replacement : rest
+      go position (value : rest) = value : go (position P.- 1) rest
   lookupSeq seed values index = go values index
     where
       go [] _ = (P.False, seed)
@@ -291,6 +307,8 @@ instance UnifiedSeq 'S where
   lengthSeq = SSeq.length
   rangeSeq = SSeq.range
   tailSeq = SSeq.tail
+  resizeSeq = SSeq.resize
+  updateSeq = SSeq.update
   lookupSeq = SSeq.lookup
   lookupSeqValue = SSeq.lookupValue
   lookupSeqParts = SSeq.lookupParts

@@ -1,12 +1,5 @@
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE ExplicitNamespaces #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE GADTs #-}
+{-# LANGUAGE GHC2024 #-}
 {-# LANGUAGE PatternSynonyms #-}
-{-# LANGUAGE PolyKinds #-}
-{-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeApplications #-}
 
 -- |
 -- Module      :   Grisette.Internal.SymPrim.Prim.TermUtils
@@ -18,6 +11,7 @@
 -- Portability :   GHC only
 module Grisette.Internal.SymPrim.Prim.TermUtils
   ( extractSymSomeTerm,
+    extractSymSomeTermIncludeBoundedVars,
     extractTerm,
     castTerm,
     someTermsSize,
@@ -48,13 +42,16 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
       ),
     IsSymbolKind (SymbolKindConstraint),
     type (-->) (GeneralFun),
+    SomeTypedAnySymbol,
     SomeTypedConstantSymbol,
     SomeTypedSymbol (SomeTypedSymbol),
     SupportedPrim (castTypedSymbol, primTypeRep),
     Term,
     TypedAnySymbol,
+    TypedSymbol (TypedSymbol),
     focusedSeqFoldCallbackTerm,
     someTypedSymbol,
+    typedAnySymbol,
     pattern ConTerm,
     pattern ExistsTerm,
     pattern FocusedSeqFoldTerm,
@@ -160,6 +157,69 @@ extractSymSomeTerm initialBounded = go initialMemo initialBounded
     combineSet (Just a) (Just b) = Just $ HS.union a b
     combineSet _ _ = Nothing
     combineAllSets = foldr combineSet (Just HS.empty)
+
+-- | Collect every mentioned symbol, including unused binders. Freshness must
+-- avoid bound names as well as free names, so this walk is scope-independent.
+-- Keep one visited-node set and one result set: caching a descendant-symbol set
+-- at every node repeatedly unions overlapping sets in a shared term DAG.
+extractSymSomeTermIncludeBoundedVars ::
+  SomeTerm -> HS.HashSet SomeTypedAnySymbol
+extractSymSomeTermIncludeBoundedVars root = go HS.empty HS.empty [root]
+  where
+    go
+      :: HS.HashSet SomeTerm
+      -> HS.HashSet SomeTypedAnySymbol
+      -> [SomeTerm]
+      -> HS.HashSet SomeTypedAnySymbol
+    go !_ !symbols [] = symbols
+    go !visited !symbols (term : pending)
+      | HS.member term visited = go visited symbols pending
+      | otherwise =
+          let !visited' = HS.insert term visited
+           in case term of
+                SomeTerm (SymTerm symbol) ->
+                  go visited' (HS.insert (someTypedSymbol symbol) symbols) pending
+                SomeTerm (ConTerm value :: Term value) ->
+                  case (primTypeRep :: TypeRep value) of
+                    App (App function _) _ ->
+                      case eqTypeRep (typeRep @(-->)) function of
+                        Just HRefl -> case value of
+                          GeneralFun binder body ->
+                            go visited' (HS.insert (asAny binder) symbols)
+                              (someTerm body : pending)
+                        Nothing -> go visited' symbols pending
+                    _ -> go visited' symbols pending
+                SomeTerm (ForallTerm binder body) ->
+                  go visited' (HS.insert (asAny binder) symbols)
+                    (someTerm body : pending)
+                SomeTerm (ExistsTerm binder body) ->
+                  go visited' (HS.insert (asAny binder) symbols)
+                    (someTerm body : pending)
+                SomeTerm (FocusedSeqFoldTerm callback operands initial driver) ->
+                  go visited' (addFocusedBinders callback symbols) $
+                    someTerm (focusedSeqFoldCallbackTerm callback)
+                      : addFocusedOperands operands
+                          (someTerm initial : someTerm driver : pending)
+                SomeTerm (SubTerms terms) ->
+                  go visited' symbols (terms ++ pending)
+
+    asAny :: forall kind value. TypedSymbol kind value -> SomeTypedAnySymbol
+    asAny (TypedSymbol symbol) =
+      someTypedSymbol (typedAnySymbol @value symbol)
+
+    addFocusedBinders
+      :: FocusedSeqFoldCallback captures state element
+      -> HS.HashSet SomeTypedAnySymbol
+      -> HS.HashSet SomeTypedAnySymbol
+    addFocusedBinders (FocusedSeqFoldCallbackBody _) !symbols = symbols
+    addFocusedBinders (FocusedSeqFoldCallbackBind symbol rest) !symbols =
+      addFocusedBinders rest (HS.insert (asAny symbol) symbols)
+
+    addFocusedOperands
+      :: FocusedSeqFoldOperands captures -> [SomeTerm] -> [SomeTerm]
+    addFocusedOperands NoFocusedSeqFoldOperands pending = pending
+    addFocusedOperands (FocusedSeqFoldOperand operand rest) pending =
+      someTerm operand : addFocusedOperands rest pending
 
 -- | Extract all the symbols in a term.
 extractTerm ::

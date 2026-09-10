@@ -51,6 +51,7 @@ module Grisette.Unified
     onUnion2,
     onUnion3,
     onUnion4,
+    onUnionMWithStrategy,
 
     -- ** Unified ITE operator
     UnifiedITEOp (..),
@@ -225,7 +226,14 @@ module Grisette.Unified
   )
 where
 
-import Grisette.Internal.Internal.Impl.Unified.Class.UnifiedSimpleMergeable (onUnion, onUnion2, onUnion3, onUnion4, (.#))
+import Grisette.Internal.Internal.Impl.Unified.Class.UnifiedSimpleMergeable
+  ( onUnion,
+    onUnion2,
+    onUnion3,
+    onUnion4,
+    onUnionMWithStrategy,
+    (.#),
+  )
 import Grisette.Internal.Unified.BVBVConversion
   ( UnifiedBVBVConversion,
   )

@@ -49,7 +49,8 @@ import Grisette.Internal.Internal.Decl.Core.Data.Class.Mergeable
 import Grisette.Internal.Internal.Decl.Core.Data.Class.SimpleMergeable
   ( SimpleMergeable (mrgIte),
     SimpleMergeable1 (liftMrgIte),
-    SymBranching (mrgIfPropagatedStrategy, mrgIfWithStrategy),
+    MergingBranching (mrgIfWithStrategy),
+    SymBranching (mrgIfPropagatedStrategy),
     mrgIf,
   )
 import Grisette.Internal.Internal.Decl.Core.Data.Class.TryMerge
@@ -262,7 +263,7 @@ instance SimpleMergeable1 Union where
   liftMrgIte m = mrgIfWithStrategy (SimpleStrategy m)
   {-# INLINE liftMrgIte #-}
 
-instance SymBranching Union where
+instance MergingBranching Union where
   mrgIfWithStrategy s (Con c) l r =
     if c then tryMergeWithStrategy s l else tryMergeWithStrategy s r
   mrgIfWithStrategy s cond l r =
@@ -273,6 +274,8 @@ instance SymBranching Union where
         (unionBase l)
         (unionBase r)
   {-# INLINE mrgIfWithStrategy #-}
+
+instance SymBranching Union where
   mrgIfPropagatedStrategy cond (Union Nothing t) (Union Nothing f) =
     Union Nothing $ ifWithLeftMost False cond t f
   mrgIfPropagatedStrategy cond t@(Union (Just m) _) f = mrgIfWithStrategy m cond t f

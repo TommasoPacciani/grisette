@@ -18,6 +18,8 @@ module Grisette.Internal.SymPrim.SymSeq
     append,
     range,
     tail,
+    resize,
+    update,
     lookup,
     lookupValue,
     lookupParts,
@@ -94,6 +96,8 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
     pevalSeqConsTerm,
     pevalSeqRangeTerm,
     pevalSeqTailTerm,
+    pevalSeqResizeTerm,
+    pevalSeqUpdateTerm,
     pevalSeqLookupTerm,
     pevalSeqLookupValueTerm,
     PEvalOrdTerm (pevalLeOrdTerm, pevalLtOrdTerm),
@@ -252,6 +256,21 @@ tail ::
   SymSeq a ->
   SymSeq a
 tail = wrapTerm . pevalSeqTailTerm . underlyingTerm
+
+-- | Retain max(0, count) positions, padding with exactly the supplied seed.
+resize ::
+  (SupportedNonFuncPrim (ConType a), LinkedRep (ConType a) a) =>
+  a -> SymInteger -> SymSeq a -> SymSeq a
+resize seed count sequence = wrapTerm $
+  pevalSeqResizeTerm (underlyingTerm seed) (underlyingTerm count) (underlyingTerm sequence)
+
+-- | Total point replacement. The sequence's length and out-of-domain values
+-- are unchanged; no recursive callback is introduced for a point operation.
+update ::
+  (SupportedNonFuncPrim (ConType a), LinkedRep (ConType a) a) =>
+  SymInteger -> a -> SymSeq a -> SymSeq a
+update index replacement sequence = wrapTerm $
+  pevalSeqUpdateTerm (underlyingTerm index) (underlyingTerm replacement) (underlyingTerm sequence)
 
 lookup ::
   (SupportedNonFuncPrim (ConType a), LinkedRep (ConType a) a) =>

@@ -27,7 +27,6 @@ import Data.Int (Int16, Int32, Int64)
 import Data.SBV (Word32)
 import Data.Word (Word16, Word64)
 import GHC.TypeLits (KnownNat, type (+), type (<=))
-import Grisette.Internal.Core.Control.Monad.Class.Union (MonadUnion)
 import Grisette.Internal.Core.Data.Class.AsKey (AsKey (AsKey))
 import Grisette.Internal.Core.Data.Class.BitCast
   ( BitCast (bitCast),
@@ -36,7 +35,10 @@ import Grisette.Internal.Core.Data.Class.BitCast
   )
 import Grisette.Internal.Core.Data.Class.IEEEFP (fpIsNaN)
 import Grisette.Internal.Core.Data.Class.Mergeable (Mergeable)
-import Grisette.Internal.Core.Data.Class.SimpleMergeable (mrgIf)
+import Grisette.Internal.Core.Data.Class.SimpleMergeable
+  ( MergingBranching,
+    mrgIf,
+  )
 import Grisette.Internal.Core.Data.Class.SymIEEEFP
   ( SymIEEEFPTraits (symFpIsNaN),
   )
@@ -114,7 +116,8 @@ instance
     r ~ (eb + sb),
     KnownNat r,
     1 <= r,
-    MonadUnion m,
+    MergingBranching m,
+    TryMerge m,
     MonadError NotRepresentableFPError m
   ) =>
   SafeBitCast NotRepresentableFPError (SymFP eb sb) (SymWordN r) m
@@ -130,7 +133,8 @@ instance
     r ~ (eb + sb),
     KnownNat r,
     1 <= r,
-    MonadUnion m,
+    MergingBranching m,
+    TryMerge m,
     MonadError NotRepresentableFPError m
   ) =>
   SafeBitCast NotRepresentableFPError (SymFP eb sb) (SymIntN r) m

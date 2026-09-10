@@ -40,6 +40,7 @@ import Grisette
   )
 import Grisette.Core.Data.Class.TestValues (ssymBool)
 import Grisette.Internal.Core.Data.Class.AsKey (AsKey, AsKey1)
+import Grisette.TestUtil.NoMerge (MergingOnly (runMergingOnly))
 import Test.Framework (Test, testGroup)
 import Test.Framework.Providers.HUnit (testCase)
 import Test.HUnit ((@?=))
@@ -58,7 +59,16 @@ simpleMergeableTests :: Test
 simpleMergeableTests =
   testGroup
     "SimpleMergeable"
-    [ testGroup
+    [ testCase "mrgIf only needs explicit-strategy branching" $ do
+        runMergingOnly
+          ( mrgIf
+              (ssym "condition")
+              (pure (ssym "left" :: AsKey SymBool))
+              (pure (ssym "right" :: AsKey SymBool)) ::
+              MergingOnly (AsKey SymBool)
+          )
+          @?= mrgSingle (symIte "condition" "left" "right"),
+      testGroup
         "SimpleMergeable for common types"
         [ testCase "SymBool" $ do
             mrgIte (ssym "a") (ssym "b" :: AsKey SymBool) (ssym "c")

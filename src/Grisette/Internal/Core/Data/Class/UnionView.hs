@@ -29,6 +29,7 @@ module Grisette.Internal.Core.Data.Class.UnionView
     onUnion2,
     onUnion3,
     onUnion4,
+    onUnionMWithStrategy,
     unionToCon,
     liftUnion,
     liftToMonadUnion,
@@ -47,10 +48,11 @@ import Grisette.Internal.Core.Data.Class.LogicalOp
 import Grisette.Internal.Core.Data.Class.Solvable (Solvable (con))
 import Grisette.Internal.Internal.Decl.Core.Data.Class.Mergeable
   ( Mergeable,
+    MergingStrategy,
   )
 import Grisette.Internal.Internal.Decl.Core.Data.Class.SimpleMergeable
-  ( SimpleMergeable,
-    SymBranching,
+  ( MergingBranching (mrgIfWithStrategy),
+    SimpleMergeable,
     mrgIf,
   )
 import Grisette.Internal.Internal.Decl.Core.Data.Class.ToCon (ToCon (toCon))
@@ -67,7 +69,7 @@ import Grisette.Internal.SymPrim.SymBool (SymBool)
 
 -- | The result of 'ifView'.
 data IfViewResult u a where
-  IfViewResult :: (SymBranching u) => SymBool -> u a -> u a -> IfViewResult u a
+  IfViewResult :: (MergingBranching u) => SymBool -> u a -> u a -> IfViewResult u a
 
 instance (Show (u a)) => Show (IfViewResult u a) where
   showsPrec d (IfViewResult c l r) =
@@ -144,7 +146,7 @@ pattern Single x <-
 --
 -- >>> case (mrgIfPropagatedStrategy "a" (return 1) (return 2) :: Union Integer) of If c t f -> (c,t,f)
 -- (a,<1>,<2>)
-pattern If :: (UnionView u, Mergeable a) => (SymBranching u) => SymBool -> u a -> u a -> u a
+pattern If :: (UnionView u, Mergeable a) => (MergingBranching u) => SymBool -> u a -> u a -> u a
 pattern If c t f <-
   (ifView -> Just (IfViewResult c t f))
   where
@@ -204,7 +206,7 @@ infixl 9 .#
 -- (ite cond a (+ b c))
 onUnion ::
   forall u a r.
-  (SimpleMergeable r, SymBranching u, UnionView u, Mergeable a) =>
+  (SimpleMergeable r, UnionView u, Mergeable a) =>
   (a -> r) ->
   (u a -> r)
 onUnion f = simpleMerge . fmap f . tryMerge
@@ -213,7 +215,6 @@ onUnion f = simpleMerge . fmap f . tryMerge
 onUnion2 ::
   forall u a b r.
   ( SimpleMergeable r,
-    SymBranching u,
     UnionView u,
     Mergeable a,
     Mergeable b
@@ -226,7 +227,6 @@ onUnion2 f ua ub = simpleMerge $ f <$> tryMerge ua <*> tryMerge ub
 onUnion3 ::
   forall u a b c r.
   ( SimpleMergeable r,
-    SymBranching u,
     UnionView u,
     Mergeable a,
     Mergeable b,
@@ -241,7 +241,6 @@ onUnion3 f ua ub uc =
 onUnion4 ::
   forall u a b c d r.
   ( SimpleMergeable r,
-    SymBranching u,
     UnionView u,
     Mergeable a,
     Mergeable b,
@@ -253,6 +252,23 @@ onUnion4 ::
 onUnion4 f ua ub uc ud =
   simpleMerge $
     f <$> tryMerge ua <*> tryMerge ub <*> tryMerge uc <*> tryMerge ud
+
+-- | Eliminate a union into an effectful consumer. Every source branch wraps
+-- the complete consumer result with the supplied result strategy.
+onUnionMWithStrategy ::
+  (UnionView u, Mergeable a, MergingBranching m) =>
+  MergingStrategy b ->
+  (a -> m b) ->
+  u a ->
+  m b
+onUnionMWithStrategy _ use (Single x) = use x
+onUnionMWithStrategy strategy use (If cond left right) =
+  mrgIfWithStrategy
+    strategy
+    cond
+    (onUnionMWithStrategy strategy use left)
+    (onUnionMWithStrategy strategy use right)
+{-# INLINE onUnionMWithStrategy #-}
 
 -- | Convert a plain union to concrete values.
 --
@@ -272,16 +288,22 @@ unionToCon u =
     _ -> Nothing
 {-# INLINE unionToCon #-}
 
--- | Lift the 'UnionView' value to any Applicative 'SymBranching'.
+-- | Lift the 'UnionView' value to an applicative that can preserve the source's
+-- canonical root strategy, including on singleton input. Consumers that supply
+-- their own result strategy should use 'onUnionMWithStrategy' instead.
 liftUnion ::
-  (Mergeable a, UnionView u, Applicative m, SymBranching m) => u a -> m a
+  (Mergeable a, UnionView u, Applicative m, MergingBranching m, TryMerge m) =>
+  u a ->
+  m a
 liftUnion u = case u of
   Single x -> mrgSingle x
   If c l r -> mrgIf c (liftUnion l) (liftUnion r)
 
 -- | Alias for 'liftUnion', but for monads.
 liftToMonadUnion ::
-  (Mergeable a, UnionView u, Monad m, SymBranching m) => u a -> m a
+  (Mergeable a, UnionView u, Monad m, MergingBranching m, TryMerge m) =>
+  u a ->
+  m a
 liftToMonadUnion = liftUnion
 
 #if MIN_VERSION_base(4,16,0)

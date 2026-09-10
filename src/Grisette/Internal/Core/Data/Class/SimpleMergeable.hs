@@ -23,6 +23,7 @@ module Grisette.Internal.Core.Data.Class.SimpleMergeable
     genericLiftMrgIte,
 
     -- * Symbolic branching
+    MergingBranching (..),
     SymBranching (..),
     mrgIf,
     mergeWithStrategy,

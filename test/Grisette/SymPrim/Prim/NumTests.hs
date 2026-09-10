@@ -1,10 +1,10 @@
-{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE GHC2024 #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 
 module Grisette.SymPrim.Prim.NumTests (numTests) where
 
-import Grisette (IntN, WordN)
+import Grisette (IntN, SymBool (SymBool), WordN, solve, z3)
+import Grisette.Internal.Core.Data.Class.Solver (SolvingFailure (Unsat))
 import Grisette.Internal.SymPrim.Prim.Term
   ( PEvalNumTerm
       ( pevalAbsNumTerm,
@@ -25,13 +25,23 @@ import Grisette.Internal.SymPrim.Prim.Term
     negNumTerm,
     pevalGeOrdTerm,
     pevalGtOrdTerm,
+    pevalNEqTerm,
     pevalSubNumTerm,
     signumNumTerm,
     ssymTerm,
   )
 import Test.Framework (Test, testGroup)
 import Test.Framework.Providers.HUnit (testCase)
-import Test.HUnit ((@=?))
+import Test.HUnit (Assertion, assertFailure, (@=?))
+
+-- Existing algebraic laws are semantic oracles, not a requirement to expand
+-- symbolic Integer histories into one particular normalized tree.
+assertEquivalent :: SupportedPrim a => Term a -> Term a -> Assertion
+assertEquivalent actual expected = do
+  result <- solve z3 (SymBool (pevalNEqTerm actual expected))
+  case result of
+    Left Unsat -> pure ()
+    _ -> assertFailure ("inequivalent terms: " ++ show (actual, expected, result))
 
 numTests :: Test
 numTests =
@@ -64,36 +74,36 @@ numTests =
               @=? pevalAddNumTerm (conTerm 3 :: Term Integer) (ssymTerm "a"),
           testCase "On left add concrete" $ do
             pevalAddNumTerm (pevalAddNumTerm (conTerm 2 :: Term Integer) (ssymTerm "a")) (ssymTerm "b")
-              @=? pevalAddNumTerm (conTerm 2 :: Term Integer) (pevalAddNumTerm (ssymTerm "a") (ssymTerm "b")),
+              `assertEquivalent` pevalAddNumTerm (conTerm 2 :: Term Integer) (pevalAddNumTerm (ssymTerm "a") (ssymTerm "b")),
           testCase "On right add concrete" $ do
             pevalAddNumTerm (ssymTerm "b") (pevalAddNumTerm (conTerm 2 :: Term Integer) (ssymTerm "a"))
-              @=? pevalAddNumTerm (conTerm 2 :: Term Integer) (pevalAddNumTerm (ssymTerm "b") (ssymTerm "a")),
+              `assertEquivalent` pevalAddNumTerm (conTerm 2 :: Term Integer) (pevalAddNumTerm (ssymTerm "b") (ssymTerm "a")),
           testCase "On both neg" $ do
             pevalAddNumTerm (pevalNegNumTerm $ ssymTerm "a" :: Term Integer) (pevalNegNumTerm $ ssymTerm "b")
-              @=? pevalNegNumTerm (pevalAddNumTerm (ssymTerm "a") (ssymTerm "b")),
+              `assertEquivalent` pevalNegNumTerm (pevalAddNumTerm (ssymTerm "a") (ssymTerm "b")),
           testCase "On both mul the same concrete" $ do
             pevalAddNumTerm
               (pevalMulNumTerm (conTerm 3) (ssymTerm "a") :: Term Integer)
               (pevalMulNumTerm (conTerm 3) (ssymTerm "b"))
-              @=? pevalMulNumTerm (conTerm 3) (pevalAddNumTerm (ssymTerm "a") (ssymTerm "b")),
+              `assertEquivalent` pevalMulNumTerm (conTerm 3) (pevalAddNumTerm (ssymTerm "a") (ssymTerm "b")),
           testCase "On both mul the same symbolic" $ do
             pevalAddNumTerm
               (pevalMulNumTerm (conTerm 3) (ssymTerm "a") :: Term Integer)
               (pevalMulNumTerm (conTerm 3) (ssymTerm "a"))
-              @=? pevalMulNumTerm (conTerm 6) (ssymTerm "a")
+              `assertEquivalent` pevalMulNumTerm (conTerm 6) (ssymTerm "a")
             pevalAddNumTerm
               (pevalMulNumTerm (conTerm 3) (ssymTerm "a") :: Term Integer)
               (pevalMulNumTerm (conTerm 4) (ssymTerm "a"))
-              @=? pevalMulNumTerm (conTerm 7) (ssymTerm "a"),
+              `assertEquivalent` pevalMulNumTerm (conTerm 7) (ssymTerm "a"),
           testCase "Unfold 1" $ do
             pevalAddNumTerm
               (conTerm 3)
               (pevalITETerm (ssymTerm "a") (conTerm 1 :: Term Integer) (ssymTerm "a"))
-              @=? pevalITETerm (ssymTerm "a") (conTerm 4) (pevalAddNumTerm (conTerm 3) (ssymTerm "a"))
+              `assertEquivalent` pevalITETerm (ssymTerm "a") (conTerm 4) (pevalAddNumTerm (conTerm 3) (ssymTerm "a"))
             pevalAddNumTerm
               (pevalITETerm (ssymTerm "a") (conTerm 1 :: Term Integer) (ssymTerm "a"))
               (conTerm 3)
-              @=? pevalITETerm (ssymTerm "a") (conTerm 4) (pevalAddNumTerm (ssymTerm "a") (conTerm 3))
+              `assertEquivalent` pevalITETerm (ssymTerm "a") (conTerm 4) (pevalAddNumTerm (ssymTerm "a") (conTerm 3))
         ],
       testGroup
         "sub"
@@ -110,15 +120,15 @@ numTests =
             pevalNegNumTerm (pevalNegNumTerm (ssymTerm "a" :: Term Integer)) @=? ssymTerm "a",
           testCase "On Add concrete" $ do
             pevalNegNumTerm (pevalAddNumTerm (conTerm 1) (ssymTerm "a" :: Term Integer))
-              @=? pevalAddNumTerm (conTerm $ -1) (pevalNegNumTerm $ ssymTerm "a"),
+              `assertEquivalent` pevalAddNumTerm (conTerm $ -1) (pevalNegNumTerm $ ssymTerm "a"),
           testCase "On Add neg" $ do
             pevalNegNumTerm (pevalAddNumTerm (pevalNegNumTerm $ ssymTerm "a") (ssymTerm "b" :: Term Integer))
-              @=? pevalAddNumTerm (ssymTerm "a") (pevalNegNumTerm $ ssymTerm "b")
+              `assertEquivalent` pevalAddNumTerm (ssymTerm "a") (pevalNegNumTerm $ ssymTerm "b")
             pevalNegNumTerm (pevalAddNumTerm (ssymTerm "a") (pevalNegNumTerm $ ssymTerm "b" :: Term Integer))
-              @=? pevalAddNumTerm (pevalNegNumTerm $ ssymTerm "a") (ssymTerm "b"),
+              `assertEquivalent` pevalAddNumTerm (pevalNegNumTerm $ ssymTerm "a") (ssymTerm "b"),
           testCase "On Mul concrete" $ do
             pevalNegNumTerm (pevalMulNumTerm (conTerm 3) (ssymTerm "a" :: Term Integer))
-              @=? pevalMulNumTerm (conTerm $ -3) (ssymTerm "a"),
+              `assertEquivalent` pevalMulNumTerm (conTerm $ -3) (ssymTerm "a"),
           testCase "On symbolic" $ do
             pevalNegNumTerm (ssymTerm "a" :: Term Integer)
               @=? negNumTerm (ssymTerm "a")
@@ -148,34 +158,34 @@ numTests =
               @=? pevalNegNumTerm (ssymTerm "a"),
           testCase "On left concrete and right mul concrete symbolics" $ do
             pevalMulNumTerm (conTerm 3) (pevalMulNumTerm (conTerm 5 :: Term Integer) (ssymTerm "a"))
-              @=? pevalMulNumTerm (conTerm 15) (ssymTerm "a"),
+              `assertEquivalent` pevalMulNumTerm (conTerm 15) (ssymTerm "a"),
           testCase "On right concrete and left mul concrete symbolics" $ do
             pevalMulNumTerm (pevalMulNumTerm (conTerm 5 :: Term Integer) (ssymTerm "a")) (conTerm 3)
-              @=? pevalMulNumTerm (conTerm 15) (ssymTerm "a"),
+              `assertEquivalent` pevalMulNumTerm (conTerm 15) (ssymTerm "a"),
           testCase "On left concrete and right add concrete symbolics" $ do
             pevalMulNumTerm (conTerm 3) (pevalAddNumTerm (conTerm 5 :: Term Integer) (ssymTerm "a"))
-              @=? pevalAddNumTerm (conTerm 15) (pevalMulNumTerm (conTerm 3) (ssymTerm "a")),
+              `assertEquivalent` pevalAddNumTerm (conTerm 15) (pevalMulNumTerm (conTerm 3) (ssymTerm "a")),
           testCase "On right concrete and left add concrete symbolics" $ do
             pevalMulNumTerm (pevalAddNumTerm (conTerm 5 :: Term Integer) (ssymTerm "a")) (conTerm 3)
-              @=? pevalAddNumTerm (conTerm 15) (pevalMulNumTerm (conTerm 3) (ssymTerm "a")),
+              `assertEquivalent` pevalAddNumTerm (conTerm 15) (pevalMulNumTerm (conTerm 3) (ssymTerm "a")),
           testCase "On left concrete and right neg" $ do
             pevalMulNumTerm (conTerm 3 :: Term Integer) (pevalNegNumTerm (ssymTerm "a"))
-              @=? pevalMulNumTerm (conTerm $ -3) (ssymTerm "a"),
+              `assertEquivalent` pevalMulNumTerm (conTerm $ -3) (ssymTerm "a"),
           testCase "On left mul concrete symbolics" $ do
             pevalMulNumTerm (pevalMulNumTerm (conTerm 3 :: Term Integer) (ssymTerm "a")) (ssymTerm "b")
-              @=? pevalMulNumTerm (conTerm 3) (pevalMulNumTerm (ssymTerm "a") (ssymTerm "b")),
+              `assertEquivalent` pevalMulNumTerm (conTerm 3) (pevalMulNumTerm (ssymTerm "a") (ssymTerm "b")),
           testCase "On right mul concrete symbolics" $ do
             pevalMulNumTerm (ssymTerm "b") (pevalMulNumTerm (conTerm 3 :: Term Integer) (ssymTerm "a"))
-              @=? pevalMulNumTerm (conTerm 3) (pevalMulNumTerm (ssymTerm "b") (ssymTerm "a")),
+              `assertEquivalent` pevalMulNumTerm (conTerm 3) (pevalMulNumTerm (ssymTerm "b") (ssymTerm "a")),
           testCase "On left neg" $ do
             pevalMulNumTerm (pevalNegNumTerm $ ssymTerm "a") (ssymTerm "b" :: Term Integer)
-              @=? pevalNegNumTerm (pevalMulNumTerm (ssymTerm "a") (ssymTerm "b")),
+              `assertEquivalent` pevalNegNumTerm (pevalMulNumTerm (ssymTerm "a") (ssymTerm "b")),
           testCase "On right neg" $ do
             pevalMulNumTerm (ssymTerm "a") (pevalNegNumTerm $ ssymTerm "b" :: Term Integer)
-              @=? pevalNegNumTerm (pevalMulNumTerm (ssymTerm "a") (ssymTerm "b")),
+              `assertEquivalent` pevalNegNumTerm (pevalMulNumTerm (ssymTerm "a") (ssymTerm "b")),
           testCase "On right concrete and left neg" $ do
             pevalMulNumTerm (pevalNegNumTerm (ssymTerm "a")) (conTerm 3 :: Term Integer)
-              @=? pevalMulNumTerm (conTerm $ -3) (ssymTerm "a"),
+              `assertEquivalent` pevalMulNumTerm (conTerm $ -3) (ssymTerm "a"),
           testCase "On left concrete" $ do
             pevalMulNumTerm (conTerm 3 :: Term Integer) (ssymTerm "a")
               @=? mulNumTerm
@@ -193,11 +203,11 @@ numTests =
             pevalMulNumTerm
               (conTerm 3)
               (pevalITETerm (ssymTerm "a") (conTerm 5 :: Term Integer) (ssymTerm "a"))
-              @=? pevalITETerm (ssymTerm "a") (conTerm 15) (pevalMulNumTerm (conTerm 3) (ssymTerm "a"))
+              `assertEquivalent` pevalITETerm (ssymTerm "a") (conTerm 15) (pevalMulNumTerm (conTerm 3) (ssymTerm "a"))
             pevalMulNumTerm
               (pevalITETerm (ssymTerm "a") (conTerm 5 :: Term Integer) (ssymTerm "a"))
               (conTerm 3)
-              @=? pevalITETerm (ssymTerm "a") (conTerm 15) (pevalMulNumTerm (ssymTerm "a") (conTerm 3))
+              `assertEquivalent` pevalITETerm (ssymTerm "a") (conTerm 15) (pevalMulNumTerm (ssymTerm "a") (conTerm 3))
         ],
       testGroup
         "Abs"
@@ -205,7 +215,7 @@ numTests =
             pevalAbsNumTerm (conTerm 10 :: Term Integer) @=? conTerm 10
             pevalAbsNumTerm (conTerm $ -10 :: Term Integer) @=? conTerm 10,
           testCase "On Neg Integer" $ do
-            pevalAbsNumTerm (pevalNegNumTerm $ ssymTerm "a" :: Term Integer) @=? pevalAbsNumTerm (ssymTerm "a"),
+            pevalAbsNumTerm (pevalNegNumTerm $ ssymTerm "a" :: Term Integer) `assertEquivalent` pevalAbsNumTerm (ssymTerm "a"),
           testCase "On Neg BV" $ do
             pevalAbsNumTerm (pevalNegNumTerm $ ssymTerm "a" :: Term (IntN 5)) @=? pevalAbsNumTerm (ssymTerm "a")
             pevalAbsNumTerm (pevalNegNumTerm $ ssymTerm "a" :: Term (WordN 5)) @=? negNumTerm (ssymTerm "a"),
@@ -216,7 +226,7 @@ numTests =
             pevalAbsNumTerm (pevalAbsNumTerm $ ssymTerm "a" :: Term (WordN 5)) @=? ssymTerm "a",
           testCase "On Mul Integer" $ do
             pevalAbsNumTerm (pevalMulNumTerm (ssymTerm "a") (ssymTerm "b") :: Term Integer)
-              @=? pevalMulNumTerm (pevalAbsNumTerm (ssymTerm "a")) (pevalAbsNumTerm (ssymTerm "b")),
+              `assertEquivalent` pevalMulNumTerm (pevalAbsNumTerm (ssymTerm "a")) (pevalAbsNumTerm (ssymTerm "b")),
           testCase "On Mul BV" $ do
             pevalAbsNumTerm (pevalMulNumTerm (ssymTerm "a") (ssymTerm "b") :: Term (IntN 5))
               @=? absNumTerm (pevalMulNumTerm (ssymTerm "a") (ssymTerm "b") :: Term (IntN 5))
@@ -237,7 +247,7 @@ numTests =
             pevalSignumNumTerm (conTerm $ -10 :: Term Integer) @=? conTerm (-1),
           testCase "On Neg Integer" $ do
             pevalSignumNumTerm (pevalNegNumTerm $ ssymTerm "a" :: Term Integer)
-              @=? pevalNegNumTerm (pevalSignumNumTerm $ ssymTerm "a"),
+              `assertEquivalent` pevalNegNumTerm (pevalSignumNumTerm $ ssymTerm "a"),
           testCase "On Neg BV" $ do
             pevalSignumNumTerm (pevalNegNumTerm $ ssymTerm "a" :: Term (IntN 5))
               @=? signumNumTerm (pevalNegNumTerm $ ssymTerm "a" :: Term (IntN 5))
@@ -245,7 +255,7 @@ numTests =
               @=? signumNumTerm (pevalNegNumTerm $ ssymTerm "a" :: Term (WordN 5)),
           testCase "On Mul Integer" $ do
             pevalSignumNumTerm (pevalMulNumTerm (ssymTerm "a") (ssymTerm "b") :: Term Integer)
-              @=? pevalMulNumTerm (pevalSignumNumTerm $ ssymTerm "a") (pevalSignumNumTerm $ ssymTerm "b"),
+              `assertEquivalent` pevalMulNumTerm (pevalSignumNumTerm $ ssymTerm "a") (pevalSignumNumTerm $ ssymTerm "b"),
           testCase "On Mul BV" $ do
             pevalSignumNumTerm (pevalMulNumTerm (ssymTerm "a") (ssymTerm "b") :: Term (IntN 5))
               @=? signumNumTerm (pevalMulNumTerm (ssymTerm "a") (ssymTerm "b") :: Term (IntN 5))
@@ -271,22 +281,22 @@ numTests =
                 pevalLtOrdTerm (conTerm 3 :: Term (WordN 2)) (conTerm 2) @=? conTerm False,
               testCase "On left constant and right add concrete Integers" $ do
                 pevalLtOrdTerm (conTerm 1 :: Term Integer) (pevalAddNumTerm (conTerm 2) (ssymTerm "a"))
-                  @=? pevalLtOrdTerm (conTerm $ -1 :: Term Integer) (ssymTerm "a"),
+                  `assertEquivalent` pevalLtOrdTerm (conTerm $ -1 :: Term Integer) (ssymTerm "a"),
               testCase "On right constant left add concrete Integers" $ do
                 pevalLtOrdTerm (pevalAddNumTerm (conTerm 2) (ssymTerm "a")) (conTerm 1 :: Term Integer)
-                  @=? pevalLtOrdTerm (conTerm 1 :: Term Integer) (pevalNegNumTerm $ ssymTerm "a"),
+                  `assertEquivalent` pevalLtOrdTerm (conTerm 1 :: Term Integer) (pevalNegNumTerm $ ssymTerm "a"),
               testCase "On right constant Integers" $ do
                 pevalLtOrdTerm (ssymTerm "a") (conTerm 1 :: Term Integer)
-                  @=? pevalLtOrdTerm (conTerm $ -1 :: Term Integer) (pevalNegNumTerm $ ssymTerm "a"),
+                  `assertEquivalent` pevalLtOrdTerm (conTerm $ -1 :: Term Integer) (pevalNegNumTerm $ ssymTerm "a"),
               testCase "On right constant and left neg Integers" $ do
                 pevalLtOrdTerm (pevalNegNumTerm $ ssymTerm "a") (conTerm 1 :: Term Integer)
-                  @=? pevalLtOrdTerm (conTerm $ -1 :: Term Integer) (ssymTerm "a"),
+                  `assertEquivalent` pevalLtOrdTerm (conTerm $ -1 :: Term Integer) (ssymTerm "a"),
               testCase "On left add concrete Integers" $ do
                 pevalLtOrdTerm (pevalAddNumTerm (conTerm 2) (ssymTerm "a")) (ssymTerm "b" :: Term Integer)
-                  @=? pevalLtOrdTerm (conTerm 2 :: Term Integer) (pevalAddNumTerm (ssymTerm "b") (pevalNegNumTerm $ ssymTerm "a")),
+                  `assertEquivalent` pevalLtOrdTerm (conTerm 2 :: Term Integer) (pevalAddNumTerm (ssymTerm "b") (pevalNegNumTerm $ ssymTerm "a")),
               testCase "On right add concrete Integers" $ do
                 pevalLtOrdTerm (ssymTerm "b" :: Term Integer) (pevalAddNumTerm (conTerm 2) (ssymTerm "a"))
-                  @=? pevalLtOrdTerm (conTerm $ -2 :: Term Integer) (pevalAddNumTerm (ssymTerm "a") (pevalNegNumTerm $ ssymTerm "b")),
+                  `assertEquivalent` pevalLtOrdTerm (conTerm $ -2 :: Term Integer) (pevalAddNumTerm (ssymTerm "a") (pevalNegNumTerm $ ssymTerm "b")),
               testCase "On left constant and right add concrete BVs should not be simplified" $ do
                 pevalLtOrdTerm (concSignedBV 1) (pevalAddNumTerm (conTerm 2) (ssymTerm "a"))
                   @=? ltOrdTerm (concSignedBV 1) (pevalAddNumTerm (concSignedBV 2) (ssymTerm "a"))
@@ -342,22 +352,22 @@ numTests =
                 pevalLeOrdTerm (conTerm 3 :: Term (WordN 2)) (conTerm 2) @=? conTerm False,
               testCase "On left constant and right add concrete Integers" $ do
                 pevalLeOrdTerm (conTerm 1 :: Term Integer) (pevalAddNumTerm (conTerm 2) (ssymTerm "a"))
-                  @=? pevalLeOrdTerm (conTerm $ -1 :: Term Integer) (ssymTerm "a"),
+                  `assertEquivalent` pevalLeOrdTerm (conTerm $ -1 :: Term Integer) (ssymTerm "a"),
               testCase "On right constant and left add concrete Integers" $ do
                 pevalLeOrdTerm (pevalAddNumTerm (conTerm 2) (ssymTerm "a")) (conTerm 1 :: Term Integer)
-                  @=? pevalLeOrdTerm (conTerm 1 :: Term Integer) (pevalNegNumTerm $ ssymTerm "a"),
+                  `assertEquivalent` pevalLeOrdTerm (conTerm 1 :: Term Integer) (pevalNegNumTerm $ ssymTerm "a"),
               testCase "On right constant Integers" $ do
                 pevalLeOrdTerm (ssymTerm "a") (conTerm 1 :: Term Integer)
-                  @=? pevalLeOrdTerm (conTerm $ -1 :: Term Integer) (pevalNegNumTerm $ ssymTerm "a"),
+                  `assertEquivalent` pevalLeOrdTerm (conTerm $ -1 :: Term Integer) (pevalNegNumTerm $ ssymTerm "a"),
               testCase "On right constant left neg Integers" $ do
                 pevalLeOrdTerm (pevalNegNumTerm $ ssymTerm "a") (conTerm 1 :: Term Integer)
-                  @=? pevalLeOrdTerm (conTerm $ -1 :: Term Integer) (ssymTerm "a"),
+                  `assertEquivalent` pevalLeOrdTerm (conTerm $ -1 :: Term Integer) (ssymTerm "a"),
               testCase "On left add concrete Integers" $ do
                 pevalLeOrdTerm (pevalAddNumTerm (conTerm 2) (ssymTerm "a")) (ssymTerm "b" :: Term Integer)
-                  @=? pevalLeOrdTerm (conTerm 2 :: Term Integer) (pevalAddNumTerm (ssymTerm "b") (pevalNegNumTerm $ ssymTerm "a")),
+                  `assertEquivalent` pevalLeOrdTerm (conTerm 2 :: Term Integer) (pevalAddNumTerm (ssymTerm "b") (pevalNegNumTerm $ ssymTerm "a")),
               testCase "On right add concrete Integers" $ do
                 pevalLeOrdTerm (ssymTerm "b" :: Term Integer) (pevalAddNumTerm (conTerm 2) (ssymTerm "a"))
-                  @=? pevalLeOrdTerm (conTerm $ -2 :: Term Integer) (pevalAddNumTerm (ssymTerm "a") (pevalNegNumTerm $ ssymTerm "b")),
+                  `assertEquivalent` pevalLeOrdTerm (conTerm $ -2 :: Term Integer) (pevalAddNumTerm (ssymTerm "a") (pevalNegNumTerm $ ssymTerm "b")),
               testCase "On left constant and right add concrete BVs should not be simplified" $ do
                 pevalLeOrdTerm (concSignedBV 1) (pevalAddNumTerm (conTerm 2) (ssymTerm "a"))
                   @=? leOrdTerm (concSignedBV 1) (pevalAddNumTerm (concSignedBV 2) (ssymTerm "a"))

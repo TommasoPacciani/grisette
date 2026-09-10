@@ -1,10 +1,10 @@
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE GADTs #-}
+{-# LANGUAGE GHC2024 #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 
 module Grisette.SymPrim.Prim.BoolTests (boolTests) where
 
+import Grisette (SymBool (SymBool), solve, z3)
+import Grisette.Internal.Core.Data.Class.Solver (SolvingFailure (Unsat))
 import Grisette.Internal.SymPrim.BV (IntN, WordN)
 import Grisette.Internal.SymPrim.Prim.Term
   ( PEvalNumTerm (pevalAddNumTerm),
@@ -26,7 +26,16 @@ import Grisette.Internal.SymPrim.Prim.Term
   )
 import Test.Framework (Test, testGroup)
 import Test.Framework.Providers.HUnit (testCase)
-import Test.HUnit ((@?=))
+import Test.HUnit (Assertion, assertFailure, (@?=))
+
+-- Preserve the existing Integer/choice laws without requiring their old
+-- history-distributing normal form.  Boolean and BV shape oracles stay exact.
+assertEquivalent :: SupportedPrim a => Term a -> Term a -> Assertion
+assertEquivalent actual expected = do
+  result <- solve z3 (SymBool (pevalNEqTerm actual expected))
+  case result of
+    Left Unsat -> pure ()
+    _ -> assertFailure ("inequivalent terms: " ++ show (actual, expected, result))
 
 boolTests :: Test
 boolTests =
@@ -86,27 +95,27 @@ boolTests =
             pevalEqTerm (ssymTerm "a") (pevalNotTerm (ssymTerm "a")) @?= conTerm False,
           testCase "Eqv(n1+x, n2)" $ do
             pevalEqTerm (pevalAddNumTerm (conTerm 1 :: Term Integer) (ssymTerm "a")) (conTerm 3)
-              @?= pevalEqTerm (ssymTerm "a") (conTerm 2 :: Term Integer)
+              `assertEquivalent` pevalEqTerm (ssymTerm "a") (conTerm 2 :: Term Integer)
             pevalEqTerm (pevalAddNumTerm (conTerm 1 :: Term (IntN 4)) (ssymTerm "a")) (conTerm 3)
               @?= pevalEqTerm (ssymTerm "a") (conTerm 2 :: Term (IntN 4))
             pevalEqTerm (pevalAddNumTerm (conTerm 1 :: Term (WordN 4)) (ssymTerm "a")) (conTerm 3)
               @?= pevalEqTerm (ssymTerm "a") (conTerm 2 :: Term (WordN 4)),
           testCase "Eqv(n1, n2+x)" $ do
             pevalEqTerm (conTerm 3) (pevalAddNumTerm (conTerm 1 :: Term Integer) (ssymTerm "a"))
-              @?= pevalEqTerm (ssymTerm "a") (conTerm 2 :: Term Integer)
+              `assertEquivalent` pevalEqTerm (ssymTerm "a") (conTerm 2 :: Term Integer)
             pevalEqTerm (conTerm 3) (pevalAddNumTerm (conTerm 1 :: Term (IntN 4)) (ssymTerm "a"))
               @?= pevalEqTerm (ssymTerm "a") (conTerm 2 :: Term (IntN 4))
             pevalEqTerm (conTerm 3) (pevalAddNumTerm (conTerm 1 :: Term (WordN 4)) (ssymTerm "a"))
               @?= pevalEqTerm (ssymTerm "a") (conTerm 2 :: Term (WordN 4)),
           testCase "Eqv(l, ITE(c, l, f)) / Eqv(l, ITE(c, t, l) / Eqv(ITE(c, r, f), r) / Eqv(ITE(c, t, r), r)" $ do
             pevalEqTerm (ssymTerm "a" :: Term Integer) (pevalITETerm (ssymTerm "b") (ssymTerm "a") (ssymTerm "c"))
-              @?= pevalOrTerm (ssymTerm "b") (pevalEqTerm (ssymTerm "a") (ssymTerm "c" :: Term Integer))
+              `assertEquivalent` pevalOrTerm (ssymTerm "b") (pevalEqTerm (ssymTerm "a") (ssymTerm "c" :: Term Integer))
             pevalEqTerm (ssymTerm "a" :: Term Integer) (pevalITETerm (ssymTerm "b") (ssymTerm "c") (ssymTerm "a"))
-              @?= pevalOrTerm (pevalNotTerm $ ssymTerm "b") (pevalEqTerm (ssymTerm "a") (ssymTerm "c" :: Term Integer))
+              `assertEquivalent` pevalOrTerm (pevalNotTerm $ ssymTerm "b") (pevalEqTerm (ssymTerm "a") (ssymTerm "c" :: Term Integer))
             pevalEqTerm (pevalITETerm (ssymTerm "b") (ssymTerm "a") (ssymTerm "c")) (ssymTerm "a" :: Term Integer)
-              @?= pevalOrTerm (ssymTerm "b") (pevalEqTerm (ssymTerm "c") (ssymTerm "a" :: Term Integer))
+              `assertEquivalent` pevalOrTerm (ssymTerm "b") (pevalEqTerm (ssymTerm "c") (ssymTerm "a" :: Term Integer))
             pevalEqTerm (pevalITETerm (ssymTerm "b") (ssymTerm "c") (ssymTerm "a")) (ssymTerm "a" :: Term Integer)
-              @?= pevalOrTerm (pevalNotTerm $ ssymTerm "b") (pevalEqTerm (ssymTerm "c") (ssymTerm "a" :: Term Integer))
+              `assertEquivalent` pevalOrTerm (pevalNotTerm $ ssymTerm "b") (pevalEqTerm (ssymTerm "c") (ssymTerm "a" :: Term Integer))
         ],
       testGroup
         "Or"
@@ -415,13 +424,13 @@ boolTests =
               @?= pevalNotTerm (pevalITETerm (ssymTerm "c") (ssymTerm "a") (ssymTerm "b")),
           testCase "On not in condition" $ do
             pevalITETerm (pevalNotTerm $ ssymTerm "c") (ssymTerm "a" :: Term Integer) (ssymTerm "b")
-              @?= pevalITETerm (ssymTerm "c") (ssymTerm "b") (ssymTerm "a"),
+              `assertEquivalent` pevalITETerm (ssymTerm "c") (ssymTerm "b") (ssymTerm "a"),
           testCase "On all arguments as ITE with same conditions" $ do
             pevalITETerm
               (pevalITETerm (ssymTerm "a") (ssymTerm "b") (ssymTerm "c"))
               (pevalITETerm (ssymTerm "a") (ssymTerm "d" :: Term Integer) (ssymTerm "e"))
               (pevalITETerm (ssymTerm "a") (ssymTerm "f" :: Term Integer) (ssymTerm "g"))
-              @?= pevalITETerm
+              `assertEquivalent` pevalITETerm
                 (ssymTerm "a")
                 (pevalITETerm (ssymTerm "b") (ssymTerm "d") (ssymTerm "f"))
                 (pevalITETerm (ssymTerm "c") (ssymTerm "e") (ssymTerm "g")),
@@ -430,12 +439,12 @@ boolTests =
               (ssymTerm "a")
               (pevalITETerm (ssymTerm "a") (ssymTerm "b" :: Term Integer) (ssymTerm "c"))
               (ssymTerm "d")
-              @?= pevalITETerm (ssymTerm "a") (ssymTerm "b") (ssymTerm "d")
+              `assertEquivalent` pevalITETerm (ssymTerm "a") (ssymTerm "b") (ssymTerm "d")
             pevalITETerm
               (ssymTerm "a")
               (pevalITETerm (ssymTerm "b") (ssymTerm "c" :: Term Integer) (ssymTerm "d"))
               (ssymTerm "c")
-              @?= pevalITETerm
+              `assertEquivalent` pevalITETerm
                 (pevalOrTerm (pevalNotTerm $ ssymTerm "a") (ssymTerm "b"))
                 (ssymTerm "c")
                 (ssymTerm "d")
@@ -443,7 +452,7 @@ boolTests =
               (ssymTerm "a")
               (pevalITETerm (ssymTerm "b") (ssymTerm "c" :: Term Integer) (ssymTerm "d"))
               (ssymTerm "d")
-              @?= pevalITETerm
+              `assertEquivalent` pevalITETerm
                 (pevalAndTerm (ssymTerm "a") (ssymTerm "b"))
                 (ssymTerm "c")
                 (ssymTerm "d"),
@@ -452,12 +461,12 @@ boolTests =
               (ssymTerm "a")
               (ssymTerm "b")
               (pevalITETerm (ssymTerm "a") (ssymTerm "c" :: Term Integer) (ssymTerm "d"))
-              @?= pevalITETerm (ssymTerm "a") (ssymTerm "b") (ssymTerm "d")
+              `assertEquivalent` pevalITETerm (ssymTerm "a") (ssymTerm "b") (ssymTerm "d")
             pevalITETerm
               (ssymTerm "a")
               (ssymTerm "b")
               (pevalITETerm (ssymTerm "c") (ssymTerm "b" :: Term Integer) (ssymTerm "d"))
-              @?= pevalITETerm
+              `assertEquivalent` pevalITETerm
                 (pevalOrTerm (ssymTerm "a") (ssymTerm "c"))
                 (ssymTerm "b")
                 (ssymTerm "d")
@@ -465,7 +474,7 @@ boolTests =
               (ssymTerm "a")
               (ssymTerm "b")
               (pevalITETerm (ssymTerm "c") (ssymTerm "d" :: Term Integer) (ssymTerm "b"))
-              @?= pevalITETerm
+              `assertEquivalent` pevalITETerm
                 (pevalOrTerm (ssymTerm "a") (pevalNotTerm $ ssymTerm "c"))
                 (ssymTerm "b")
                 (ssymTerm "d"),

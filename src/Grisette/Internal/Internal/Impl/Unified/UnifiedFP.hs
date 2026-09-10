@@ -18,6 +18,7 @@
 module Grisette.Internal.Internal.Impl.Unified.UnifiedFP () where
 
 import Control.Monad.Error.Class (MonadError)
+import Grisette.Internal.Core.Data.Class.TryMerge (TryMerge)
 import Grisette.Internal.Internal.Decl.Unified.UnifiedFP
   ( AllUnifiedFP,
     GetFP,
@@ -92,6 +93,7 @@ instance
     forall eb sb m.
     ( ValidFP eb sb,
       UnifiedBranching mode m,
+      TryMerge m,
       MonadError NotRepresentableFPError m
     ) =>
     SafeUnifiedFP mode eb sb m

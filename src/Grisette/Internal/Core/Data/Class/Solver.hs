@@ -18,6 +18,7 @@ module Grisette.Internal.Core.Data.Class.Solver
 
     -- * Solver interfaces
     SolvingFailure (..),
+    ModelProjection (..),
     MonadicSolver (..),
     monadicSolverSolve,
     SolverCommand (..),

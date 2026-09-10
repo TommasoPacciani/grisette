@@ -7,6 +7,7 @@ module Grisette.Core.Data.Class.UnionViewTests (unionViewTests) where
 import Grisette
   ( ITEOp (symIte),
     LogicalOp ((.&&)),
+    Mergeable (rootStrategy),
     Solvable (con),
     SymBool,
     SymBranching (mrgIfPropagatedStrategy),
@@ -14,6 +15,7 @@ import Grisette
     mrgIf,
     mrgSingle,
     onUnion,
+    onUnionMWithStrategy,
     simpleMerge,
     (.#),
     pattern If,
@@ -22,6 +24,11 @@ import Grisette
 import Grisette.Internal.Core.Data.Class.AsKey (AsKey (AsKey), AsKey1)
 import Grisette.Internal.Core.Data.Class.UnionView
   ( UnionView (overestimateUnionValues),
+  )
+import Grisette.TestUtil.NoMerge
+  ( MergingOnly (runMergingOnly),
+    NoMerge,
+    noMergeNotMerged,
   )
 import Test.Framework (Test, testGroup)
 import Test.Framework.Providers.HUnit (testCase)
@@ -55,6 +62,15 @@ unionViewTests =
               AsKey1 Union [AsKey SymBool]
           )
           @?= symIte "cond" "a" ("b" .&& "c"),
+      testCase "onUnionMWithStrategy only needs explicit-strategy branching" $ do
+        runMergingOnly
+          ( onUnionMWithStrategy
+              rootStrategy
+              (\(_ :: NoMerge) -> pure ("result" :: AsKey SymBool))
+              noMergeNotMerged ::
+              MergingOnly (AsKey SymBool)
+          )
+          @?= mrgSingle "result",
       testGroup
         "Single and If pattern"
         [ testCase "Unmerged" $

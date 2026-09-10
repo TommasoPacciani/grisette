@@ -1,33 +1,19 @@
+{-# LANGUAGE GHC2024 #-}
 {-# LANGUAGE AllowAmbiguousTypes #-}
-{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE CPP #-}
-{-# LANGUAGE ConstraintKinds #-}
-{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DefaultSignatures #-}
 {-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE DeriveLift #-}
 {-# HLINT ignore "Eta reduce" #-}
 {-# HLINT ignore "Unused LANGUAGE pragma" #-}
-{-# LANGUAGE DerivingStrategies #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FunctionalDependencies #-}
-{-# LANGUAGE GADTs #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE InstanceSigs #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE QuantifiedConstraints #-}
-{-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE Strict #-}
 {-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE TypeOperators #-}
+-- Quantified width constraints and mutually dependent primitive dictionaries
+-- require UndecidableInstances; the term GADT carries their runtime evidence.
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
@@ -78,8 +64,11 @@ module Grisette.Internal.SymPrim.Prim.Internal.Term
     pevalSeqLengthTerm,
     pevalSeqRangeTerm,
     pevalSeqTailTerm,
+    pevalSeqResizeTerm,
+    pevalSeqUpdateTerm,
     pevalSeqLookupTerm,
     pevalSeqLookupValueTerm,
+    reifyClosedNativeTerm,
     pevalSeqFoldTerm,
     pevalFocusedSeqFoldTerm,
     pevalSeqFoldWithTerm,
@@ -197,6 +186,8 @@ module Grisette.Internal.SymPrim.Prim.Internal.Term
     seqLengthTerm,
     seqRangeTerm,
     seqTailTerm,
+    seqResizeTerm,
+    seqUpdateTerm,
     seqLookupTerm,
     seqLookupValueTerm,
     seqFoldTerm,
@@ -269,6 +260,8 @@ module Grisette.Internal.SymPrim.Prim.Internal.Term
     pattern SeqLengthTerm,
     pattern SeqRangeTerm,
     pattern SeqTailTerm,
+    pattern SeqResizeTerm,
+    pattern SeqUpdateTerm,
     pattern SeqLookupTerm,
     pattern SeqLookupValueTerm,
     pattern SeqFoldTerm,
@@ -442,7 +435,7 @@ import Grisette.Internal.Core.Data.Class.IEEEFP
   ( fpIsNegativeZero,
     fpIsPositiveZero,
   )
-import Grisette.Internal.Core.Data.MemoUtils (weakStableMemo3)
+import Grisette.Internal.Core.Data.MemoUtils (weakStableMemo)
 import Grisette.Internal.Core.Data.Symbol
   ( Identifier,
     Symbol (BoundSymbol, IndexedSymbol, SimpleSymbol),
@@ -569,7 +562,7 @@ instance (SBVFreshMonad m) => SBVFreshMonad (Strict.StateT s m) where
   {-# INLINE sbvFresh #-}
 
 -- | Error message for unsupported types.
-translateTypeError :: (HasCallStack) => Maybe String -> TypeRep a -> b
+translateTypeError :: (HasCallStack) => Maybe String -> TypeRep (a :: Type) -> b
 translateTypeError Nothing ta =
   error $
     "Don't know how to translate the type " ++ show ta ++ " to SMT"
@@ -679,11 +672,11 @@ parseScalarSMTModelResult convert cvs@([], v) = case SBVT.parseCVs [v] of
 parseScalarSMTModelResult _ cv = parseSMTModelResultError (typeRep @v) cv
 
 -- | Type class for resolving the SBV type for the primitive type.
-class SBVRep t where
+class SBVRep (t :: Type) where
   type SBVType t
 
 -- | Type class for resolving the constraint for a supported primitive type.
-class SupportedPrimConstraint t where
+class SupportedPrimConstraint (t :: Type) where
   type PrimConstraint t :: Constraint
   type PrimConstraint _ = ()
 
@@ -833,7 +826,7 @@ pevalNEqTerm l r = pevalNotTerm $ pevalEqTerm l r
 {-# INLINE pevalNEqTerm #-}
 
 -- | Type family to resolve the concrete type associated with a symbolic type.
-class ConRep sym where
+class ConRep (sym :: Type) where
   type ConType sym
 
 -- | Type family to resolve the symbolic type associated with a concrete type.
@@ -1973,6 +1966,14 @@ data Term t where
     {-# UNPACK #-} !CachedInfo ->
     !(Term [a]) ->
     Term [a]
+  SeqResizeTerm' ::
+    SupportedNonFuncPrim a =>
+    {-# UNPACK #-} !CachedInfo ->
+    !(Term a) -> !(Term Integer) -> !(Term [a]) -> Term [a]
+  SeqUpdateTerm' ::
+    SupportedNonFuncPrim a =>
+    {-# UNPACK #-} !CachedInfo ->
+    !(Term Integer) -> !(Term a) -> !(Term [a]) -> Term [a]
   SeqLookupTerm' ::
     SupportedNonFuncPrim a =>
     {-# UNPACK #-} !CachedInfo ->
@@ -3136,6 +3137,22 @@ pattern SeqTailTerm sequence <- SeqTailTerm' _ sequence
   where
     SeqTailTerm sequence = pevalSeqTailTerm sequence
 
+pattern SeqResizeTerm ::
+  forall ret. () => forall a.
+  (ret ~ [a], SupportedNonFuncPrim a) =>
+  Term a -> Term Integer -> Term [a] -> Term ret
+pattern SeqResizeTerm seed count sequence <- SeqResizeTerm' _ seed count sequence
+  where
+    SeqResizeTerm seed count sequence = pevalSeqResizeTerm seed count sequence
+
+pattern SeqUpdateTerm ::
+  forall ret. () => forall a.
+  (ret ~ [a], SupportedNonFuncPrim a) =>
+  Term Integer -> Term a -> Term [a] -> Term ret
+pattern SeqUpdateTerm index replacement sequence <- SeqUpdateTerm' _ index replacement sequence
+  where
+    SeqUpdateTerm index replacement sequence = pevalSeqUpdateTerm index replacement sequence
+
 pattern SeqLookupTerm ::
   forall ret.
   () =>
@@ -3318,6 +3335,8 @@ pattern SecondTerm value <- SecondTerm' _ value
   SeqLengthTerm,
   SeqRangeTerm,
   SeqTailTerm,
+  SeqResizeTerm,
+  SeqUpdateTerm,
   SeqLookupTerm,
   SeqLookupValueTerm,
   SeqFoldTerm,
@@ -3388,6 +3407,8 @@ pattern SecondTerm value <- SecondTerm' _ value
   SeqLengthTerm,
   SeqRangeTerm,
   SeqTailTerm,
+  SeqResizeTerm,
+  SeqUpdateTerm,
   SeqLookupTerm,
   SeqLookupValueTerm,
   SeqFoldTerm,
@@ -3458,6 +3479,8 @@ termInfo (SeqZipTerm' i _ _) = i
 termInfo (SeqLengthTerm' i _) = i
 termInfo (SeqRangeTerm' i _) = i
 termInfo (SeqTailTerm' i _) = i
+termInfo (SeqResizeTerm' i _ _ _) = i
+termInfo (SeqUpdateTerm' i _ _ _) = i
 termInfo (SeqLookupTerm' i _ _ _) = i
 termInfo (SeqLookupValueTerm' i _ _ _) = i
 termInfo (SeqFoldTerm' i _ _ _) = i
@@ -3596,6 +3619,8 @@ introSupportedPrimConstraint0 SeqZipTerm' {} x = x
 introSupportedPrimConstraint0 SeqLengthTerm' {} x = x
 introSupportedPrimConstraint0 SeqRangeTerm' {} x = x
 introSupportedPrimConstraint0 SeqTailTerm' {} x = x
+introSupportedPrimConstraint0 SeqResizeTerm' {} x = x
+introSupportedPrimConstraint0 SeqUpdateTerm' {} x = x
 introSupportedPrimConstraint0 SeqLookupTerm' {} x = x
 introSupportedPrimConstraint0 SeqLookupValueTerm' {} x = x
 introSupportedPrimConstraint0 SeqFoldTerm' {} x = x
@@ -3678,6 +3703,12 @@ pformatTerm (SeqLengthTerm sequence) = "(seq.length " ++ pformatTerm sequence ++
 pformatTerm (SeqRangeTerm extent) = "(seq.range " ++ pformatTerm extent ++ ")"
 pformatTerm (SeqTailTerm sequence) =
   "(seq.tail " ++ pformatTerm sequence ++ ")"
+pformatTerm (SeqResizeTerm seed count sequence) =
+  "(seq.resize " ++ pformatTerm seed ++ " " ++ pformatTerm count
+    ++ " " ++ pformatTerm sequence ++ ")"
+pformatTerm (SeqUpdateTerm index replacement sequence) =
+  "(seq.update " ++ pformatTerm index ++ " " ++ pformatTerm replacement
+    ++ " " ++ pformatTerm sequence ++ ")"
 pformatTerm (SeqLookupTerm seed sequence index) =
   "(seq.lookup "
     ++ pformatTerm seed
@@ -3822,6 +3853,8 @@ instance Lift (Term t) where
   liftTyped (SeqLengthTerm sequence) = [||seqLengthTerm sequence||]
   liftTyped (SeqRangeTerm extent) = [||seqRangeTerm extent||]
   liftTyped (SeqTailTerm sequence) = [||seqTailTerm sequence||]
+  liftTyped (SeqResizeTerm seed count sequence) = [||seqResizeTerm seed count sequence||]
+  liftTyped (SeqUpdateTerm index replacement sequence) = [||seqUpdateTerm index replacement sequence||]
   liftTyped (SeqLookupTerm seed sequence index) =
     [||seqLookupTerm seed sequence index||]
   liftTyped (SeqLookupValueTerm seed sequence index) =
@@ -4361,6 +4394,14 @@ instance Show (Term ty) where
   show t@(SeqTailTerm sequence) =
     "SeqTailTerm{tid=" ++ show (termThreadId t) ++ ", id=" ++ show (termId t)
       ++ ", sequence=" ++ show sequence ++ "}"
+  show t@(SeqResizeTerm seed count sequence) =
+    "SeqResizeTerm{tid=" ++ show (termThreadId t) ++ ", id=" ++ show (termId t)
+      ++ ", seed=" ++ show seed ++ ", count=" ++ show count
+      ++ ", sequence=" ++ show sequence ++ "}"
+  show t@(SeqUpdateTerm index replacement sequence) =
+    "SeqUpdateTerm{tid=" ++ show (termThreadId t) ++ ", id=" ++ show (termId t)
+      ++ ", index=" ++ show index ++ ", replacement=" ++ show replacement
+      ++ ", sequence=" ++ show sequence ++ "}"
   show t@(SeqLookupTerm seed sequence index) =
     "SeqLookupTerm{tid=" ++ show (termThreadId t) ++ ", id=" ++ show (termId t)
       ++ ", seed=" ++ show seed ++ ", sequence=" ++ show sequence
@@ -4672,6 +4713,12 @@ data UTerm t where
     SupportedNonFuncPrim a =>
     !(Term [a]) ->
     UTerm [a]
+  USeqResizeTerm ::
+    SupportedNonFuncPrim a =>
+    !(Term a) -> !(Term Integer) -> !(Term [a]) -> UTerm [a]
+  USeqUpdateTerm ::
+    SupportedNonFuncPrim a =>
+    !(Term Integer) -> !(Term a) -> !(Term [a]) -> UTerm [a]
   USeqLookupTerm ::
     SupportedNonFuncPrim a =>
     !(Term a) ->
@@ -5024,6 +5071,14 @@ preHashSeqRangeDescription = fromIntegral . hashWithSalt 64
 
 preHashSeqTailDescription :: HashId -> Digest
 preHashSeqTailDescription = fromIntegral . hashWithSalt 65
+
+preHashSeqResizeDescription :: HashId -> HashId -> HashId -> Digest
+preHashSeqResizeDescription seed count sequence =
+  fromIntegral (68 `hashWithSalt` seed `hashWithSalt` count `hashWithSalt` sequence)
+
+preHashSeqUpdateDescription :: HashId -> HashId -> HashId -> Digest
+preHashSeqUpdateDescription index replacement sequence =
+  fromIntegral (69 `hashWithSalt` index `hashWithSalt` replacement `hashWithSalt` sequence)
 
 preHashSeqLookupDescription :: HashId -> HashId -> HashId -> Digest
 preHashSeqLookupDescription seed sequence index =
@@ -5388,6 +5443,14 @@ instance Interned (Term t) where
       {-# UNPACK #-} !Digest ->
       {-# UNPACK #-} !HashId ->
       Description (Term [a])
+    DSeqResizeTerm ::
+      {-# UNPACK #-} !Digest ->
+      {-# UNPACK #-} !HashId -> {-# UNPACK #-} !HashId ->
+      {-# UNPACK #-} !HashId -> Description (Term [a])
+    DSeqUpdateTerm ::
+      {-# UNPACK #-} !Digest ->
+      {-# UNPACK #-} !HashId -> {-# UNPACK #-} !HashId ->
+      {-# UNPACK #-} !HashId -> Description (Term [a])
     DSeqLookupTerm ::
       {-# UNPACK #-} !Digest ->
       {-# UNPACK #-} !HashId ->
@@ -5790,6 +5853,20 @@ instance Interned (Term t) where
   describe (USeqTailTerm sequence) =
     let sequenceHashId = termHashId sequence
      in DSeqTailTerm (preHashSeqTailDescription sequenceHashId) sequenceHashId
+  describe (USeqResizeTerm seed count sequence) =
+    let seedHashId = termHashId seed
+        countHashId = termHashId count
+        sequenceHashId = termHashId sequence
+     in DSeqResizeTerm
+          (preHashSeqResizeDescription seedHashId countHashId sequenceHashId)
+          seedHashId countHashId sequenceHashId
+  describe (USeqUpdateTerm index replacement sequence) =
+    let indexHashId = termHashId index
+        replacementHashId = termHashId replacement
+        sequenceHashId = termHashId sequence
+     in DSeqUpdateTerm
+          (preHashSeqUpdateDescription indexHashId replacementHashId sequenceHashId)
+          indexHashId replacementHashId sequenceHashId
   describe (USeqLookupTerm seed sequence index) =
     let seedHashId = termHashId seed
         sequenceHashId = termHashId sequence
@@ -5939,6 +6016,8 @@ instance Interned (Term t) where
       go (USeqLengthTerm sequence) = SeqLengthTerm' info sequence
       go (USeqRangeTerm extent) = SeqRangeTerm' info extent
       go (USeqTailTerm sequence) = SeqTailTerm' info sequence
+      go (USeqResizeTerm seed count sequence) = SeqResizeTerm' info seed count sequence
+      go (USeqUpdateTerm index replacement sequence) = SeqUpdateTerm' info index replacement sequence
       go (USeqLookupTerm seed sequence index) =
         SeqLookupTerm' info seed sequence index
       go (USeqLookupValueTerm seed sequence index) =
@@ -6015,6 +6094,8 @@ instance Interned (Term t) where
   descriptionDigest (DSeqLengthTerm h _) = h
   descriptionDigest (DSeqRangeTerm h _) = h
   descriptionDigest (DSeqTailTerm h _) = h
+  descriptionDigest (DSeqResizeTerm h _ _ _) = h
+  descriptionDigest (DSeqUpdateTerm h _ _ _) = h
   descriptionDigest (DSeqLookupTerm h _ _ _) = h
   descriptionDigest (DSeqLookupValueTerm h _ _ _) = h
   descriptionDigest (DSeqFoldTerm h _ _ _) = h
@@ -6270,6 +6351,10 @@ instance Eq (Description (Term t)) where
   DSeqLengthTerm _ ls == DSeqLengthTerm _ rs = ls == rs
   DSeqRangeTerm _ le == DSeqRangeTerm _ re = eqHashId le re
   DSeqTailTerm _ ls == DSeqTailTerm _ rs = eqHashId ls rs
+  DSeqResizeTerm _ lseed lcount lsequence == DSeqResizeTerm _ rseed rcount rsequence =
+    eqHashId lseed rseed && eqHashId lcount rcount && eqHashId lsequence rsequence
+  DSeqUpdateTerm _ lindex lvalue lsequence == DSeqUpdateTerm _ rindex rvalue rsequence =
+    eqHashId lindex rindex && eqHashId lvalue rvalue && eqHashId lsequence rsequence
   DSeqLookupTerm _ lseed lsequence lindex
     == DSeqLookupTerm _ rseed rsequence rindex =
       eqHashId lseed rseed
@@ -6518,6 +6603,10 @@ fullReconstructTermUncached memo (SeqRangeTerm extent) =
   fullReconstructTerm1 memo curThreadSeqRangeTerm extent
 fullReconstructTermUncached memo (SeqTailTerm sequence) =
   fullReconstructTerm1 memo curThreadSeqTailTerm sequence
+fullReconstructTermUncached memo (SeqResizeTerm seed count sequence) =
+  fullReconstructTerm3 memo curThreadSeqResizeTerm seed count sequence
+fullReconstructTermUncached memo (SeqUpdateTerm index replacement sequence) =
+  fullReconstructTerm3 memo curThreadSeqUpdateTerm index replacement sequence
 fullReconstructTermUncached memo (SeqLookupTerm seed sequence index) =
   fullReconstructTerm3 memo curThreadSeqLookupTerm seed sequence index
 fullReconstructTermUncached memo (SeqLookupValueTerm seed sequence index) =
@@ -7044,6 +7133,14 @@ curThreadSeqRangeTerm extent = intern $ USeqRangeTerm extent
 curThreadSeqTailTerm ::
   SupportedNonFuncPrim a => Term [a] -> IO (Term [a])
 curThreadSeqTailTerm sequence = intern $ USeqTailTerm sequence
+
+curThreadSeqResizeTerm ::
+  SupportedNonFuncPrim a => Term a -> Term Integer -> Term [a] -> IO (Term [a])
+curThreadSeqResizeTerm seed count sequence = intern $ USeqResizeTerm seed count sequence
+
+curThreadSeqUpdateTerm ::
+  SupportedNonFuncPrim a => Term Integer -> Term a -> Term [a] -> IO (Term [a])
+curThreadSeqUpdateTerm index replacement sequence = intern $ USeqUpdateTerm index replacement sequence
 
 curThreadSeqLookupTerm ::
   SupportedNonFuncPrim a =>
@@ -7732,6 +7829,16 @@ seqTailTerm ::
   SupportedNonFuncPrim a => Term [a] -> Term [a]
 seqTailTerm = unsafeInCurThread1 curThreadSeqTailTerm
 {-# NOINLINE seqTailTerm #-}
+
+seqResizeTerm ::
+  SupportedNonFuncPrim a => Term a -> Term Integer -> Term [a] -> Term [a]
+seqResizeTerm = unsafeInCurThread3 curThreadSeqResizeTerm
+{-# NOINLINE seqResizeTerm #-}
+
+seqUpdateTerm ::
+  SupportedNonFuncPrim a => Term Integer -> Term a -> Term [a] -> Term [a]
+seqUpdateTerm = unsafeInCurThread3 curThreadSeqUpdateTerm
+{-# NOINLINE seqUpdateTerm #-}
 
 seqLookupTerm ::
   SupportedNonFuncPrim a =>
@@ -8774,8 +8881,11 @@ pevalGeneralDistinct l =
 instance SupportedPrim Integer where
   pformatCon = show
   defaultValue = defaultValueForInteger
-  pevalITETerm = pevalITEBasicTerm
-  pevalEqTerm = pevalDefaultEqTerm
+  pevalITETerm = pevalBoundedITETerm
+  pevalEqTerm (ConTerm left) (ConTerm right) = conTerm (left == right)
+  pevalEqTerm left right | left == right = trueTerm
+  pevalEqTerm left@ConTerm {} right = eqTerm right left
+  pevalEqTerm left right = eqTerm left right
   pevalDistinctTerm = pevalGeneralDistinct
   conSBVTerm n = fromInteger n
   symSBVName symbol _ = show symbol
@@ -8804,64 +8914,58 @@ instance SupportedNonFuncPrim Integer where
 -- sequence normalization needs these dictionaries while this module is being
 -- compiled, so keeping them in downstream orphan-instance modules creates an
 -- import-cycle boundary that cannot discharge the constraints.
+-- Integer counts and indices are shared by native carriers and ordinary
+-- substitution.  Inspect only immediate operands: rewriting arithmetic or
+-- choices recursively here would expand the histories retained by those
+-- carriers.  Keep constants on the left of addition and multiplication, the
+-- invariant expected by the generic numeric rules for other primitive sorts.
 instance PEvalNumTerm Integer where
-  pevalAddNumTerm = pevalDefaultAddNumTerm
-  pevalNegNumTerm = pevalDefaultNegNumTerm
-  pevalMulNumTerm = pevalDefaultMulNumTerm
-  pevalAbsNumTerm = unaryUnfoldOnce doPevalNoOverflowAbsNumTerm absNumTerm
-  pevalSignumNumTerm =
-    unaryUnfoldOnce doPevalNoOverflowSignumNumTerm signumNumTerm
+  pevalAddNumTerm (ConTerm left) (ConTerm right) = conTerm (left + right)
+  pevalAddNumTerm (ConTerm 0) right = right
+  pevalAddNumTerm left (ConTerm 0) = left
+  pevalAddNumTerm (ConTerm left) (AddNumTerm (ConTerm right) rest) =
+    terminalIntegerOffset (left + right) rest
+  pevalAddNumTerm (AddNumTerm (ConTerm left) rest) (ConTerm right) =
+    terminalIntegerOffset (left + right) rest
+  pevalAddNumTerm left (NegNumTerm right) | left == right = conTerm 0
+  pevalAddNumTerm (NegNumTerm left) right | left == right = conTerm 0
+  pevalAddNumTerm left right@ConTerm {} = addNumTerm right left
+  pevalAddNumTerm left right = addNumTerm left right
+  pevalNegNumTerm (ConTerm value) = conTerm (negate value)
+  pevalNegNumTerm (NegNumTerm value) = value
+  pevalNegNumTerm value = negNumTerm value
+  pevalMulNumTerm (ConTerm left) (ConTerm right) = conTerm (left * right)
+  pevalMulNumTerm (ConTerm 0) _ = conTerm 0
+  pevalMulNumTerm _ (ConTerm 0) = conTerm 0
+  pevalMulNumTerm (ConTerm 1) right = right
+  pevalMulNumTerm left (ConTerm 1) = left
+  pevalMulNumTerm (ConTerm (-1)) right = pevalNegNumTerm right
+  pevalMulNumTerm left (ConTerm (-1)) = pevalNegNumTerm left
+  pevalMulNumTerm left right@ConTerm {} = mulNumTerm right left
+  pevalMulNumTerm left right = mulNumTerm left right
+  pevalAbsNumTerm (ConTerm value) = conTerm (abs value)
+  pevalAbsNumTerm value@AbsNumTerm {} = value
+  pevalAbsNumTerm value = absNumTerm value
+  pevalSignumNumTerm (ConTerm value) = conTerm (signum value)
+  pevalSignumNumTerm value@SignumNumTerm {} = value
+  pevalSignumNumTerm value = signumNumTerm value
   withSbvNumTermConstraint r = r
 
+-- Complete one immediate offset identity without inspecting another Add node.
+-- In particular, tail's (-1)+(1+extent) retains cons's original authority.
+terminalIntegerOffset :: Integer -> Term Integer -> Term Integer
+terminalIntegerOffset offset (ConTerm value) = conTerm (offset + value)
+terminalIntegerOffset 0 value = value
+terminalIntegerOffset offset value = addNumTerm (conTerm offset) value
+
 instance PEvalOrdTerm Integer where
-  pevalLtOrdTerm = binaryUnfoldOnce doPevalLtOrdTerm ltOrdTerm
-    where
-      doPevalLtOrdTerm l r =
-        msum
-          [ doPevalIntegerLtOrdTerm l r,
-            case (l, r) of
-              (ConTerm l, AddNumTerm (ConTerm j) k) ->
-                Just $ pevalLtOrdTerm (conTerm $ l - j) k
-              (AddNumTerm (ConTerm i) j, ConTerm k) ->
-                Just $ pevalLtOrdTerm j (conTerm $ k - i)
-              (AddNumTerm (ConTerm j) k, l) ->
-                Just $
-                  pevalLtOrdTerm
-                    (conTerm j)
-                    (pevalSubNumTerm l k)
-              (j, AddNumTerm (ConTerm k) l) ->
-                Just $ pevalLtOrdTerm (conTerm $ -k) (pevalSubNumTerm l j)
-              (l, ConTerm r) ->
-                Just $ pevalLtOrdTerm (conTerm $ -r) (pevalNegNumTerm l)
-              _ -> Nothing
-          ]
-  pevalLeOrdTerm = binaryUnfoldOnce doPevalLeOrdTerm leOrdTerm
-    where
-      doPevalLeOrdTerm l r =
-        msum
-          [ doPevalIntegerLeOrdTerm l r,
-            case (l, r) of
-              (ConTerm l, AddNumTerm (ConTerm j) k) ->
-                Just $ pevalLeOrdTerm (conTerm $ l - j) k
-              (AddNumTerm (ConTerm i) j, ConTerm k) ->
-                Just $ pevalLeOrdTerm j (conTerm $ k - i)
-              (AddNumTerm (ConTerm j) k, l) ->
-                Just $ pevalLeOrdTerm (conTerm j) (pevalSubNumTerm l k)
-              (j, AddNumTerm (ConTerm k) l) ->
-                Just $ pevalLeOrdTerm (conTerm $ -k) (pevalSubNumTerm l j)
-              (l, ConTerm r) ->
-                Just $ pevalLeOrdTerm (conTerm $ -r) (pevalNegNumTerm l)
-              _ -> Nothing
-          ]
+  pevalLtOrdTerm (ConTerm left) (ConTerm right) = conTerm (left < right)
+  pevalLtOrdTerm left right | left == right = falseTerm
+  pevalLtOrdTerm left right = ltOrdTerm left right
+  pevalLeOrdTerm (ConTerm left) (ConTerm right) = conTerm (left <= right)
+  pevalLeOrdTerm left right | left == right = trueTerm
+  pevalLeOrdTerm left right = leOrdTerm left right
   withSbvOrdTermConstraint r = r
-
-doPevalIntegerLtOrdTerm :: Term Integer -> Term Integer -> Maybe (Term Bool)
-doPevalIntegerLtOrdTerm (ConTerm a) (ConTerm b) = Just $ conTerm $ a < b
-doPevalIntegerLtOrdTerm _ _ = Nothing
-
-doPevalIntegerLeOrdTerm :: Term Integer -> Term Integer -> Maybe (Term Bool)
-doPevalIntegerLeOrdTerm (ConTerm a) (ConTerm b) = Just $ conTerm $ a <= b
-doPevalIntegerLeOrdTerm _ _ = Nothing
 
 -- Uninterpreted (abstract) sort, named at the type level by @n@. Lowers to the
 -- SBV empty-ADT kind @KADT name [] []@ (see
@@ -9382,8 +9486,9 @@ instance SupportedNonFuncPrim AlgReal where
 -- is not the solver: @evalSym@\/@toCon@ cannot discharge array axioms, so a
 -- closed @select (store … ) …@ left symbolic would make @toCon@ return
 -- 'Nothing'). The rules, each of which either yields a 'conTerm', returns an
--- existing subterm, or recurses on a strictly smaller array — never growing the
--- term and never introducing an @ite@:
+-- existing subterm, or drops one store — never recursively traversing a store
+-- history and never introducing an @ite@. Explicit model observation can
+-- repeatedly consume concretely decided stores without expanding payloads:
 --
 --   * @select (con a) (con k) = con (Arr.select a k)@ — both leaf and index
 --     concrete; reads the element straight out of a decoded model array.
@@ -9391,7 +9496,7 @@ instance SupportedNonFuncPrim AlgReal where
 --     index, concrete or symbolic.
 --   * @select (store a i x) j@ — pushed through only when the index equality is
 --     /concretely decided/ by 'pevalEqTerm': @i == j@ ⇒ @x@; @i \/= j@ ⇒
---     @select a j@ (drop this store, recurse). A genuinely symbolic comparison
+--     @select a j@ (drop this one store). A genuinely symbolic comparison
 --     is left as a 'selectTerm' for the solver's native array theory rather than
 --     expanded into a nested @ite@ chain (sound but a needless blow-up).
 --
@@ -9410,7 +9515,7 @@ pevalSelectTerm arr key = case (arr, key) of
   (ConstArrayTerm _ v, _) -> v
   (StoreTerm a i x, _) -> case pevalEqTerm i key of
     ConTerm True -> x
-    ConTerm False -> pevalSelectTerm a key
+    ConTerm False -> selectTerm a key
     _ -> selectTerm arr key
   _ -> selectTerm arr key
 
@@ -9507,7 +9612,7 @@ instance
   , SupportedNonFuncPrim v
   ) => SupportedPrim (Array k v) where
   defaultValue = Array mempty defaultValue
-  pevalITETerm = pevalITEBasicTerm
+  pevalITETerm = pevalBoundedITETerm
   pevalEqTerm = pevalArrayEqTerm
   pevalDistinctTerm = pevalArrayDistinctTerm
   conSBVTerm (Array entries def) = withNonFuncPrim @(Array k v) $ do
@@ -9517,7 +9622,8 @@ instance
       SBV.writeArray acc (conSBVTerm key) (conSBVTerm val)
   symSBVName x _ = show x
   symSBVTerm = withNonFuncPrim @(Array k v) $ sbvFresh
-  withPrim = withNonFuncPrim @(Array k v)
+  -- Adapt the rank-2 constraints explicitly; keep the continuation lazy under Strict.
+  withPrim ~continuation = withNonFuncPrim @(Array k v) continuation
   sbvEq = withPrim @(Array k v) (SBV..==)
   sbvDistinct = withPrim @(Array k v) $ SBV.distinct . toList
   castTypedSymbol ::
@@ -9604,13 +9710,344 @@ pevalSeqZipTerm ::
 pevalSeqZipTerm (ConTerm left) (ConTerm right) = conTerm (zip left right)
 pevalSeqZipTerm left right = seqZipTerm left right
 
-pevalSeqLengthTerm ::
-  SupportedNonFuncPrim a => Term [a] -> Term Integer
-pevalSeqLengthTerm (ConTerm sequence) = conTerm (fromIntegral (length sequence))
-pevalSeqLengthTerm sequence = seqLengthTerm sequence
+-- These are derived observations of the native term, never a second carrier.
+-- In particular a symbolic lookup index is not part of the summary key.
+data SequenceUniform a
+  = EmptySequenceCells
+  | UniformSequenceCells !(Term a)
+  | UnknownSequenceCells
+
+-- A closed sequence has both concrete geometry and concrete payload.  Point
+-- demand follows its index algebra; only whole-value/model/fold demand invokes
+-- the producer.  Keeping that producer behind a function is important in this
+-- Strict module: constructing a million-cell resize must not construct a list.
+data ClosedSequence a = ClosedSequence
+  !Integer
+  !(Integer -> Maybe (Term a))
+  !(() -> [a])
+
+-- Explicit sharing is required at -O0: a unit lambda alone would recompute
+-- its payload on every whole-value demand. The lazy argument is not forced by
+-- this Strict module while the evidence/index algebra is being constructed.
+closedSequence :: Integer -> (Integer -> Maybe (Term a)) -> [a] -> ClosedSequence a
+closedSequence size index ~values = ClosedSequence size index (\() -> values)
+
+data SequenceFacts a = SequenceFacts
+  { sequenceFactsExtent :: !(Term Integer)
+  , sequenceFactsUniform :: !(SequenceUniform a)
+  , sequenceFactsClosed :: !(Maybe (ClosedSequence a))
+  }
+
+-- Shared choice policy for native carriers and Integer geometry.  Neither
+-- history nor guard structure is recursively normalized at construction.
+pevalBoundedITETerm :: Term Bool -> Term a -> Term a -> Term a
+pevalBoundedITETerm (ConTerm True) ~selected ~_ = selected
+pevalBoundedITETerm (ConTerm False) ~_ ~fallback = fallback
+pevalBoundedITETerm _ selected@SupportedTerm fallback | selected == fallback = selected
+pevalBoundedITETerm condition selected fallback = iteTerm condition selected fallback
+
+sequenceBoundsTerm :: Term Integer -> Term Integer -> Term Bool
+sequenceBoundsTerm extent index = mergeGuardAndTerm
+  (pevalLeOrdTerm (conTerm 0) index) (pevalLtOrdTerm index extent)
+
+-- One dictionary-free recursive table observes each retained sequence DAG
+-- node once per summary lifetime.  All recursive calls close over this exact
+-- polymorphic self, including the differently typed inputs of zip.  The weak
+-- keys preserve the interner's reclamation policy.  This shares O(D) summary
+-- work; it does not memoize or expand the potentially much larger graph of
+-- shifted (sequence,index) observations.
+sequenceFacts :: forall a. Term [a] -> SequenceFacts a
+sequenceFacts = memoized
+  where
+    memoized :: forall b. Term [b] -> SequenceFacts b
+    memoized = weakStableMemo summarize
+    {-# NOINLINE memoized #-}
+
+    summarize :: forall b. Term [b] -> SequenceFacts b
+    summarize source@SupportedTerm = withPrim @[b] $ case source of
+      ConTerm values ->
+        let size = toInteger (length values)
+            uniform = case values of
+              [] -> EmptySequenceCells
+              _ -> case homogeneousSeqLiteral source of
+                Just (_, value) -> UniformSequenceCells value
+                Nothing -> UnknownSequenceCells
+        in SequenceFacts (conTerm size) uniform
+             (Just (closedSequence size
+               (fmap conTerm . literalIndex values) values))
+      ITETerm condition selected fallback ->
+        let left = memoized selected
+            right = memoized fallback
+            extent = pevalITETerm condition
+              (sequenceFactsExtent left) (sequenceFactsExtent right)
+            uniform = commonUniform
+              (sequenceFactsUniform left) (sequenceFactsUniform right)
+            closed = case condition of
+              ConTerm True -> sequenceFactsClosed left
+              ConTerm False -> sequenceFactsClosed right
+              _ -> Nothing
+        in facts extent uniform closed
+      SeqConsTerm element rest ->
+        let previous = memoized rest
+            extent = pevalAddNumTerm (conTerm 1) (sequenceFactsExtent previous)
+            uniform = commonUniform
+              (UniformSequenceCells element) (sequenceFactsUniform previous)
+            closed = do
+              ClosedNative value <- closedNativeValue element
+              ClosedSequence size index values <- sequenceFactsClosed previous
+              pure $ closedSequence (size + 1)
+                (\position -> if position < 0 then Nothing
+                  else if position == 0 then Just element else index (position - 1))
+                (value () : values ())
+        in facts extent uniform closed
+      SeqAppendTerm selected fallback ->
+        let left = memoized selected
+            right = memoized fallback
+            extent = pevalAddNumTerm
+              (sequenceFactsExtent left) (sequenceFactsExtent right)
+            uniform = commonUniform
+              (sequenceFactsUniform left) (sequenceFactsUniform right)
+            closed = do
+              ClosedSequence leftSize leftIndex leftValues <- sequenceFactsClosed left
+              ClosedSequence rightSize rightIndex rightValues <- sequenceFactsClosed right
+              pure $ closedSequence (leftSize + rightSize)
+                (\position -> if position < leftSize
+                  then leftIndex position else rightIndex (position - leftSize))
+                (leftValues () ++ rightValues ())
+        in facts extent uniform closed
+      SeqZipTerm selected fallback ->
+        let left = memoized selected
+            right = memoized fallback
+            leftExtent = sequenceFactsExtent left
+            rightExtent = sequenceFactsExtent right
+            extent = pevalITETerm (pevalLeOrdTerm leftExtent rightExtent)
+              leftExtent rightExtent
+            uniform = case (sequenceFactsUniform left, sequenceFactsUniform right) of
+              (EmptySequenceCells, _) -> EmptySequenceCells
+              (_, EmptySequenceCells) -> EmptySequenceCells
+              (UniformSequenceCells a, UniformSequenceCells b) ->
+                UniformSequenceCells (pevalPairTerm a b)
+              _ -> UnknownSequenceCells
+            closed = do
+              ClosedSequence leftSize leftIndex leftValues <- sequenceFactsClosed left
+              ClosedSequence rightSize rightIndex rightValues <- sequenceFactsClosed right
+              pure $ closedSequence (min leftSize rightSize)
+                (\position -> pevalPairTerm <$> leftIndex position <*> rightIndex position)
+                (zip (leftValues ()) (rightValues ()))
+        in facts extent uniform closed
+      SeqRangeTerm count ->
+        let extent = nonnegativeSeqLength count
+            uniform = case extent of
+              ConTerm 0 -> EmptySequenceCells
+              ConTerm 1 -> UniformSequenceCells (conTerm 0)
+              _ -> UnknownSequenceCells
+            closed = case extent of
+              ConTerm size -> Just $ closedSequence size
+                (\position -> if 0 <= position && position < size
+                  then Just (conTerm position) else Nothing)
+                [0 .. size - 1]
+              _ -> Nothing
+        in facts extent uniform closed
+      SeqTailTerm sequence ->
+        let previous = memoized sequence
+            extent = nonnegativeSeqLength
+              (pevalSubNumTerm (sequenceFactsExtent previous) (conTerm 1))
+            closed = do
+              ClosedSequence size index values <- sequenceFactsClosed previous
+              pure $ closedSequence (max 0 (size - 1))
+                (\position -> if position < 0 then Nothing else index (position + 1))
+                (drop 1 (values ()))
+        in facts extent (sequenceFactsUniform previous) closed
+      SeqResizeTerm padding count sequence ->
+        let previous = memoized sequence
+            extent = nonnegativeSeqLength count
+            uniform = case sequenceFactsUniform previous of
+              EmptySequenceCells -> UniformSequenceCells padding
+              UniformSequenceCells value
+                | value == padding -> UniformSequenceCells value
+                | ConTerm size <- extent
+                , ConTerm originalSize <- sequenceFactsExtent previous
+                , size <= originalSize -> UniformSequenceCells value
+              _ -> UnknownSequenceCells
+            closed = do
+              size <- constantInteger extent
+              ClosedSequence originalSize index values <- sequenceFactsClosed previous
+              if size <= originalSize
+                then pure $ closedSequence size
+                  (\position -> if position < 0 || size <= position
+                    then Nothing else index position)
+                  (takeInteger size (values ()))
+                else do
+                  ClosedNative value <- closedNativeValue padding
+                  pure $ closedSequence size
+                    (\position -> if position < 0 || size <= position then Nothing
+                      else if position < originalSize then index position else Just padding)
+                    (takeInteger size (values () ++ repeat (value ())))
+        in facts extent uniform closed
+      SeqUpdateTerm target replacement sequence ->
+        let previous = memoized sequence
+            uniform = case sequenceFactsUniform previous of
+              EmptySequenceCells -> EmptySequenceCells
+              UniformSequenceCells value
+                | value == replacement -> UniformSequenceCells value
+              _ -> UnknownSequenceCells
+            closed = do
+              position <- constantInteger target
+              ClosedSequence size index values <- sequenceFactsClosed previous
+              if position < 0 || size <= position
+                then pure (ClosedSequence size index values)
+                else do
+                  ClosedNative value <- closedNativeValue replacement
+                  pure $ closedSequence size
+                    (\coordinate -> if coordinate == position
+                      then Just replacement else index coordinate)
+                    (replaceInteger position (value ()) (values ()))
+        in facts (sequenceFactsExtent previous) uniform closed
+      _ -> SequenceFacts (seqLengthTerm source) UnknownSequenceCells Nothing
+
+    -- Equal uniform branches establish a value fact without distributing any
+    -- point read. An empty branch contributes no cells to that fact.
+    commonUniform :: SequenceUniform b -> SequenceUniform b -> SequenceUniform b
+    commonUniform EmptySequenceCells right = right
+    commonUniform left EmptySequenceCells = left
+    commonUniform (UniformSequenceCells left@SupportedTerm) (UniformSequenceCells right)
+      | left == right = UniformSequenceCells left
+    commonUniform _ _ = UnknownSequenceCells
+
+    facts :: Term Integer -> SequenceUniform b -> Maybe (ClosedSequence b) -> SequenceFacts b
+    facts extent uniform closed = case extent of
+      ConTerm 0 -> SequenceFacts extent EmptySequenceCells
+        (Just (closedSequence 0 (\_ -> Nothing) []))
+      _ -> SequenceFacts extent uniform $ case (closed, extent, uniform) of
+        (Nothing, ConTerm size, UniformSequenceCells value) -> do
+          ClosedNative concrete <- closedNativeValue value
+          pure $ closedSequence size
+            (\position -> if 0 <= position && position < size
+              then Just value else Nothing)
+            (takeInteger size (repeat (concrete ())))
+        _ -> closed
+
+    constantInteger :: Term Integer -> Maybe Integer
+    constantInteger (ConTerm value) = Just value
+    constantInteger _ = Nothing
+
+    literalIndex :: [b] -> Integer -> Maybe b
+    literalIndex _ position | position < 0 = Nothing
+    literalIndex [] _ = Nothing
+    literalIndex (value : _) 0 = Just value
+    literalIndex (_ : rest) position = literalIndex rest (position - 1)
+
+    takeInteger :: Integer -> [b] -> [b]
+    takeInteger count _ | count <= 0 = []
+    takeInteger _ [] = []
+    takeInteger count (value : rest) = value : takeInteger (count - 1) rest
+
+    replaceInteger :: Integer -> b -> [b] -> [b]
+    replaceInteger _ _ [] = []
+    replaceInteger 0 value (_ : rest) = value : rest
+    replaceInteger position value (existing : rest) =
+      existing : replaceInteger (position - 1) value rest
+{-# NOINLINE sequenceFacts #-}
+
+-- A real box (not a newtype) keeps closure evidence separate from demand in
+-- this Strict module. In particular, proving an array payload closed must not
+-- invoke Arr.store's canonicalization/equality on its nested sequence values.
+data ClosedNative a = ClosedNative !(() -> a)
+
+closedNative :: a -> ClosedNative a
+closedNative ~value = ClosedNative (\() -> value)
+
+-- Nested sequences, pairs and arrays compose producers without running them.
+-- Unknown leaves remain unknown: no model completion or invented fallback.
+closedNativeValue :: forall a. Term a -> Maybe (ClosedNative a)
+closedNativeValue = memoized
+  where
+    memoized :: forall b. Term b -> Maybe (ClosedNative b)
+    memoized = weakStableMemo observe
+    {-# NOINLINE memoized #-}
+
+    observe :: forall b. Term b -> Maybe (ClosedNative b)
+    observe (ConTerm value) = Just (closedNative value)
+    observe (ITETerm (ConTerm condition) selected fallback) =
+      memoized (if condition then selected else fallback)
+    observe sequence@SeqConsTerm {} = wholeSequence sequence
+    observe sequence@SeqAppendTerm {} = wholeSequence sequence
+    observe sequence@SeqZipTerm {} = wholeSequence sequence
+    observe sequence@SeqRangeTerm {} = wholeSequence sequence
+    observe sequence@SeqTailTerm {} = wholeSequence sequence
+    observe sequence@SeqResizeTerm {} = wholeSequence sequence
+    observe sequence@SeqUpdateTerm {} = wholeSequence sequence
+    observe (SeqLengthTerm sequence) = case sequenceFactsExtent (sequenceFacts sequence) of
+      ConTerm size -> Just (closedNative size)
+      _ -> Nothing
+    observe (SeqLookupValueTerm seed sequence (ConTerm position))
+      | position < 0 = memoized seed
+      | otherwise = do
+          ClosedSequence _ index _ <- sequenceFactsClosed (sequenceFacts sequence)
+          case index position of
+            Just value -> memoized value
+            Nothing -> memoized seed
+    observe (SeqLookupTerm seed sequence (ConTerm position))
+      | position < 0 = checkedValue False seed
+      | otherwise = do
+          ClosedSequence _ index _ <- sequenceFactsClosed (sequenceFacts sequence)
+          case index position of
+            Just value -> checkedValue True value
+            Nothing -> checkedValue False seed
+    observe (PairTerm left right) = do
+      ClosedNative leftValue <- memoized left
+      ClosedNative rightValue <- memoized right
+      pure (closedNative (leftValue (), rightValue ()))
+    observe (FirstTerm pair) = do
+      ClosedNative value <- memoized pair
+      pure (closedNative (fst (value ())))
+    observe (SecondTerm pair) = do
+      ClosedNative value <- memoized pair
+      pure (closedNative (snd (value ())))
+    observe (ConstArrayTerm _ value) = do
+      ClosedNative payload <- memoized value
+      pure (closedNative (Arr.const (payload ())))
+    observe (StoreTerm array index value) = do
+      ClosedNative arrayValue <- memoized array
+      ClosedNative indexValue <- memoized index
+      ClosedNative payload <- memoized value
+      pure (closedNative (Arr.store (arrayValue ()) (indexValue ()) (payload ())))
+    observe (SelectTerm array index) = do
+      ClosedNative arrayValue <- memoized array
+      ClosedNative indexValue <- memoized index
+      pure (closedNative (Arr.select (arrayValue ()) (indexValue ())))
+    observe _ = Nothing
+
+    checkedValue :: Bool -> Term b -> Maybe (ClosedNative (Bool, b))
+    checkedValue present term = do
+      ClosedNative value <- memoized term
+      pure (closedNative (present, value ()))
+
+    wholeSequence :: Term [b] -> Maybe (ClosedNative [b])
+    wholeSequence sequence = do
+      ClosedSequence _ _ values <- sequenceFactsClosed (sequenceFacts sequence)
+      pure (ClosedNative values)
+{-# NOINLINE closedNativeValue #-}
+
+-- | Explicit whole-value demand, used by model evaluation and its closed fold
+-- inputs. Ordinary substitution and primitive construction do not call this.
+reifyClosedNativeTerm :: Term a -> Term a
+reifyClosedNativeTerm source@ConTerm {} = source
+reifyClosedNativeTerm source@SupportedTerm =
+  case closedNativeValue source of
+    Just (ClosedNative value) -> conTerm (value ())
+    Nothing -> source
+
+pevalSeqLengthTerm :: Term [a] -> Term Integer
+pevalSeqLengthTerm = sequenceFactsExtent . sequenceFacts
+
+nonnegativeSeqLength :: Term Integer -> Term Integer
+nonnegativeSeqLength count = pevalITETerm
+  (pevalLeOrdTerm count (conTerm 0)) (conTerm 0) count
 
 pevalSeqRangeTerm :: Term Integer -> Term [Integer]
-pevalSeqRangeTerm = seqRangeTerm
+pevalSeqRangeTerm (ConTerm count) | count <= 0 = conTerm []
+pevalSeqRangeTerm count = seqRangeTerm count
 
 -- | Drop the first element.  The tail of an empty sequence is empty, so this is
 -- total in both modes and needs no seed.
@@ -9619,6 +10056,79 @@ pevalSeqTailTerm ::
 pevalSeqTailTerm (ConTerm sequence) = conTerm (drop 1 sequence)
 pevalSeqTailTerm (SeqConsTerm _ rest) = rest
 pevalSeqTailTerm sequence = seqTailTerm sequence
+
+-- | Resize remains one node when padding a large or symbolic population.
+-- The singleton law exposes one cell without expanding a symbolic domain.
+pevalSeqResizeTerm ::
+  SupportedNonFuncPrim a => Term a -> Term Integer -> Term [a] -> Term [a]
+pevalSeqResizeTerm seed count sequence
+  | ConTerm size <- count, size <= 0 = conTerm []
+  | count == pevalSeqLengthTerm sequence = sequence
+  | ConTerm 1 <- count = pevalSeqConsTerm
+      (pevalSeqLookupValueTerm seed sequence (conTerm 0)) (conTerm [])
+  | otherwise = seqResizeTerm seed count sequence
+
+pevalSeqUpdateTerm ::
+  SupportedNonFuncPrim a => Term Integer -> Term a -> Term [a] -> Term [a]
+pevalSeqUpdateTerm index replacement sequence
+  | ConTerm position <- index, position < 0 = sequence
+  | ConTerm [] <- sequence = sequence
+  | ConTerm position <- index, ConTerm values <- sequence,
+    ConTerm value <- replacement = conTerm (replace position value values)
+  | ConTerm position <- index
+  , ConTerm size <- pevalSeqLengthTerm sequence
+  , size <= position = sequence
+  | SeqUpdateTerm previous _ original <- sequence, index == previous =
+      seqUpdateTerm index replacement original
+  | UniformSequenceCells value <- sequenceFactsUniform (sequenceFacts sequence)
+  , replacement == value = sequence
+  | otherwise = seqUpdateTerm index replacement sequence
+  where
+    replace _ _ [] = []
+    replace 0 value (_ : rest) = value : rest
+    replace position value (existing : rest) =
+      existing : replace (position - 1) value rest
+
+-- A literal's uniform value and extent are independent of its lookup seed and
+-- index. Keep the one-pass summary under a dictionary-free, weak identity memo:
+-- different reads of the same retained literal share the scan even at -O0.
+-- Element evidence comes from the literal itself, inside the cached function.
+homogeneousSeqLiteral :: forall a. Term [a] -> Maybe (Term Integer, Term a)
+homogeneousSeqLiteral = weakStableMemo summarize
+  where
+    summarize :: Term [a] -> Maybe (Term Integer, Term a)
+    summarize (ConTerm values) = withPrim @[a] $ case values of
+      [] -> Nothing
+      [first] -> Just (conTerm 1, conTerm first)
+      first : rest -> withNonFuncPrim @a $
+        if exactIdentity True (SBV.kindOf (Proxy @(NonFuncSBVBaseType a)))
+          then
+            let go !count [] = Just (conTerm count, conTerm first)
+                go !count (value : remaining)
+                  | sameCon first value = go (count + 1) remaining
+                  | otherwise = Nothing
+             in go (1 :: Integer) rest
+          else Nothing
+    summarize _ = Nothing
+
+    -- Scalar FP's sameCon distinguishes signed zero; composite Eq does not.
+    -- AlgReal equality can throw on non-exact values. Unknown/ADT identities
+    -- are not assumed exact: all these cases retain the native lookup.
+    exactIdentity :: Bool -> SBVD.Kind -> Bool
+    exactIdentity _ SBVD.KBool = True
+    exactIdentity _ SBVD.KBounded{} = True
+    exactIdentity _ SBVD.KUnbounded = True
+    exactIdentity _ SBVD.KRational = True
+    exactIdentity _ SBVD.KChar = True
+    exactIdentity _ SBVD.KString = True
+    exactIdentity scalar SBVD.KFP{} = scalar
+    exactIdentity _ (SBVD.KList element) = exactIdentity False element
+    exactIdentity _ (SBVD.KSet element) = exactIdentity False element
+    exactIdentity _ (SBVD.KTuple elements) = all (exactIdentity False) elements
+    exactIdentity _ (SBVD.KArray key value) =
+      exactIdentity False key && exactIdentity False value
+    exactIdentity _ _ = False
+{-# NOINLINE homogeneousSeqLiteral #-}
 
 pevalSeqLookupTerm ::
   SupportedNonFuncPrim a =>
@@ -9637,7 +10147,17 @@ pevalSeqLookupTerm seed sequence (ConTerm index)
     go (value : _) 0 = Just value
     go (_ : rest) current = go rest (current - 1)
 pevalSeqLookupTerm seed sequence index =
-  seqLookupTerm seed sequence index
+  case sequence of
+    ConTerm [] -> pevalPairTerm falseTerm seed
+    SeqResizeTerm{} -> parts (pevalSeqLengthTerm sequence)
+    SeqUpdateTerm{} -> parts (pevalSeqLengthTerm sequence)
+    ConTerm{}
+      | Just (size, _) <- homogeneousSeqLiteral sequence -> parts size
+    _ -> seqLookupTerm seed sequence index
+  where
+    parts size = pevalPairTerm
+      (sequenceBoundsTerm size index)
+      (pevalSeqLookupValueTerm seed sequence index)
 
 -- | Focused sequence lookup whose result is the element sort itself.  It is
 -- intentionally separate from 'pevalSeqLookupTerm': projecting the second
@@ -9646,69 +10166,29 @@ pevalSeqLookupTerm seed sequence index =
 -- one authoritative length, so manufacturing that product is both redundant
 -- and asymptotically harmful.
 --
--- The structural rules preserve the existing total lookup semantics: negative
--- and out-of-range indices return the exact seed.  Choice is distributed only
--- when the sequence itself is an ITE; this is an opt-in eliminator, not a global
--- sequence rewrite.  The weak identity memo shares repeated lane reads without
--- keeping reclaimed terms alive.
+-- Symbolic histories stay native, including when the index happens to be a
+-- literal. Only shared extent/uniform facts and a certified closed sequence
+-- can answer on the host. A read never distributes through symbolic choice,
+-- update, resize or shifted append histories.
 pevalSeqLookupValueTerm ::
   SupportedNonFuncPrim a =>
   Term a ->
   Term [a] ->
   Term Integer ->
   Term a
-pevalSeqLookupValueTerm = weakStableMemo3 pevalSeqLookupValueTermUncached
-{-# NOINLINE pevalSeqLookupValueTerm #-}
-
-pevalSeqLookupValueTermUncached ::
-  SupportedNonFuncPrim a =>
-  Term a ->
-  Term [a] ->
-  Term Integer ->
-  Term a
-pevalSeqLookupValueTermUncached seed sequence index = case index of
-  ConTerm concreteIndex
-    | concreteIndex < 0 -> seed
-    | ConTerm values <- sequence ->
-        maybe seed conTerm (atIndex values concreteIndex)
-    | otherwise -> structural
-  _ -> structural
+pevalSeqLookupValueTerm seed sequence index
+  | ConTerm position <- index, position < 0 = seed
+  | otherwise = case sequenceFactsUniform facts of
+      EmptySequenceCells -> seed
+      UniformSequenceCells value -> pevalBoundedITETerm
+        (sequenceBoundsTerm (sequenceFactsExtent facts) index)
+        value seed
+      UnknownSequenceCells -> case (index, sequenceFactsClosed facts) of
+        (ConTerm position, Just (ClosedSequence _ select _)) ->
+          maybe seed id (select position)
+        _ -> seqLookupValueTerm seed sequence index
   where
-    zero = conTerm (0 :: Integer)
-    one = conTerm (1 :: Integer)
-    negative = pevalLtOrdTerm index zero
-
-    structural = case sequence of
-      ConTerm [] -> seed
-      ITETerm condition left right ->
-        pevalITETerm
-          condition
-          (pevalSeqLookupValueTerm seed left index)
-          (pevalSeqLookupValueTerm seed right index)
-      SeqConsTerm element rest ->
-        pevalITETerm negative seed $
-          pevalITETerm
-            (pevalEqTerm index zero)
-            element
-            (pevalSeqLookupValueTerm
-              seed rest (pevalSubNumTerm index one))
-      SeqAppendTerm left right ->
-        let leftLength = pevalSeqLengthTerm left
-         in pevalITETerm negative seed $
-              pevalITETerm
-                (pevalLtOrdTerm index leftLength)
-                (pevalSeqLookupValueTerm seed left index)
-                (pevalSeqLookupValueTerm
-                  seed right (pevalSubNumTerm index leftLength))
-      SeqTailTerm source ->
-        pevalITETerm negative seed $
-          pevalSeqLookupValueTerm
-            seed source (pevalAddNumTerm index one)
-      _ -> seqLookupValueTerm seed sequence index
-
-    atIndex [] _ = Nothing
-    atIndex (value : _) 0 = Just value
-    atIndex (_ : rest) current = atIndex rest (current - 1)
+    facts = sequenceFacts sequence
 
 pevalSeqFoldTerm ::
   ( SupportedNonFuncPrim state,
@@ -9819,15 +10299,18 @@ instance SupportedNonFuncPrim a => SBVRep [a] where
 
 instance SupportedNonFuncPrim a => SupportedPrim [a] where
   defaultValue = []
-  pevalITETerm = pevalITEBasicTerm
-  pevalEqTerm = pevalDefaultEqTerm
+  pevalITETerm = pevalBoundedITETerm
+  pevalEqTerm left@ConTerm {} right@ConTerm {} = conTerm (left == right)
+  pevalEqTerm left right | left == right = trueTerm
+  pevalEqTerm left@ConTerm {} right = eqTerm right left
+  pevalEqTerm left right = eqTerm left right
   pevalDistinctTerm = pevalGeneralDistinct
   sbvEq = withNonFuncPrim @a (SBV..==)
   sbvDistinct = withNonFuncPrim @a $ SBV.distinct . toList
   conSBVTerm = withNonFuncPrim @a $ SBVL.implode . fmap conNonFuncSBVTerm
   symSBVName symbol _ = show symbol
   symSBVTerm = withNonFuncPrim @a sbvFresh
-  withPrim = withNonFuncPrim @[a]
+  withPrim ~continuation = withNonFuncPrim @[a] continuation
   castTypedSymbol ::
     forall knd' knd.
     IsSymbolKind knd' =>
@@ -9895,7 +10378,7 @@ instance
           (conNonFuncSBVTerm firstValue, conNonFuncSBVTerm secondValue)
   symSBVName symbol _ = show symbol
   symSBVTerm = withNonFuncPrim @a $ withNonFuncPrim @b sbvFresh
-  withPrim = withNonFuncPrim @(a, b)
+  withPrim ~continuation = withNonFuncPrim @(a, b) continuation
   castTypedSymbol ::
     forall knd' knd.
     IsSymbolKind knd' =>
@@ -10228,16 +10711,15 @@ pevalDefaultBVSelectTerm ::
     PEvalBVTerm bv,
     forall x. (KnownNat x, 1 <= x) => PEvalBitCastTerm (bv2 x) (bv x),
     PEvalBVTerm bv2,
-    Typeable bv,
-    SupportedPrim (bv w),
-    SupportedPrim (bv2 n)
+    forall x. (KnownNat x, 1 <= x) => SupportedPrim (bv x),
+    forall x. (KnownNat x, 1 <= x) => SupportedPrim (bv2 x)
   ) =>
   p ix ->
   q w ->
   Term (bv n) ->
   Term (bv w)
 pevalDefaultBVSelectTerm ix w =
-  unaryUnfoldOnce (doPevalDefaultBVSelectTerm @bv2 ix w) (bvSelectTerm ix w)
+  totalize (doPevalDefaultBVSelectTerm @bv2 ix w) (bvSelectTerm ix w)
 
 -- | Unsafe version of `pevalBVSelectTerm`. Use `NatRepr` for the bit-width
 -- representations.
@@ -10259,6 +10741,23 @@ unsafePevalBVSelectTerm n ix w term =
              ) of
           (LeqProof, LeqProof, LeqProof) -> pevalBVSelectTerm ix w term
 
+-- A terminal projection after one local select identity. It folds only a
+-- literal or the whole vector; it never examines another history constructor.
+-- Raw constructors need primitive evidence at each newly generated width,
+-- independently of the arithmetic/bitwise evidence in PEvalBVTerm.
+unsafeLeafBVSelectTerm ::
+  forall bv n ix w.
+  (PEvalBVTerm bv, forall x. (KnownNat x, 1 <= x) => SupportedPrim (bv x)) =>
+  NatRepr n -> NatRepr ix -> NatRepr w -> Term (bv n) -> Term (bv w)
+unsafeLeafBVSelectTerm n ix w term =
+  withKnownNat n $ withKnownNat ix $ withKnownNat w $
+    case (unsafeLeqProof @1 @n, unsafeLeqProof @1 @w, unsafeLeqProof @(ix + w) @n) of
+      (LeqProof, LeqProof, LeqProof) -> case term of
+        ConTerm value -> conTerm (sizedBVSelect ix w value)
+        _ -> case (sameNat ix (Proxy @0), sameNat w n) of
+          (Just Refl, Just Refl) -> term
+          _ -> bvSelectTerm ix w term
+
 doPevalDefaultBVSelectTerm ::
   forall (bv2 :: Nat -> Type) bv n ix w p q.
   ( KnownNat n,
@@ -10270,9 +10769,8 @@ doPevalDefaultBVSelectTerm ::
     ix + w <= n,
     PEvalBVTerm bv,
     PEvalBVTerm bv2,
-    Typeable bv,
-    SupportedPrim (bv w),
-    SupportedPrim (bv2 n)
+    forall x. (KnownNat x, 1 <= x) => SupportedPrim (bv x),
+    forall x. (KnownNat x, 1 <= x) => SupportedPrim (bv2 x)
   ) =>
   p ix ->
   q w ->
@@ -10285,51 +10783,24 @@ doPevalDefaultBVSelectTerm _ _ rhs
 doPevalDefaultBVSelectTerm ix w (ConTerm b) =
   Just $ conTerm $ sizedBVSelect ix w b
 doPevalDefaultBVSelectTerm ix w (BitCastTerm (DynTerm (b :: Term (bv2 n)))) =
-  Just $ pevalBitCastTerm $ pevalBVSelectTerm ix w b
-doPevalDefaultBVSelectTerm ix w (AddNumTerm t1 t2)
-  | natVal @ix ix == 0 =
-      Just $
-        AddNumTerm
-          (pevalDefaultBVSelectTerm @bv2 @bv ix w t1)
-          (pevalDefaultBVSelectTerm @bv2 @bv ix w t2)
-doPevalDefaultBVSelectTerm ix w (MulNumTerm t1 t2)
-  | natVal @ix ix == 0 =
-      Just $
-        MulNumTerm
-          (pevalDefaultBVSelectTerm @bv2 @bv ix w t1)
-          (pevalDefaultBVSelectTerm @bv2 @bv ix w t2)
-doPevalDefaultBVSelectTerm ix w (AndBitsTerm t1 t2) =
-  Just $
-    AndBitsTerm
-      (pevalDefaultBVSelectTerm @bv2 @bv ix w t1)
-      (pevalDefaultBVSelectTerm @bv2 @bv ix w t2)
-doPevalDefaultBVSelectTerm ix w (OrBitsTerm t1 t2) =
-  Just $
-    OrBitsTerm
-      (pevalDefaultBVSelectTerm @bv2 @bv ix w t1)
-      (pevalDefaultBVSelectTerm @bv2 @bv ix w t2)
-doPevalDefaultBVSelectTerm ix w (XorBitsTerm t1 t2) =
-  Just $
-    XorBitsTerm
-      (pevalDefaultBVSelectTerm @bv2 @bv ix w t1)
-      (pevalDefaultBVSelectTerm @bv2 @bv ix w t2)
+  Just $ bitCastTerm $ bvSelectTerm ix w b
 doPevalDefaultBVSelectTerm
   pix
   pw
   (BVConcatTerm (b1 :: Term (bv n1)) (b2 :: Term (bv n2)))
-    | ix + w <= n2 = Just $ unsafePevalBVSelectTerm n2Repr ixRepr wRepr b2
+    | ix + w <= n2 = Just $ unsafeLeafBVSelectTerm n2Repr ixRepr wRepr b2
     | ix >= n2 =
         case mkNatRepr (ix - n2) of
           SomeNatRepr ixpn2Repr ->
-            Just $ unsafePevalBVSelectTerm n1Repr ixpn2Repr wRepr b1
+            Just $ unsafeLeafBVSelectTerm n1Repr ixpn2Repr wRepr b1
     | otherwise =
         case (mkNatRepr (w + ix - n2), mkNatRepr (n2 - ix)) of
           (SomeNatRepr wixpn2Repr, SomeNatRepr n2pixRepr) ->
             let b1Part =
-                  unsafePevalBVSelectTerm n1Repr (natRepr @0) wixpn2Repr b1
-                b2Part = unsafePevalBVSelectTerm n2Repr ixRepr n2pixRepr b2
+                  unsafeLeafBVSelectTerm n1Repr (natRepr @0) wixpn2Repr b1
+                b2Part = unsafeLeafBVSelectTerm n2Repr ixRepr n2pixRepr b2
              in Just $
-                  unsafePevalBVConcatTerm
+                  unsafeBVConcatTerm
                     wixpn2Repr
                     n2pixRepr
                     wRepr
@@ -10348,7 +10819,7 @@ doPevalDefaultBVSelectTerm
   _
   (BVSelectTerm (_ :: proxy ix1) _ (b :: Term (bv n1))) =
     Just $
-      unsafePevalBVSelectTerm
+      unsafeLeafBVSelectTerm
         (natRepr @n1)
         (addNat (natRepr @ix) (natRepr @ix1))
         (natRepr @w)
@@ -10357,12 +10828,14 @@ doPevalDefaultBVSelectTerm
   pix
   pw
   (BVExtendTerm signed _ (b :: Term (bv n1)))
-    | ix + w <= n1 = Just $ unsafePevalBVSelectTerm n1Repr ixRepr wRepr b
+    | ix + w <= n1 = Just $ unsafeLeafBVSelectTerm n1Repr ixRepr wRepr b
     | ix < n1 =
         case mkNatRepr (n1 - ix) of
-          SomeNatRepr n1pixRepr ->
-            let bPart = unsafePevalBVSelectTerm n1Repr ixRepr n1pixRepr b
-             in Just $ unsafePevalBVExtendTerm n1pixRepr wRepr signed bPart
+          SomeNatRepr (n1pixRepr :: NatRepr part) ->
+            let bPart = unsafeLeafBVSelectTerm n1Repr ixRepr n1pixRepr b
+             in withKnownNat n1pixRepr $
+                  case (unsafeLeqProof @1 @part, unsafeLeqProof @part @w) of
+                    (LeqProof, LeqProof) -> Just $ bvExtendTerm signed pw bPart
     | otherwise = Nothing
     where
       ixRepr = natRepr @ix

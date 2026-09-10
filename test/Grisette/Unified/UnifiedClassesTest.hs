@@ -25,7 +25,8 @@ import Control.Monad.Identity (Identity (Identity))
 import qualified Data.Text as T
 import GHC.TypeNats (KnownNat, type (<=))
 import Grisette
-  ( Mergeable,
+  ( AsKey,
+    Mergeable (rootStrategy),
     SymBool,
     SymEq,
     SymInteger,
@@ -45,12 +46,17 @@ import Grisette.Internal.TH.Derivation.Common
       ),
     EvalModeConfig (EvalModeConstraints),
   )
+import Grisette.TestUtil.NoMerge
+  ( MergingOnly (runMergingOnly),
+    NoMerge (NoMerge),
+  )
 import Grisette.TestUtil.SymbolicAssertion ((.@?=))
 import Grisette.Unified
   ( BaseMonad,
     EvalModeBV,
     EvalModeBase,
     EvalModeInteger,
+    EvalModeTag (S),
     GetBool,
     GetData,
     GetInteger,
@@ -58,7 +64,9 @@ import Grisette.Unified
     UnifiedBranching,
     UnifiedSymEq,
     UnifiedSymEq1,
+    extractData,
     mrgIf,
+    onUnionMWithStrategy,
     (.==),
   )
 import Test.Framework (Test, testGroup)
@@ -146,7 +154,33 @@ unifiedClassesTest =
           testCase "branching 'Con" $
             testBranching 1 @?= (return 1 :: Either T.Text Integer),
           testCase "branching 'Sym" $
-            testBranching 1 .@?= (return 1 :: ExceptT T.Text Union SymInteger)
+            testBranching 1 .@?= (return 1 :: ExceptT T.Text Union SymInteger),
+          testCase "symbolic elimination accepts explicit-only target" $ do
+            let source =
+                  Grisette.mrgIfPropagatedStrategy
+                    "condition"
+                    (pure NoMerge)
+                    (pure NoMerge) ::
+                    Union NoMerge
+            runMergingOnly
+              ( onUnionMWithStrategy
+                  @'S
+                  rootStrategy
+                  (\NoMerge -> pure ("result" :: AsKey SymBool))
+                  source ::
+                  MergingOnly (AsKey SymBool)
+              )
+              @?= pure "result",
+          testCase "symbolic data extraction accepts explicit-only target" $ do
+            let source =
+                  Grisette.mrgIfPropagatedStrategy
+                    "condition"
+                    (pure ("left" :: AsKey SymBool))
+                    (pure "right") ::
+                    GetData 'S (AsKey SymBool)
+            runMergingOnly
+              (extractData @'S source :: MergingOnly (AsKey SymBool))
+              @?= pure (Grisette.symIte "condition" "left" "right")
         ],
       testGroup
         "UnifiedSEq"

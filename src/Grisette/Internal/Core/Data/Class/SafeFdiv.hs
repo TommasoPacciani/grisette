@@ -22,11 +22,13 @@ where
 
 import Control.Exception (ArithException (RatioZeroDenominator), throw)
 import Control.Monad.Error.Class (MonadError (throwError))
-import Grisette.Internal.Core.Control.Monad.Class.Union (MonadUnion)
 import Grisette.Internal.Core.Data.Class.AsKey (AsKey (AsKey))
 import Grisette.Internal.Core.Data.Class.ITEOp (ITEOp (symIte))
 import Grisette.Internal.Core.Data.Class.Mergeable (Mergeable)
-import Grisette.Internal.Core.Data.Class.SimpleMergeable (mrgIf)
+import Grisette.Internal.Core.Data.Class.SimpleMergeable
+  ( MergingBranching,
+    mrgIf,
+  )
 import Grisette.Internal.Core.Data.Class.Solvable (Solvable (con))
 import Grisette.Internal.Core.Data.Class.SymEq (SymEq ((.==)))
 import Grisette.Internal.Core.Data.Class.TryMerge (TryMerge, mrgSingle, tryMerge)
@@ -134,7 +136,7 @@ instance FdivOr SymAlgReal where
   recipOr d l = symIte (l .== con 0) d (recip l)
 
 instance
-  (MonadError ArithException m, MonadUnion m) =>
+  (MonadError ArithException m, MergingBranching m, TryMerge m) =>
   SafeFdiv ArithException SymAlgReal m
   where
   safeFdiv l r =

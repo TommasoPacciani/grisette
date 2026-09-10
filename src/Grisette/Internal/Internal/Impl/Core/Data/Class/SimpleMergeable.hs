@@ -71,7 +71,8 @@ import Grisette.Internal.Internal.Decl.Core.Data.Class.SimpleMergeable
   ( SimpleMergeable (mrgIte),
     SimpleMergeable1 (liftMrgIte),
     SimpleMergeable2 (liftMrgIte2),
-    SymBranching (mrgIfPropagatedStrategy, mrgIfWithStrategy),
+    MergingBranching (mrgIfWithStrategy),
+    SymBranching (mrgIfPropagatedStrategy),
     mrgIf,
     mrgIte1,
   )
@@ -157,66 +158,73 @@ instance SimpleMergeable2 (->) where
   {-# INLINE liftMrgIte2 #-}
 
 -- MaybeT
-instance (SymBranching m, Mergeable a) => SimpleMergeable (MaybeT m a) where
+instance (MergingBranching m, Mergeable a) => SimpleMergeable (MaybeT m a) where
   mrgIte = mrgIf
   {-# INLINE mrgIte #-}
 
-instance (SymBranching m) => SimpleMergeable1 (MaybeT m) where
+instance (MergingBranching m) => SimpleMergeable1 (MaybeT m) where
   liftMrgIte m = mrgIfWithStrategy (SimpleStrategy m)
   {-# INLINE liftMrgIte #-}
 
-instance (SymBranching m) => SymBranching (MaybeT m) where
+instance (MergingBranching m) => MergingBranching (MaybeT m) where
   mrgIfWithStrategy strategy cond (MaybeT l) (MaybeT r) =
     MaybeT $ mrgIfWithStrategy (liftRootStrategy strategy) cond l r
   {-# INLINE mrgIfWithStrategy #-}
+
+instance (SymBranching m) => SymBranching (MaybeT m) where
   mrgIfPropagatedStrategy cond (MaybeT l) (MaybeT r) =
     MaybeT $ mrgIfPropagatedStrategy cond l r
   {-# INLINE mrgIfPropagatedStrategy #-}
 
 -- ExceptT
 instance
-  (SymBranching m, Mergeable e, Mergeable a) =>
+  (MergingBranching m, Mergeable e, Mergeable a) =>
   SimpleMergeable (ExceptT e m a)
   where
   mrgIte = mrgIf
   {-# INLINE mrgIte #-}
 
 instance
-  (SymBranching m, Mergeable e) =>
+  (MergingBranching m, Mergeable e) =>
   SimpleMergeable1 (ExceptT e m)
   where
   liftMrgIte m = mrgIfWithStrategy (SimpleStrategy m)
   {-# INLINE liftMrgIte #-}
 
 instance
-  (SymBranching m, Mergeable e) =>
-  SymBranching (ExceptT e m)
+  (MergingBranching m, Mergeable e) =>
+  MergingBranching (ExceptT e m)
   where
   mrgIfWithStrategy s cond (ExceptT t) (ExceptT f) =
     ExceptT $ mrgIfWithStrategy (liftRootStrategy s) cond t f
   {-# INLINE mrgIfWithStrategy #-}
+
+instance
+  (SymBranching m, Mergeable e) =>
+  SymBranching (ExceptT e m)
+  where
   mrgIfPropagatedStrategy cond (ExceptT t) (ExceptT f) =
     ExceptT $ mrgIfPropagatedStrategy cond t f
   {-# INLINE mrgIfPropagatedStrategy #-}
 
 -- StateT
 instance
-  (Mergeable s, Mergeable a, SymBranching m) =>
+  (Mergeable s, Mergeable a, MergingBranching m) =>
   SimpleMergeable (StateLazy.StateT s m a)
   where
   mrgIte = mrgIf
   {-# INLINE mrgIte #-}
 
 instance
-  (Mergeable s, SymBranching m) =>
+  (Mergeable s, MergingBranching m) =>
   SimpleMergeable1 (StateLazy.StateT s m)
   where
   liftMrgIte m = mrgIfWithStrategy (SimpleStrategy m)
   {-# INLINE liftMrgIte #-}
 
 instance
-  (Mergeable s, SymBranching m) =>
-  SymBranching (StateLazy.StateT s m)
+  (Mergeable s, MergingBranching m) =>
+  MergingBranching (StateLazy.StateT s m)
   where
   mrgIfWithStrategy s cond (StateLazy.StateT t) (StateLazy.StateT f) =
     StateLazy.StateT $ \v ->
@@ -226,86 +234,106 @@ instance
         (t v)
         (f v)
   {-# INLINE mrgIfWithStrategy #-}
+
+instance
+  (Mergeable s, SymBranching m) =>
+  SymBranching (StateLazy.StateT s m)
+  where
   mrgIfPropagatedStrategy cond (StateLazy.StateT t) (StateLazy.StateT f) =
     StateLazy.StateT $ \v -> mrgIfPropagatedStrategy cond (t v) (f v)
   {-# INLINE mrgIfPropagatedStrategy #-}
 
 instance
-  (Mergeable s, Mergeable a, SymBranching m) =>
+  (Mergeable s, Mergeable a, MergingBranching m) =>
   SimpleMergeable (StateStrict.StateT s m a)
   where
   mrgIte = mrgIf
   {-# INLINE mrgIte #-}
 
 instance
-  (Mergeable s, SymBranching m) =>
+  (Mergeable s, MergingBranching m) =>
   SimpleMergeable1 (StateStrict.StateT s m)
   where
   liftMrgIte m = mrgIfWithStrategy (SimpleStrategy m)
   {-# INLINE liftMrgIte #-}
 
 instance
-  (Mergeable s, SymBranching m) =>
-  SymBranching (StateStrict.StateT s m)
+  (Mergeable s, MergingBranching m) =>
+  MergingBranching (StateStrict.StateT s m)
   where
   mrgIfWithStrategy s cond (StateStrict.StateT t) (StateStrict.StateT f) =
     StateStrict.StateT $
       \v ->
         mrgIfWithStrategy (liftRootStrategy2 s rootStrategy) cond (t v) (f v)
   {-# INLINE mrgIfWithStrategy #-}
+
+instance
+  (Mergeable s, SymBranching m) =>
+  SymBranching (StateStrict.StateT s m)
+  where
   mrgIfPropagatedStrategy cond (StateStrict.StateT t) (StateStrict.StateT f) =
     StateStrict.StateT $ \v -> mrgIfPropagatedStrategy cond (t v) (f v)
   {-# INLINE mrgIfPropagatedStrategy #-}
 
 -- WriterT
 instance
-  (Mergeable s, Mergeable a, SymBranching m, Monoid s) =>
+  (Mergeable s, Mergeable a, MergingBranching m, Monoid s) =>
   SimpleMergeable (WriterLazy.WriterT s m a)
   where
   mrgIte = mrgIf
   {-# INLINE mrgIte #-}
 
 instance
-  (Mergeable s, SymBranching m, Monoid s) =>
+  (Mergeable s, MergingBranching m, Monoid s) =>
   SimpleMergeable1 (WriterLazy.WriterT s m)
   where
   liftMrgIte m = mrgIfWithStrategy (SimpleStrategy m)
   {-# INLINE liftMrgIte #-}
 
 instance
-  (Mergeable s, SymBranching m, Monoid s) =>
-  SymBranching (WriterLazy.WriterT s m)
+  (Mergeable s, MergingBranching m, Monoid s) =>
+  MergingBranching (WriterLazy.WriterT s m)
   where
   mrgIfWithStrategy s cond (WriterLazy.WriterT t) (WriterLazy.WriterT f) =
     WriterLazy.WriterT $
       mrgIfWithStrategy (liftRootStrategy2 s rootStrategy) cond t f
   {-# INLINE mrgIfWithStrategy #-}
+
+instance
+  (Mergeable s, SymBranching m, Monoid s) =>
+  SymBranching (WriterLazy.WriterT s m)
+  where
   mrgIfPropagatedStrategy cond (WriterLazy.WriterT t) (WriterLazy.WriterT f) =
     WriterLazy.WriterT $ mrgIfPropagatedStrategy cond t f
   {-# INLINE mrgIfPropagatedStrategy #-}
 
 instance
-  (Mergeable s, Mergeable a, SymBranching m, Monoid s) =>
+  (Mergeable s, Mergeable a, MergingBranching m, Monoid s) =>
   SimpleMergeable (WriterStrict.WriterT s m a)
   where
   mrgIte = mrgIf
   {-# INLINE mrgIte #-}
 
 instance
-  (Mergeable s, SymBranching m, Monoid s) =>
+  (Mergeable s, MergingBranching m, Monoid s) =>
   SimpleMergeable1 (WriterStrict.WriterT s m)
   where
   liftMrgIte m = mrgIfWithStrategy (SimpleStrategy m)
   {-# INLINE liftMrgIte #-}
 
 instance
-  (Mergeable s, SymBranching m, Monoid s) =>
-  SymBranching (WriterStrict.WriterT s m)
+  (Mergeable s, MergingBranching m, Monoid s) =>
+  MergingBranching (WriterStrict.WriterT s m)
   where
   mrgIfWithStrategy s cond (WriterStrict.WriterT t) (WriterStrict.WriterT f) =
     WriterStrict.WriterT $
       mrgIfWithStrategy (liftRootStrategy2 s rootStrategy) cond t f
   {-# INLINE mrgIfWithStrategy #-}
+
+instance
+  (Mergeable s, SymBranching m, Monoid s) =>
+  SymBranching (WriterStrict.WriterT s m)
+  where
   mrgIfPropagatedStrategy
     cond
     (WriterStrict.WriterT t)
@@ -315,85 +343,94 @@ instance
 
 -- ReaderT
 instance
-  (Mergeable a, SymBranching m) =>
+  (Mergeable a, MergingBranching m) =>
   SimpleMergeable (ReaderT s m a)
   where
   mrgIte = mrgIf
   {-# INLINE mrgIte #-}
 
 instance
-  (SymBranching m) =>
+  (MergingBranching m) =>
   SimpleMergeable1 (ReaderT s m)
   where
   liftMrgIte m = mrgIfWithStrategy (SimpleStrategy m)
   {-# INLINE liftMrgIte #-}
 
 instance
-  (SymBranching m) =>
-  SymBranching (ReaderT s m)
+  (MergingBranching m) =>
+  MergingBranching (ReaderT s m)
   where
   mrgIfWithStrategy s cond (ReaderT t) (ReaderT f) =
     ReaderT $ \v -> mrgIfWithStrategy s cond (t v) (f v)
   {-# INLINE mrgIfWithStrategy #-}
+
+instance
+  (SymBranching m) =>
+  SymBranching (ReaderT s m)
+  where
   mrgIfPropagatedStrategy cond (ReaderT t) (ReaderT f) =
     ReaderT $ \v -> mrgIfPropagatedStrategy cond (t v) (f v)
   {-# INLINE mrgIfPropagatedStrategy #-}
 
 -- IdentityT
 instance
-  (SymBranching m, Mergeable a) =>
+  (MergingBranching m, Mergeable a) =>
   SimpleMergeable (IdentityT m a)
   where
   mrgIte = mrgIf
   {-# INLINE mrgIte #-}
 
-instance (SymBranching m) => SimpleMergeable1 (IdentityT m) where
+instance (MergingBranching m) => SimpleMergeable1 (IdentityT m) where
   liftMrgIte m = mrgIfWithStrategy (SimpleStrategy m)
   {-# INLINE liftMrgIte #-}
 
-instance (SymBranching m) => SymBranching (IdentityT m) where
+instance (MergingBranching m) => MergingBranching (IdentityT m) where
   mrgIfWithStrategy s cond (IdentityT l) (IdentityT r) =
     IdentityT $ mrgIfWithStrategy s cond l r
   {-# INLINE mrgIfWithStrategy #-}
+
+instance (SymBranching m) => SymBranching (IdentityT m) where
   mrgIfPropagatedStrategy cond (IdentityT l) (IdentityT r) =
     IdentityT $ mrgIfPropagatedStrategy cond l r
   {-# INLINE mrgIfPropagatedStrategy #-}
 
 -- ContT
-instance (SymBranching m, Mergeable r) => SimpleMergeable (ContT r m a) where
+instance (MergingBranching m, Mergeable r) => SimpleMergeable (ContT r m a) where
   mrgIte cond (ContT l) (ContT r) = ContT $ \c -> mrgIf cond (l c) (r c)
   {-# INLINE mrgIte #-}
 
-instance (SymBranching m, Mergeable r) => SimpleMergeable1 (ContT r m) where
+instance (MergingBranching m, Mergeable r) => SimpleMergeable1 (ContT r m) where
   liftMrgIte m = mrgIfWithStrategy (SimpleStrategy m)
   {-# INLINE liftMrgIte #-}
 
-instance (SymBranching m, Mergeable r) => SymBranching (ContT r m) where
+instance (MergingBranching m, Mergeable r) => MergingBranching (ContT r m) where
   mrgIfWithStrategy _ cond (ContT l) (ContT r) =
     ContT $ \c -> mrgIf cond (l c) (r c)
   {-# INLINE mrgIfWithStrategy #-}
+
+instance (SymBranching m, Mergeable r) => SymBranching (ContT r m) where
   mrgIfPropagatedStrategy cond (ContT l) (ContT r) =
     ContT $ \c -> mrgIfPropagatedStrategy cond (l c) (r c)
   {-# INLINE mrgIfPropagatedStrategy #-}
 
 -- RWST
 instance
-  (Mergeable s, Mergeable w, Monoid w, Mergeable a, SymBranching m) =>
+  (Mergeable s, Mergeable w, Monoid w, Mergeable a, MergingBranching m) =>
   SimpleMergeable (RWSLazy.RWST r w s m a)
   where
   mrgIte = mrgIf
   {-# INLINE mrgIte #-}
 
 instance
-  (Mergeable s, Mergeable w, Monoid w, SymBranching m) =>
+  (Mergeable s, Mergeable w, Monoid w, MergingBranching m) =>
   SimpleMergeable1 (RWSLazy.RWST r w s m)
   where
   liftMrgIte m = mrgIfWithStrategy (SimpleStrategy m)
   {-# INLINE liftMrgIte #-}
 
 instance
-  (Mergeable s, Mergeable w, Monoid w, SymBranching m) =>
-  SymBranching (RWSLazy.RWST r w s m)
+  (Mergeable s, Mergeable w, Monoid w, MergingBranching m) =>
+  MergingBranching (RWSLazy.RWST r w s m)
   where
   mrgIfWithStrategy ms cond (RWSLazy.RWST t) (RWSLazy.RWST f) =
     RWSLazy.RWST $ \r s ->
@@ -403,27 +440,32 @@ instance
         (t r s)
         (f r s)
   {-# INLINE mrgIfWithStrategy #-}
+
+instance
+  (Mergeable s, Mergeable w, Monoid w, SymBranching m) =>
+  SymBranching (RWSLazy.RWST r w s m)
+  where
   mrgIfPropagatedStrategy cond (RWSLazy.RWST t) (RWSLazy.RWST f) =
     RWSLazy.RWST $ \r s -> mrgIfPropagatedStrategy cond (t r s) (f r s)
   {-# INLINE mrgIfPropagatedStrategy #-}
 
 instance
-  (Mergeable s, Mergeable w, Monoid w, Mergeable a, SymBranching m) =>
+  (Mergeable s, Mergeable w, Monoid w, Mergeable a, MergingBranching m) =>
   SimpleMergeable (RWSStrict.RWST r w s m a)
   where
   mrgIte = mrgIf
   {-# INLINE mrgIte #-}
 
 instance
-  (Mergeable s, Mergeable w, Monoid w, SymBranching m) =>
+  (Mergeable s, Mergeable w, Monoid w, MergingBranching m) =>
   SimpleMergeable1 (RWSStrict.RWST r w s m)
   where
   liftMrgIte m = mrgIfWithStrategy (SimpleStrategy m)
   {-# INLINE liftMrgIte #-}
 
 instance
-  (Mergeable s, Mergeable w, Monoid w, SymBranching m) =>
-  SymBranching (RWSStrict.RWST r w s m)
+  (Mergeable s, Mergeable w, Monoid w, MergingBranching m) =>
+  MergingBranching (RWSStrict.RWST r w s m)
   where
   mrgIfWithStrategy ms cond (RWSStrict.RWST t) (RWSStrict.RWST f) =
     RWSStrict.RWST $ \r s ->
@@ -433,6 +475,11 @@ instance
         (t r s)
         (f r s)
   {-# INLINE mrgIfWithStrategy #-}
+
+instance
+  (Mergeable s, Mergeable w, Monoid w, SymBranching m) =>
+  SymBranching (RWSStrict.RWST r w s m)
+  where
   mrgIfPropagatedStrategy cond (RWSStrict.RWST t) (RWSStrict.RWST f) =
     RWSStrict.RWST $ \r s -> mrgIfPropagatedStrategy cond (t r s) (f r s)
   {-# INLINE mrgIfPropagatedStrategy #-}

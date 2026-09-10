@@ -30,10 +30,12 @@ import Grisette.Internal.Core.Control.Exception
   ( AssertionError (AssertionError),
     VerificationConditions (AssertionViolation, AssumptionViolation),
   )
-import Grisette.Internal.Core.Control.Monad.Class.Union (MonadUnion)
 import Grisette.Internal.Core.Data.Class.Mergeable (Mergeable)
-import Grisette.Internal.Core.Data.Class.SimpleMergeable (mrgIf)
-import Grisette.Internal.Core.Data.Class.TryMerge (tryMerge)
+import Grisette.Internal.Core.Data.Class.SimpleMergeable
+  ( MergingBranching,
+    mrgIf,
+  )
+import Grisette.Internal.Core.Data.Class.TryMerge (TryMerge, tryMerge)
 import Grisette.Internal.SymPrim.SymBool (SymBool)
 
 -- $setup
@@ -87,7 +89,7 @@ symThrowTransformableError ::
     Mergeable a,
     TransformError from to,
     MonadError to erm,
-    MonadUnion erm
+    TryMerge erm
   ) =>
   from ->
   erm a
@@ -106,7 +108,8 @@ symAssertTransformableError ::
   ( Mergeable to,
     TransformError from to,
     MonadError to erm,
-    MonadUnion erm
+    MergingBranching erm,
+    TryMerge erm
   ) =>
   from ->
   SymBool ->
@@ -118,7 +121,7 @@ symAssertTransformableError err cond = mrgIf cond (return ()) (symThrowTransform
 symAssertWith ::
   ( Mergeable e,
     MonadError e erm,
-    MonadUnion erm
+    MergingBranching erm
   ) =>
   e ->
   SymBool ->
@@ -185,7 +188,12 @@ instance TransformError AssertionError AssertionError where
 -- >>> symAssert (ssym "a") :: ExceptT VerificationConditions Union ()
 -- ExceptT {If (! a) (Left AssertionViolation) (Right ())}
 symAssert ::
-  (TransformError AssertionError to, Mergeable to, MonadError to erm, MonadUnion erm) =>
+  ( TransformError AssertionError to,
+    Mergeable to,
+    MonadError to erm,
+    MergingBranching erm,
+    TryMerge erm
+  ) =>
   SymBool ->
   erm ()
 symAssert = symAssertTransformableError AssertionError
@@ -199,7 +207,12 @@ symAssert = symAssertTransformableError AssertionError
 -- >>> symAssume (ssym "a") :: ExceptT VerificationConditions Union ()
 -- ExceptT {If (! a) (Left AssumptionViolation) (Right ())}
 symAssume ::
-  (TransformError VerificationConditions to, Mergeable to, MonadError to erm, MonadUnion erm) =>
+  ( TransformError VerificationConditions to,
+    Mergeable to,
+    MonadError to erm,
+    MergingBranching erm,
+    TryMerge erm
+  ) =>
   SymBool ->
   erm ()
 symAssume = symAssertTransformableError AssumptionViolation

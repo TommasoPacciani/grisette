@@ -27,6 +27,7 @@ where
 
 import Control.Exception (ArithException)
 import Control.Monad.Except (MonadError)
+import Grisette.Internal.Core.Data.Class.TryMerge (TryMerge)
 import Grisette.Internal.SymPrim.SymInteger (SymInteger)
 import Grisette.Internal.Unified.Class.UnifiedFromIntegral (UnifiedFromIntegral)
 import Grisette.Internal.Unified.Class.UnifiedRep
@@ -81,10 +82,10 @@ instance UnifiedIntegerBase 'S
 class
   ( i ~ GetInteger mode,
     forall m.
-    (UnifiedBranching mode m, MonadError ArithException m) =>
+    (UnifiedBranching mode m, TryMerge m, MonadError ArithException m) =>
     UnifiedSafeDiv mode ArithException i m,
     forall m.
-    (UnifiedBranching mode m, MonadError ArithException m) =>
+    (UnifiedBranching mode m, TryMerge m, MonadError ArithException m) =>
     UnifiedSafeLinearArith mode ArithException i m
   ) =>
   UnifiedIntegerSafeImpl (mode :: EvalModeTag) i

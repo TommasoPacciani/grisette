@@ -45,6 +45,7 @@ import Grisette.Internal.Core.Data.Class.SafeDiv (DivOr)
 import Grisette.Internal.Core.Data.Class.SignConversion (SignConversion)
 import Grisette.Internal.Core.Data.Class.SymRotate (SymRotate)
 import Grisette.Internal.Core.Data.Class.SymShift (SymShift)
+import Grisette.Internal.Core.Data.Class.TryMerge (TryMerge)
 import Grisette.Internal.SymPrim.BV
   ( IntN,
     WordN,
@@ -247,6 +248,7 @@ type AllUnifiedSizedBV (mode :: EvalModeTag) =
 class
   ( forall n m.
     ( UnifiedBranching mode m,
+      TryMerge m,
       MonadError ArithException m,
       KnownNat n,
       1 <= n
@@ -254,6 +256,7 @@ class
     SafeUnifiedBV mode n m,
     forall m.
     ( UnifiedBranching mode m,
+      TryMerge m,
       MonadError (Either SomeBVException ArithException) m
     ) =>
     SafeUnifiedSomeBV mode m,

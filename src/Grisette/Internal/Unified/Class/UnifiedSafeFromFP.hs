@@ -32,6 +32,7 @@ import Control.Monad.Error.Class (MonadError)
 import GHC.TypeNats (KnownNat, type (<=))
 import Grisette.Internal.Core.Data.Class.SafeFromFP (SafeFromFP)
 import qualified Grisette.Internal.Core.Data.Class.SafeFromFP as SafeFromFP
+import Grisette.Internal.Core.Data.Class.TryMerge (TryMerge)
 import Grisette.Internal.SymPrim.AlgReal (AlgReal)
 import Grisette.Internal.SymPrim.BV (IntN, WordN)
 import Grisette.Internal.SymPrim.FP
@@ -83,6 +84,7 @@ instance
 instance
   ( MonadError NotRepresentableFPError m,
     UnifiedBranching mode m,
+    TryMerge m,
     ValidFP eb sb
   ) =>
   UnifiedSafeFromFP
@@ -99,6 +101,7 @@ instance
 instance
   ( MonadError NotRepresentableFPError m,
     UnifiedBranching mode m,
+    TryMerge m,
     ValidFP eb sb
   ) =>
   UnifiedSafeFromFP
@@ -115,6 +118,7 @@ instance
 instance
   ( MonadError NotRepresentableFPError m,
     UnifiedBranching mode m,
+    TryMerge m,
     ValidFP eb sb,
     KnownNat n,
     1 <= n
@@ -133,6 +137,7 @@ instance
 instance
   ( MonadError NotRepresentableFPError m,
     UnifiedBranching mode m,
+    TryMerge m,
     ValidFP eb sb,
     KnownNat n,
     1 <= n
@@ -151,6 +156,7 @@ instance
 instance
   ( MonadError NotRepresentableFPError m,
     UnifiedBranching 'S m,
+    TryMerge m,
     ValidFP eb sb
   ) =>
   UnifiedSafeFromFP
@@ -166,6 +172,7 @@ instance
 instance
   ( MonadError NotRepresentableFPError m,
     UnifiedBranching 'S m,
+    TryMerge m,
     ValidFP eb sb
   ) =>
   UnifiedSafeFromFP
@@ -181,6 +188,7 @@ instance
 instance
   ( MonadError NotRepresentableFPError m,
     UnifiedBranching 'S m,
+    TryMerge m,
     ValidFP eb sb,
     KnownNat n,
     1 <= n
@@ -198,6 +206,7 @@ instance
 instance
   ( MonadError NotRepresentableFPError m,
     UnifiedBranching 'S m,
+    TryMerge m,
     ValidFP eb sb,
     KnownNat n,
     1 <= n

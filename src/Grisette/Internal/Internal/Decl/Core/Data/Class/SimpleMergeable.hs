@@ -36,6 +36,7 @@ module Grisette.Internal.Internal.Decl.Core.Data.Class.SimpleMergeable
     genericLiftMrgIte,
 
     -- * Symbolic branching
+    MergingBranching (..),
     SymBranching (..),
     mrgIf,
     mergeWithStrategy,
@@ -246,18 +247,15 @@ genericLiftMrgIte f c l r =
   to1 $ gmrgIte (SimpleMergeableArgs1 f) c (from1 l) (from1 r)
 {-# INLINE genericLiftMrgIte #-}
 
--- | Special case of the 'Mergeable1' and 'SimpleMergeable1' class for type
--- constructors that are 'SimpleMergeable' when applied to any 'Mergeable'
--- types.
+-- | Branching with a caller-supplied result merging strategy.
 --
 -- This type class is used to generalize the 'mrgIf' function to other
 -- containers, for example, monad transformer transformed Unions.
 class
   ( SimpleMergeable1 u,
-    forall a. (Mergeable a) => SimpleMergeable (u a),
-    TryMerge u
+    forall a. (Mergeable a) => SimpleMergeable (u a)
   ) =>
-  SymBranching (u :: Type -> Type)
+  MergingBranching (u :: Type -> Type)
   where
   -- | Symbolic @if@ control flow with the result merged with some merge
   -- strategy.
@@ -275,6 +273,11 @@ class
   -- 'Mergeable1'. In other cases, 'mrgIf' is usually a better alternative.
   mrgIfWithStrategy :: MergingStrategy a -> SymBool -> u a -> u a -> u a
 
+-- | Symbolic branching with cached-strategy propagation.
+--
+-- This stronger capability is for carriers that can both normalize a value
+-- independently and propagate a strategy cached by either branch.
+class (MergingBranching u, TryMerge u) => SymBranching (u :: Type -> Type) where
   -- | Symbolic @if@ control flow with the result.
   --
   -- This function does not need a merging strategy, and it will merge the
@@ -282,12 +285,12 @@ class
   mrgIfPropagatedStrategy :: SymBool -> u a -> u a -> u a
 
 -- | Try to merge the container with a given merge strategy.
-mergeWithStrategy :: (SymBranching m) => MergingStrategy a -> m a -> m a
+mergeWithStrategy :: (TryMerge m) => MergingStrategy a -> m a -> m a
 mergeWithStrategy = tryMergeWithStrategy
 {-# INLINE mergeWithStrategy #-}
 
 -- | Try to merge the container with the root strategy.
-merge :: (SymBranching m, Mergeable a) => m a -> m a
+merge :: (TryMerge m, Mergeable a) => m a -> m a
 merge = mergeWithStrategy rootStrategy
 {-# INLINE merge #-}
 
@@ -298,7 +301,7 @@ merge = mergeWithStrategy rootStrategy
 --
 -- >>> mrgIf "a" (return "b") (return "c") :: Union SymInteger
 -- {(ite a b c)}
-mrgIf :: (SymBranching u, Mergeable a) => SymBool -> u a -> u a -> u a
+mrgIf :: (MergingBranching u, Mergeable a) => SymBool -> u a -> u a -> u a
 mrgIf = mrgIfWithStrategy rootStrategy
 {-# INLINE mrgIf #-}
 
@@ -326,11 +329,13 @@ instance
   {-# INLINE liftMrgIte #-}
 
 #if MIN_VERSION_base(4,16,0)
-instance (SymBranching f) => SymBranching (AsKey1 f) where
+instance (MergingBranching f) => MergingBranching (AsKey1 f) where
   mrgIfWithStrategy strategy cond (AsKey1 t) (AsKey1 f) =
     AsKey1 $ mrgIfWithStrategy strategy cond t f
+  {-# INLINE mrgIfWithStrategy #-}
+
+instance (SymBranching f) => SymBranching (AsKey1 f) where
   mrgIfPropagatedStrategy cond (AsKey1 t) (AsKey1 f) =
     AsKey1 $ mrgIfPropagatedStrategy cond t f
-  {-# INLINE mrgIfWithStrategy #-}
   {-# INLINE mrgIfPropagatedStrategy #-}
 #endif

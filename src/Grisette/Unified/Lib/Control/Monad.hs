@@ -89,7 +89,7 @@ import Grisette.Internal.Core.Data.Class.Mergeable
   ( Mergeable (rootStrategy),
     MergingStrategy,
   )
-import Grisette.Internal.Core.Data.Class.SimpleMergeable (SymBranching)
+import Grisette.Internal.Core.Data.Class.SimpleMergeable (MergingBranching)
 import Grisette.Internal.Core.Data.Class.TryMerge
   ( MonadTryMerge,
     TryMerge (tryMergeWithStrategy),
@@ -443,7 +443,7 @@ mrgGuard False = mrgEmpty
 
 -- | 'Control.Monad.guard' with 'Grisette.Core.MergingStrategy' knowledge
 -- propagation and symbolic conditions.
-symGuard :: (SymBranching m, TryMerge m, Alternative m) => SymBool -> m ()
+symGuard :: (MergingBranching m, TryMerge m, Alternative m) => SymBool -> m ()
 symGuard b = mrgIf b (mrgPure ()) mrgEmpty
 {-# INLINE symGuard #-}
 
@@ -457,7 +457,7 @@ mrgWhen False _ = mrgPure ()
 -- | 'Control.Monad.when' with 'Grisette.Core.MergingStrategy' knowledge
 -- propagation and symbolic conditions.
 symWhen ::
-  (Applicative m, TryMerge m, SymBranching m) => SymBool -> m () -> m ()
+  (Applicative m, TryMerge m, MergingBranching m) => SymBool -> m () -> m ()
 symWhen b a = mrgIf b a (mrgPure ())
 {-# INLINE symWhen #-}
 
@@ -470,7 +470,7 @@ mrgUnless b = mrgWhen (not b)
 -- | 'Control.Monad.unless' with 'Grisette.Core.MergingStrategy' knowledge
 -- propagation and symbolic conditions.
 symUnless ::
-  (Applicative m, TryMerge m, SymBranching m) => SymBool -> m () -> m ()
+  (Applicative m, TryMerge m, MergingBranching m) => SymBool -> m () -> m ()
 symUnless b = symWhen (symNot b)
 {-# INLINE symUnless #-}
 

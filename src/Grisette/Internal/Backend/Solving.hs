@@ -1,19 +1,11 @@
-{-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE GHC2024 #-}
 {-# LANGUAGE CPP #-}
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE DerivingStrategies #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE GADTs #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE PatternSynonyms #-}
-{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RecordWildCards #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE Strict #-}
-{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE TypeOperators #-}
+-- The solver transformer instances expand backend constraint families whose
+-- decrease is not syntactically visible to GHC.
 {-# LANGUAGE UndecidableInstances #-}
 
 -- |
@@ -58,7 +50,7 @@ module Grisette.Internal.Backend.Solving
   )
 where
 
-import Control.Concurrent.Async (Async (asyncThreadId), async, wait)
+import Control.Concurrent.Async (Async (asyncThreadId), asyncWithUnmask, wait)
 import Control.Concurrent.STM
   ( TMVar,
     atomically,
@@ -69,10 +61,15 @@ import Control.Concurrent.STM
     tryTakeTMVar,
   )
 import Control.Concurrent.STM.TChan (TChan, newTChan, readTChan, writeTChan)
+import Control.DeepSeq (force)
 import Control.Exception
   ( Exception (displayException),
     SomeException,
+    evaluate,
     handle,
+    mask,
+    mask_,
+    onException,
     throwTo,
   )
 import Control.Monad (when)
@@ -89,10 +86,12 @@ import Control.Monad.State.Strict
     StateT,
     evalStateT,
   )
-import Data.Dynamic (fromDyn, toDyn)
+import Data.Dynamic (Dynamic, fromDyn, fromDynamic, toDyn)
+import qualified Data.HashMap.Strict as HM
 import qualified Data.HashSet as HS
-import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.List as L
+import Data.Maybe (catMaybes)
 import Data.List.NonEmpty (NonEmpty)
 import Grisette.Internal.SymPrim.Uninterp (uninterpConSBVPrefix)
 import Data.Proxy (Proxy (Proxy))
@@ -125,6 +124,7 @@ import Grisette.Internal.Backend.SymBiMap
     attachNextQuantifiedSymbolInfo,
     emptySymBiMap,
     findStringToSymbol,
+    findSymbolToString,
     lookupTerm,
     sizeBiMap,
   )
@@ -133,6 +133,7 @@ import Grisette.Internal.Core.Data.Class.ModelOps
   )
 import Grisette.Internal.Core.Data.Class.Solver
   ( ConfigurableSolver (newSolver),
+    ModelProjection (AllModelSymbols, OnlyModelSymbols),
     MonadicSolver
       ( monadicSolverAssert,
         monadicSolverCheckSat,
@@ -156,13 +157,14 @@ import Grisette.Internal.Core.Data.Class.Solver
       ),
     SolvingFailure (SolvingError, Terminated, Unk, Unsat),
   )
-import Grisette.Internal.Core.Data.MemoUtils (htmemo)
+import Grisette.Internal.Core.Data.MemoUtils (weakStableMemo)
 import Grisette.Internal.SymPrim.GeneralFun
   ( substTerm,
     type (-->) (GeneralFun),
   )
 import Grisette.Internal.SymPrim.Prim.Model as PM
   ( Model,
+    SymbolSet (SymbolSet),
   )
 import Grisette.Internal.SymPrim.Prim.SomeTerm (SomeTerm (SomeTerm))
 import Grisette.Internal.SymPrim.Prim.Term
@@ -206,10 +208,12 @@ import Grisette.Internal.SymPrim.Prim.Term
     PEvalShiftTerm (sbvShiftLeftTerm, sbvShiftRightTerm),
     SBVFreshMonad,
     SBVRep (SBVType),
+    SomeTypedAnySymbol,
     SomeTypedSymbol (SomeTypedSymbol),
-    SupportedNonFuncPrim (withNonFuncPrim),
+    SupportedNonFuncPrim (conNonFuncSBVTerm, withNonFuncPrim),
     SupportedPrim
       ( conSBVTerm,
+        castTypedSymbol,
         funcDummyConstraint,
         parseSMTModelResult,
         sbvDistinct,
@@ -291,6 +295,8 @@ import Grisette.Internal.SymPrim.Prim.Term
     pattern SeqLengthTerm,
     pattern SeqRangeTerm,
     pattern SeqTailTerm,
+    pattern SeqResizeTerm,
+    pattern SeqUpdateTerm,
     pattern SeqLookupTerm,
     pattern SeqLookupValueTerm,
     pattern SeqFoldTerm,
@@ -423,19 +429,57 @@ instance (MonadIO m) => MonadicSolver (SBVIncrementalT m) where
     lift $ lift $ SBV.constrain dummyConstraint
     lift $ lift $ SBV.constrain (lowered emptyQuantifiedStack)
     put newSymBiMap
-  monadicSolverCheckSat = do
-    checkSatResult <- SBVTC.checkSat
+  monadicSolverCheckSat projection = do
     config <- ask
     symBiMap <- get
+    requested <- case projection of
+      AllModelSymbols -> pure Nothing
+      OnlyModelSymbols (SymbolSet symbols) ->
+        Just . catMaybes <$> traverse (prepareModelQuery symBiMap)
+          (HS.toList symbols)
+    checkSatResult <- SBVTC.checkSat
     case checkSatResult of
       SBVC.Sat -> do
-        sbvModel <- SBVTC.getModel
-        let model = parseModel config sbvModel symBiMap
+        sbvModel <- case requested of
+          Nothing -> SBVTC.getModel
+          Just queries -> SBVI.getModelFor queries
+        -- CV/function decoders may fail lazily. Finish conversion inside this
+        -- command, before the worker publishes a result or releases ownership.
+        model <- liftIO $ evaluate $ force $ parseModel config sbvModel symBiMap
         return $ Right model
       r -> return $ Left $ sbvCheckSatResult r
   monadicSolverResetAssertions = SBVTC.resetAssertions
   monadicSolverPush = SBVTC.push
   monadicSolverPop = SBVTC.pop
+
+-- Only the free-symbol registration index can authorize readback. In QueryT,
+-- every primitive symSBVTerm is freshVar, which synchronizes its declaration
+-- before returning a cached free-variable SVal. Extracting that existing SV
+-- here cannot create an expression or declaration, and happens before checkSat.
+-- Functions use their exact registered name, without saturating opaque domains.
+prepareModelQuery ::
+  forall m. (MonadIO m) =>
+  SymBiMap ->
+  SomeTypedAnySymbol ->
+  SBVIncrementalT m (Maybe SBVI.ModelQuery)
+prepareModelQuery symBiMap symbol@(SomeTypedSymbol (typed@TypedSymbol {} :: TypedSymbol 'AnyKind value)) =
+  case findSymbolToString symbol symBiMap of
+    Nothing -> pure Nothing
+    Just name -> case castTypedSymbol typed :: Maybe (TypedConstantSymbol value) of
+      Nothing -> pure $ Just $ SBVI.ModelFunction name
+      Just TypedSymbol {} -> withNonFuncPrim @value $
+        case lookupTerm (SomeTerm $ symTerm typed) symBiMap of
+          Nothing -> inconsistent name
+          Just lowered -> case fromDynamic (lowered emptyQuantifiedStack) :: Maybe (SBVType value) of
+            Nothing -> inconsistent name
+            Just variable -> do
+              state <- SBVTC.queryState
+              sv <- liftIO $ SBVI.sbvToSV state variable
+              pure $ Just $ SBVI.ModelInput name sv
+  where
+    inconsistent :: forall result. String -> SBVIncrementalT m result
+    inconsistent name = liftIO $ ioError $ userError $
+      "Grisette projected model: registered free symbol has no matching lowered value: " ++ name
 
 data SBVSolverStatus = SBVSolverNormal | SBVSolverTerminated
 
@@ -455,11 +499,11 @@ setTerminated status = do
   putTMVar status SBVSolverTerminated
 
 instance ConfigurableSolver GrisetteSMTConfig SBVSolverHandle where
-  newSolver config = do
+  newSolver config = mask_ $ do
     sbvSolverHandleInChan <- atomically newTChan
     sbvSolverHandleOutChan <- atomically newTChan
     sbvSolverHandleStatus <- newTMVarIO SBVSolverNormal
-    sbvSolverHandleMonad <- async $ do
+    sbvSolverHandleMonad <- asyncWithUnmask $ \unmask -> do
       let handler (e :: SomeException) =
             liftIO $
               atomically $ do
@@ -467,7 +511,10 @@ instance ConfigurableSolver GrisetteSMTConfig SBVSolverHandle where
                 writeTChan
                   sbvSolverHandleOutChan
                   (Left (SolvingError $ T.pack $ displayException e))
-      handle handler $ runSBVIncremental config $ do
+      -- withSolver acquires this worker under mask. Restore true unmasked
+      -- execution, not the inherited MaskedInterruptible state: lowering can
+      -- allocate for a long time without reaching an interruptible IO action.
+      handle handler $ unmask $ runSBVIncremental config $ do
         let loop = do
               nextFormula <-
                 liftIO $ atomically $ readTChan sbvSolverHandleInChan
@@ -479,8 +526,8 @@ instance ConfigurableSolver GrisetteSMTConfig SBVSolverHandle where
                 SolverAssert formula -> do
                   monadicSolverAssert formula
                   loop
-                SolverCheckSat -> do
-                  r <- monadicSolverCheckSat
+                SolverCheckSat projection -> do
+                  r <- monadicSolverCheckSat projection
                   liftIO $ atomically $ writeTChan sbvSolverHandleOutChan r
                   loop
         loop
@@ -490,12 +537,15 @@ instance ConfigurableSolver GrisetteSMTConfig SBVSolverHandle where
     return $ SBVSolverHandle {..}
 
 instance Solver SBVSolverHandle where
-  solverRunCommand f handle@(SBVSolverHandle _ status inChan _) !command = do
+  solverRunCommand f handle@(SBVSolverHandle _ status inChan _) !command = mask $ \restore -> do
     st <- liftIO $ atomically $ takeTMVar status
     case st of
       SBVSolverNormal -> do
         liftIO $ atomically $ writeTChan inChan command
-        r <- f handle
+        -- Once dispatched, a cancelled reply consumer must not release this
+        -- handle for reuse: its orphaned CheckSat response could be mistaken
+        -- for the next command's result. Terminate the session instead.
+        r <- restore (f handle) `onException` solverForceTerminate handle
         liftIO $ atomically $ do
           currStatus <- tryReadTMVar status
           case currStatus of
@@ -505,13 +555,13 @@ instance Solver SBVSolverHandle where
       SBVSolverTerminated -> do
         liftIO $ atomically $ setTerminated status
         return $ Left Terminated
-  solverCheckSat handle =
+  solverCheckSat handle projection =
     solverRunCommand
       ( \(SBVSolverHandle _ _ _ outChan) ->
           liftIO $ atomically $ readTChan outChan
       )
       handle
-      SolverCheckSat
+      (SolverCheckSat projection)
   solverTerminate (SBVSolverHandle thread status inChan _) = do
     liftIO $ atomically $ do
       setTerminated status
@@ -548,6 +598,66 @@ sbvExists =
   error "Quantifiers are only available when you build with SBV 10.1.0 or later"
 #endif
 
+-- | Exactly specialize a complete small literal driver at lowering time.
+-- Inspect the Grisette term before realizing an SBV range: even asking whether
+-- an SBV range is literal can first construct its entire host list. The budget
+-- is an optimization policy, never a supported-population limit. Larger or
+-- symbolic drivers keep the original native recursive fold.
+trySmallLiteralFoldl
+  :: forall element acc. SupportedNonFuncPrim element
+  => Term [element]
+  -> (acc -> SBVType element -> acc)
+  -> acc
+  -> Maybe acc
+trySmallLiteralFoldl driver step initial = withNonFuncPrim @element $
+  case literalValues of
+    Nothing -> Nothing
+    Just values -> Just $
+      L.foldl' (\acc value -> step acc (conNonFuncSBVTerm @element value))
+        initial values
+  where
+    literalValues :: Maybe [element]
+    literalValues = case driver of
+      ConTerm values | withinBudget 32 values -> Just values
+      SeqRangeTerm (ConTerm count) | 0 <= count && count <= 32 ->
+        Just [0 .. count - 1]
+      _ -> Nothing
+
+    -- Check the whole bounded spine before invoking the callback; never fold
+    -- a prefix and then fall back. At most 33 spine cells are inspected.
+    withinBudget :: Int -> [value] -> Bool
+    withinBudget _ [] = True
+    withinBudget 0 (_ : _) = False
+    withinBudget remaining (_ : rest) = withinBudget (remaining - 1) rest
+
+-- | SBV recursive functions cannot close over solver values. Keep focused
+-- operands explicit in a typed closure environment at the lowering boundary;
+-- the prepared Grisette callback and its heterogeneous operands stay separate.
+data LoweredFocusedCallback state element where
+  LoweredFocusedCallback ::
+    SBV.SymVal environment =>
+    (QuantifiedStack -> SBV.SBV environment) ->
+    (QuantifiedStack -> SBV.SBV environment -> SBVType (state --> element --> state)) ->
+    LoweredFocusedCallback state element
+
+-- A lowered closure is reusable throughout one lexical scope, even when its
+-- term mentions bound symbols. Its evaluated SBV value is reusable only for
+-- the same immutable argument stack, not merely the same set of binder names.
+-- Keep this cache separate from the solver-wide free-symbol/model registry.
+data LoweringScope = LoweringScope
+  !QuantifiedSymbols
+  !(IORef (HM.HashMap SomeTerm (QuantifiedStack -> Dynamic)))
+
+newLoweringScope :: MonadIO m => QuantifiedSymbols -> m LoweringScope
+newLoweringScope symbols =
+  LoweringScope symbols <$> liftIO (newIORef HM.empty)
+
+extendLoweringScope
+  :: MonadIO m
+  => TypedConstantSymbol a -> LoweringScope -> m LoweringScope
+extendLoweringScope symbol (LoweringScope symbols _) =
+  newLoweringScope (addQuantifiedSymbol symbol symbols)
+
 -- | Lower a single primitive term to SBV. With an explicitly provided
 -- 'SymBiMap' cache.
 lowerSinglePrimCached ::
@@ -559,35 +669,51 @@ lowerSinglePrimCached ::
 lowerSinglePrimCached t' m' = do
   mapState <- liftIO $ newIORef m'
   accumulatedDummyConstraints <- liftIO $ newIORef SBV.sTrue
-  -- quantifiedSymbols <- liftIO $ newIORef emptyQuantifiedSymbols
   let goCached ::
         forall x.
-        QuantifiedSymbols ->
+        LoweringScope ->
         Term x ->
         m (QuantifiedStack -> SBVType x)
-      goCached qs t@SupportedTerm = do
-        let mayReuse =
-              nullQuantifiedSymbols qs
-                || case t of
-                  SymTerm symbol -> not $ isQuantifiedSymbol symbol qs
-                  _ -> False
-        if mayReuse
-          then do
-            mp <- liftIO $ readIORef mapState
-            case lookupTerm (SomeTerm t) mp of
-              Just x -> return (\qst -> withPrim @x $ fromDyn (x qst) undefined)
-              Nothing -> goCachedImpl qs t
-          else goCachedImpl qs t
+      goCached scope@(LoweringScope symbols cache) t@SupportedTerm
+        | nullQuantifiedSymbols symbols = goGlobal scope t
+        | otherwise = do
+            cached <- HM.lookup (SomeTerm t) <$> liftIO (readIORef cache)
+            case cached of
+              Just lowered -> pure $ \stack -> withPrim @x $
+                fromDyn (lowered stack)
+                  (error "BUG: Scoped lowering cache has an inconsistent term type")
+              Nothing -> withPrim @x $ do
+                lowered <- case t of
+                  SymTerm symbol | not (isQuantifiedSymbol symbol symbols) ->
+                    goGlobal scope t
+                  _ -> goCachedImpl scope t
+                let memoed = weakStableMemo lowered
+                    {-# NOINLINE memoed #-}
+                liftIO $ modifyIORef' cache $
+                  HM.insert (SomeTerm t) (toDyn . memoed)
+                pure memoed
+      goGlobal ::
+        forall x.
+        LoweringScope ->
+        Term x ->
+        m (QuantifiedStack -> SBVType x)
+      goGlobal scope t@SupportedTerm = do
+        mp <- liftIO $ readIORef mapState
+        case lookupTerm (SomeTerm t) mp of
+          Just lowered -> pure $ \stack -> withPrim @x $
+            fromDyn (lowered stack)
+              (error "BUG: Global lowering cache has an inconsistent term type")
+          Nothing -> goCachedImpl scope t
       goCachedImpl ::
         forall a.
         (SupportedPrim a) =>
-        QuantifiedSymbols ->
+        LoweringScope ->
         Term a ->
         m (QuantifiedStack -> SBVType a)
       goCachedImpl _ (ConTerm v) =
         return $ const $ conSBVTerm v
-      goCachedImpl qs t@(SymTerm ts) = do
-        if isQuantifiedSymbol ts qs
+      goCachedImpl (LoweringScope symbols _) t@(SymTerm ts) = do
+        if isQuantifiedSymbol ts symbols
           then withPrim @a $ do
             let retDyn qst =
                   case lookupQuantified (someTypedSymbol ts) qst of
@@ -615,7 +741,8 @@ lowerSinglePrimCached t' m' = do
               modifyIORef' mapState $
                 addBiMap (SomeTerm t) (toDyn g) name (someTypedSymbol ts)
             return $ const g
-      goCachedImpl qs t@(ForallTerm (ts :: TypedConstantSymbol t1) v) =
+      goCachedImpl scope@(LoweringScope symbols _)
+          t@(ForallTerm (ts :: TypedConstantSymbol t1) v) =
         withNonFuncPrim @t1 $ do
           do
             m <- liftIO $ readIORef mapState
@@ -623,14 +750,17 @@ lowerSinglePrimCached t' m' = do
                   attachNextQuantifiedSymbolInfo m ts
             liftIO $ writeIORef mapState newm
             let substedTerm = substTerm ts (symTerm sb) HS.empty v
-            r <- goCached (addQuantifiedSymbol sb qs) substedTerm
-            let ret = sbvForall sb r
-            when (nullQuantifiedSymbols qs) $
+            nested <- extendLoweringScope sb scope
+            r <- goCached nested substedTerm
+            let ret = weakStableMemo (sbvForall sb r)
+                {-# NOINLINE ret #-}
+            when (nullQuantifiedSymbols symbols) $
               liftIO $
                 modifyIORef' mapState $
                   addBiMapIntermediate (SomeTerm t) (toDyn . ret)
             return ret
-      goCachedImpl qs t@(ExistsTerm (ts :: TypedConstantSymbol t1) v) =
+      goCachedImpl scope@(LoweringScope symbols _)
+          t@(ExistsTerm (ts :: TypedConstantSymbol t1) v) =
         withNonFuncPrim @t1 $ do
           do
             m <- liftIO $ readIORef mapState
@@ -638,19 +768,21 @@ lowerSinglePrimCached t' m' = do
                   attachNextQuantifiedSymbolInfo m ts
             liftIO $ writeIORef mapState newm
             let substedTerm = substTerm ts (symTerm sb) HS.empty v
-            r <- goCached (addQuantifiedSymbol sb qs) substedTerm
-            let ret = sbvExists sb r
-            when (nullQuantifiedSymbols qs) $
+            nested <- extendLoweringScope sb scope
+            r <- goCached nested substedTerm
+            let ret = weakStableMemo (sbvExists sb r)
+                {-# NOINLINE ret #-}
+            when (nullQuantifiedSymbols symbols) $
               liftIO $
                 modifyIORef' mapState $
                   addBiMapIntermediate (SomeTerm t) (toDyn . ret)
             return ret
-      goCachedImpl qs t =
+      goCachedImpl scope@(LoweringScope symbols _) t =
         withPrim @a $ do
-          r <- goCachedIntermediate qs t
-          if nullQuantifiedSymbols qs
+          r <- goCachedIntermediate scope t
+          if nullQuantifiedSymbols symbols
             then do
-              let memoed = htmemo r
+              let memoed = weakStableMemo r
                   {-# NOINLINE memoed #-}
               liftIO $
                 modifyIORef' mapState $
@@ -660,11 +792,11 @@ lowerSinglePrimCached t' m' = do
       goGeneralFunBinder ::
         forall argument result.
         SupportedNonFuncPrim argument =>
-        ( QuantifiedSymbols ->
+        ( LoweringScope ->
           Term result ->
           m (QuantifiedStack -> SBVType result)
         ) ->
-        QuantifiedSymbols ->
+        LoweringScope ->
         Term (argument --> result) ->
         m (QuantifiedStack -> SBVType (argument --> result))
       goGeneralFunBinder lowerResult qs function@SupportedTerm = case function of
@@ -675,15 +807,15 @@ lowerSinglePrimCached t' m' = do
                   attachNextQuantifiedSymbolInfo currentMap binder
                 scopedBody = substTerm binder (symTerm scopedBinder) HS.empty body
             liftIO $ writeIORef mapState nextMap
-            loweredBody <-
-              lowerResult (addQuantifiedSymbol scopedBinder qs) scopedBody
+            nested <- extendLoweringScope scopedBinder qs
+            loweredBody <- lowerResult nested scopedBody
             pure $ \stack argument ->
               loweredBody (addQuantified scopedBinder (toDyn argument) stack)
         _ -> goCached qs function
       goCachedIntermediate ::
         forall a.
         (SupportedPrim a) =>
-        QuantifiedSymbols ->
+        LoweringScope ->
         Term a ->
         m (QuantifiedStack -> SBVType a)
       goCachedIntermediate qs (NotTerm t) = do
@@ -916,6 +1048,34 @@ lowerSinglePrimCached t' m' = do
         withNonFuncPrim @element $ do
           sequence' <- goCached qs sequence
           pure $ SBVL.drop 1 . sequence'
+      goCachedIntermediate qs
+        (SeqResizeTerm seed count (sequence :: Term [element])) =
+          withNonFuncPrim @element $ do
+            seed' <- goCached qs seed
+            count' <- goCached qs count
+            sequence' <- goCached qs sequence
+            pure $ \qst ->
+              let source = sequence' qst
+                  size = SBV.ite (count' qst SBV..<= 0) 0 (count' qst)
+                  sourceLength = SBVL.length source
+               in SBV.ite (size SBV..<= sourceLength)
+                    (SBVL.take size source)
+                    (source SBVL.++ SBVL.replicate (size - sourceLength) (seed' qst))
+      goCachedIntermediate qs
+        (SeqUpdateTerm index replacement (sequence :: Term [element])) =
+          withNonFuncPrim @element $ do
+            index' <- goCached qs index
+            replacement' <- goCached qs replacement
+            sequence' <- goCached qs sequence
+            pure $ \qst ->
+              let source = sequence' qst
+                  position = index' qst
+                  present = (0 SBV..<= position)
+                    SBV..&& (position SBV..< SBVL.length source)
+               in SBV.ite present
+                    (SBVL.take position source SBVL.++
+                      (replacement' qst SBVL..: SBVL.drop (position + 1) source))
+                    source
       goCachedIntermediate
         qs
         (SeqLookupTerm seed (sequence :: Term [element]) index) =
@@ -967,7 +1127,10 @@ lowerSinglePrimCached t' m' = do
                 step
             initial' <- goCached qs initial
             sequence' <- goCached qs sequence
-            pure $ \qst -> SBVL.foldl (step' qst) (initial' qst) (sequence' qst)
+            pure $ \qst ->
+              case trySmallLiteralFoldl sequence (step' qst) (initial' qst) of
+                Just result -> result
+                Nothing -> SBVL.foldl (step' qst) (initial' qst) (sequence' qst)
       goCachedIntermediate
         qs
         ( FocusedSeqFoldTerm
@@ -977,38 +1140,52 @@ lowerSinglePrimCached t' m' = do
             (sequence :: Term [element])
           ) =
           withNonFuncPrim @state $ withNonFuncPrim @element $ do
-            step' <- lowerFocusedCallback qs qs callback operands
+            LoweredFocusedCallback environment' step' <-
+              lowerFocusedCallback qs qs callback operands
             initial' <- goCached qs initial
             sequence' <- goCached qs sequence
-            pure $ \qst -> SBVL.foldl (step' qst) (initial' qst) (sequence' qst)
+            pure $ \qst ->
+              case trySmallLiteralFoldl sequence
+                  (step' qst (environment' qst)) (initial' qst) of
+                Just result -> result
+                Nothing -> SBVL.foldl
+                  SBV.Closure
+                    { SBV.closureEnv = environment' qst,
+                      SBV.closureFun = step' qst
+                    }
+                  (initial' qst) (sequence' qst)
           where
             lowerFocusedCallback
               :: forall captures state element.
-                 QuantifiedSymbols
-              -> QuantifiedSymbols
+                 LoweringScope
+              -> LoweringScope
               -> FocusedSeqFoldCallback captures state element
               -> FocusedSeqFoldOperands captures
-              -> m (QuantifiedStack -> SBVType (state --> element --> state))
+              -> m (LoweredFocusedCallback state element)
             lowerFocusedCallback _ callbackSymbols
                 (FocusedSeqFoldCallbackBody step)
-                NoFocusedSeqFoldOperands =
-              goGeneralFunBinder @state @(element --> state)
+                NoFocusedSeqFoldOperands = do
+              lowered <- goGeneralFunBinder @state @(element --> state)
                 (goGeneralFunBinder @element @state $ \symbols term@SupportedTerm ->
                   goCached symbols term)
                 callbackSymbols
                 step
+              pure $ LoweredFocusedCallback
+                (const (SBV.literal ())) (\qst _ -> lowered qst)
             lowerFocusedCallback operandSymbols callbackSymbols
                 (FocusedSeqFoldCallbackBind symbol rest)
                 (FocusedSeqFoldOperand (operand :: Term capture) restOperands) =
               withNonFuncPrim @capture $ do
                 operand' <- goCached operandSymbols operand
-                lowered <- lowerFocusedCallback
-                  operandSymbols
-                  (addQuantifiedSymbol symbol callbackSymbols)
-                  rest
-                  restOperands
-                pure $ \qst ->
-                  lowered (addQuantified symbol (toDyn (operand' qst)) qst)
+                nested <- extendLoweringScope symbol callbackSymbols
+                LoweredFocusedCallback restEnvironment lowered <-
+                  lowerFocusedCallback operandSymbols nested rest restOperands
+                pure $ LoweredFocusedCallback
+                  (\qst -> SBVTuple.tuple (operand' qst, restEnvironment qst))
+                  (\qst environment ->
+                    lowered
+                      (addQuantified symbol (toDyn (SBVTuple.fst environment)) qst)
+                      (SBVTuple.snd environment))
       goCachedIntermediate
         qs
         ( SeqFoldWithTerm
@@ -1033,13 +1210,16 @@ lowerSinglePrimCached t' m' = do
                 initial' <- goCached qs initial
                 sequence' <- goCached qs sequence
                 pure $ \qst ->
-                  SBVL.foldl
-                    SBV.Closure
-                      { SBV.closureEnv = environment' qst,
-                        SBV.closureFun = step' qst
-                      }
-                    (initial' qst)
-                    (sequence' qst)
+                  case trySmallLiteralFoldl sequence
+                      (step' qst (environment' qst)) (initial' qst) of
+                    Just result -> result
+                    Nothing -> SBVL.foldl
+                      SBV.Closure
+                        { SBV.closureEnv = environment' qst,
+                          SBV.closureFun = step' qst
+                        }
+                      (initial' qst)
+                      (sequence' qst)
       goCachedIntermediate
         qs
         (PairTerm (firstValue :: Term firstType) (secondValue :: Term secondType)) =
@@ -1063,7 +1243,8 @@ lowerSinglePrimCached t' m' = do
       goCachedIntermediate _ SymTerm {} = error "Should not happen"
       goCachedIntermediate _ ForallTerm {} = error "Should not happen"
       goCachedIntermediate _ ExistsTerm {} = error "Should not happen"
-  r <- goCached emptyQuantifiedSymbols t'
+  initialScope <- newLoweringScope emptyQuantifiedSymbols
+  r <- goCached initialScope t'
   m <- liftIO $ readIORef mapState
   constraint <- liftIO $ readIORef accumulatedDummyConstraints
   return (m, r, constraint)

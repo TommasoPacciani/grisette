@@ -178,6 +178,8 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
     seqLengthTerm,
     seqRangeTerm,
     seqTailTerm,
+    seqResizeTerm,
+    seqUpdateTerm,
     seqLookupTerm,
     seqLookupValueTerm,
     seqFoldTerm,
@@ -244,6 +246,8 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
     pattern SeqLengthTerm,
     pattern SeqRangeTerm,
     pattern SeqTailTerm,
+    pattern SeqResizeTerm,
+    pattern SeqUpdateTerm,
     pattern SeqLookupTerm,
     pattern SeqLookupValueTerm,
     pattern SeqFoldTerm,
@@ -1091,6 +1095,12 @@ seqLookupValueTermTag = 63
 focusedSeqFoldTermTag :: Word8
 focusedSeqFoldTermTag = 64
 
+seqResizeTermTag :: Word8
+seqResizeTermTag = 65
+
+seqUpdateTermTag :: Word8
+seqUpdateTermTag = 66
+
 terminalTag :: Word8
 terminalTag = 255
 
@@ -1871,6 +1881,34 @@ statefulDeserializeSomeTerm = do
           sequence <- deserializeTerm
           withListTerm sequence $ \sequence' ->
             pure $ Just (someTerm $ seqTailTerm sequence', ktTmId)
+      | tag == seqResizeTermTag -> do
+          seed <- deserializeTerm
+          count <- deserializeTerm
+          sequence <- deserializeTerm
+          withNonFuncTerm seed $ \(seed' :: Term element) ->
+            withListTerm sequence $ \(sequence' :: Term [sequenceElement]) ->
+              case
+                  ( eqTypeRep (typeRep @element) (typeRep @sequenceElement),
+                    castSomeTerm @Integer count
+                  )
+                of
+                  (Just HRefl, Just count') -> pure $ Just
+                    (someTerm $ seqResizeTerm seed' count' sequence', ktTmId)
+                  _ -> fail "statefulDeserializeSomeTerm: SeqResize type mismatch"
+      | tag == seqUpdateTermTag -> do
+          index <- deserializeTerm
+          replacement <- deserializeTerm
+          sequence <- deserializeTerm
+          withNonFuncTerm replacement $ \(replacement' :: Term element) ->
+            withListTerm sequence $ \(sequence' :: Term [sequenceElement]) ->
+              case
+                  ( castSomeTerm @Integer index,
+                    eqTypeRep (typeRep @element) (typeRep @sequenceElement)
+                  )
+                of
+                  (Just index', Just HRefl) -> pure $ Just
+                    (someTerm $ seqUpdateTerm index' replacement' sequence', ktTmId)
+                  _ -> fail "statefulDeserializeSomeTerm: SeqUpdate type mismatch"
       | tag == seqLookupTermTag -> do
           seed <- deserializeTerm
           sequence <- deserializeTerm
@@ -2402,6 +2440,10 @@ serializeSingleSomeTerm (SomeTerm (tm :: Term t)) = do
           serializeUnary ktTmId seqRangeTermTag extent
         SeqTailTerm sequence ->
           serializeUnary ktTmId seqTailTermTag sequence
+        SeqResizeTerm seed count sequence ->
+          serializeTernary ktTmId seqResizeTermTag seed count sequence
+        SeqUpdateTerm index replacement sequence ->
+          serializeTernary ktTmId seqUpdateTermTag index replacement sequence
         SeqLookupTerm seed sequence index ->
           serializeTernary ktTmId seqLookupTermTag seed sequence index
         SeqLookupValueTerm seed sequence index ->

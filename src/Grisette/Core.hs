@@ -36,7 +36,7 @@ module Grisette.Core
     -- * Symbolic equality and comparison ('SymEq', 'SymOrd')
     -- * Conversion between concrete and symbolic values ('ToCon', 'ToSym')
     -- * Merging of symbolic values ('Mergeable', 'SimpleMergeable', 'TryMerge')
-    -- * Symbolic branching ('SymBranching')
+    -- * Symbolic branching ('MergingBranching', 'SymBranching')
     --
     -- Additional tools for building symbolic evaluation based applications are
     -- also provided:
@@ -880,6 +880,7 @@ module Grisette.Core
     mrgIte2,
 
     -- ** Symbolic branching
+    MergingBranching (..),
     SymBranching (..),
     mrgIf,
     mergeWithStrategy,
@@ -904,6 +905,7 @@ module Grisette.Core
     onUnion2,
     onUnion3,
     onUnion4,
+    onUnionMWithStrategy,
     liftUnion,
     liftToMonadUnion,
 
@@ -1246,6 +1248,7 @@ module Grisette.Core
 
     -- ** Solver interfaces
     SolvingFailure (..),
+    ModelProjection (..),
     MonadicSolver (..),
     monadicSolverSolve,
     SolverCommand (..),
@@ -1704,6 +1707,7 @@ import Grisette.Internal.Core.Data.Class.SimpleMergeable
     SimpleMergeable1 (..),
     SimpleMergeable2 (..),
     SimpleMergeableArgs (..),
+    MergingBranching (..),
     SymBranching (..),
     genericLiftMrgIte,
     genericMrgIte,
@@ -1721,6 +1725,7 @@ import Grisette.Internal.Core.Data.Class.Solvable
   )
 import Grisette.Internal.Core.Data.Class.Solver
   ( ConfigurableSolver (..),
+    ModelProjection (..),
     MonadicSolver (..),
     Solver (..),
     SolverCommand (..),
@@ -1837,6 +1842,7 @@ import Grisette.Internal.Core.Data.Class.UnionView
     onUnion2,
     onUnion3,
     onUnion4,
+    onUnionMWithStrategy,
     simpleMerge,
     unionToCon,
     (.#),

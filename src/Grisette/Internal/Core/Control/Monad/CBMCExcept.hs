@@ -96,7 +96,8 @@ import Grisette.Internal.Core.Data.Class.Mergeable
 import Grisette.Internal.Core.Data.Class.SimpleMergeable
   ( SimpleMergeable (mrgIte),
     SimpleMergeable1 (liftMrgIte),
-    SymBranching (mrgIfPropagatedStrategy, mrgIfWithStrategy),
+    MergingBranching (mrgIfWithStrategy),
+    SymBranching (mrgIfPropagatedStrategy),
     mrgIf,
   )
 import Grisette.Internal.Core.Data.Class.Solver (UnionWithExcept (extractUnionExcept))
@@ -448,14 +449,14 @@ instance
   GenSym (CBMCExceptT e m a) (CBMCExceptT e m a)
 
 instance
-  (SymBranching m, Mergeable e, Mergeable a) =>
+  (MergingBranching m, Mergeable e, Mergeable a) =>
   SimpleMergeable (CBMCExceptT e m a)
   where
   mrgIte = mrgIf
   {-# INLINE mrgIte #-}
 
 instance
-  (SymBranching m, Mergeable e) =>
+  (MergingBranching m, Mergeable e) =>
   SimpleMergeable1 (CBMCExceptT e m)
   where
   liftMrgIte m = mrgIfWithStrategy (SimpleStrategy m)
@@ -469,11 +470,16 @@ instance
   {-# INLINE tryMergeWithStrategy #-}
 
 instance
-  (SymBranching m, Mergeable e) =>
-  SymBranching (CBMCExceptT e m)
+  (MergingBranching m, Mergeable e) =>
+  MergingBranching (CBMCExceptT e m)
   where
   mrgIfWithStrategy s cond (CBMCExceptT t) (CBMCExceptT f) = CBMCExceptT $ mrgIfWithStrategy (liftRootStrategy s) cond t f
   {-# INLINE mrgIfWithStrategy #-}
+
+instance
+  (SymBranching m, Mergeable e) =>
+  SymBranching (CBMCExceptT e m)
+  where
   mrgIfPropagatedStrategy cond (CBMCExceptT t) (CBMCExceptT f) = CBMCExceptT $ mrgIfPropagatedStrategy cond t f
   {-# INLINE mrgIfPropagatedStrategy #-}
 

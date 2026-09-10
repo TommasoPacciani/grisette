@@ -36,6 +36,7 @@ import Grisette.Internal.Core.Data.Class.BitCast
 import Grisette.Internal.Core.Data.Class.IEEEFP
   ( IEEEFPConvertible,
   )
+import Grisette.Internal.Core.Data.Class.TryMerge (TryMerge)
 import Grisette.Internal.Internal.Decl.Unified.UnifiedBV
   ( UnifiedBVImpl (GetIntN, GetWordN),
   )
@@ -134,6 +135,7 @@ class
     UnifiedBVFPConversion mode n eb sb,
     forall n eb sb m.
     ( UnifiedBranching mode m,
+      TryMerge m,
       ValidFP eb sb,
       KnownNat n,
       1 <= n,

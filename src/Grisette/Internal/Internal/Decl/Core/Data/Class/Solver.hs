@@ -34,6 +34,7 @@ module Grisette.Internal.Internal.Decl.Core.Data.Class.Solver
 
     -- * Solver interfaces
     SolvingFailure (..),
+    ModelProjection (..),
     MonadicSolver (..),
     monadicSolverSolve,
     SolverCommand (..),
@@ -107,6 +108,14 @@ data SolvingFailure
     Terminated
   deriving (Lift)
 
+-- | The model bindings to read after a satisfiable check. A projection only
+-- restricts already registered free symbols: it never declares missing symbols
+-- or supplies defaults, and retains the backend's model exclusion policy.
+data ModelProjection
+  = AllModelSymbols
+  | OnlyModelSymbols !AnySymbolSet
+  deriving (Eq, Show)
+
 -- | A monadic solver interface.
 --
 -- This interface abstract the monadic interface of a solver. All the operations
@@ -117,7 +126,7 @@ class (Monad m) => MonadicSolver m where
   monadicSolverPop :: Int -> m ()
   monadicSolverResetAssertions :: m ()
   monadicSolverAssert :: SymBool -> m ()
-  monadicSolverCheckSat :: m (Either SolvingFailure Model)
+  monadicSolverCheckSat :: ModelProjection -> m (Either SolvingFailure Model)
 
 -- | Solve a single formula with a monadic solver. Find an assignment to it to
 -- make it true.
@@ -125,12 +134,12 @@ monadicSolverSolve ::
   (MonadicSolver m) => SymBool -> m (Either SolvingFailure Model)
 monadicSolverSolve formula = do
   monadicSolverAssert formula
-  monadicSolverCheckSat
+  monadicSolverCheckSat AllModelSymbols
 
 -- | The commands that can be sent to a solver.
 data SolverCommand
   = SolverAssert !SymBool
-  | SolverCheckSat
+  | SolverCheckSat !ModelProjection
   | SolverPush Int
   | SolverPop Int
   | SolverResetAssertions
@@ -151,7 +160,7 @@ class Solver handle where
     solverRunCommand (const $ return $ Right ()) handle $ SolverAssert formula
 
   -- | Solve a formula.
-  solverCheckSat :: handle -> IO (Either SolvingFailure Model)
+  solverCheckSat :: handle -> ModelProjection -> IO (Either SolvingFailure Model)
 
   -- | Push @n@ levels.
   solverPush :: handle -> Int -> IO (Either SolvingFailure ())
@@ -196,7 +205,7 @@ solverSolve solver formula = do
   res <- solverAssert solver formula
   case res of
     Left err -> return $ Left err
-    Right _ -> solverCheckSat solver
+    Right _ -> solverCheckSat solver AllModelSymbols
 
 -- | Solve a single formula while returning multiple models to make it true.
 -- The maximum number of desired models are given.

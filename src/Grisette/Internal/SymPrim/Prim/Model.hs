@@ -1,18 +1,6 @@
-{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE GHC2024 #-}
 {-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE DeriveLift #-}
-{-# LANGUAGE DerivingStrategies #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE GADTs #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE InstanceSigs #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE PatternSynonyms #-}
-{-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 
 -- |
@@ -68,7 +56,7 @@ import Grisette.Internal.Core.Data.Class.ModelOps
       ),
     SymbolSetRep (buildSymbolSet),
   )
-import Grisette.Internal.SymPrim.GeneralFun (generalSubstSomeTerm)
+import Grisette.Internal.SymPrim.GeneralFun (generalEvalSomeTerm)
 import Grisette.Internal.SymPrim.Prim.Internal.Term
   ( SomeTypedAnySymbol,
     SomeTypedConstantSymbol,
@@ -401,7 +389,7 @@ evalTerm ::
   Term a ->
   Term a
 evalTerm fillDefault (Model ma) =
-  generalSubstSomeTerm
+  generalEvalSomeTerm
     ( \(sym@SupportedTypedSymbol :: TypedSymbol 'AnyKind a) ->
         case (M.lookup (someTypedSymbol sym) ma) of
           Nothing ->
@@ -411,9 +399,6 @@ evalTerm fillDefault (Model ma) =
           Just dy ->
             conTerm (unsafeFromModelValue @a dy)
     )
-    -- Model evaluation replaces a symbol with a concrete value or with itself,
-    -- so it introduces no symbol a binder could capture.
-    S.empty
 
 -- |
 -- A type used for building a model by hand.

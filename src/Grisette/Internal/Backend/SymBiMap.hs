@@ -20,6 +20,7 @@ module Grisette.Internal.Backend.SymBiMap
     addBiMap,
     addBiMapIntermediate,
     findStringToSymbol,
+    findSymbolToString,
     lookupTerm,
     attachNextQuantifiedSymbolInfo,
   )
@@ -53,11 +54,13 @@ data SymBiMap = SymBiMap
   { biMapToSBV :: M.HashMap SomeTerm (QuantifiedStack -> Dynamic),
     biMapSize :: Int,
     biMapFromSBV :: M.HashMap String SomeTypedAnySymbol,
+    -- Only free symbols inserted by addBiMap, never scoped intermediates.
+    biMapSymbolNames :: M.HashMap SomeTypedAnySymbol String,
     quantifiedSymbolNum :: Int
   }
 
 instance Show SymBiMap where
-  show (SymBiMap t s f _) =
+  show (SymBiMap t s f _ _) =
     "SymBiMap { size: "
       ++ show s
       ++ ", toSBV: "
@@ -70,8 +73,8 @@ instance Show SymBiMap where
 -- newtype QuantifiedSymbolInfo = QuantifiedSymbolInfo Int
 --   deriving (Generic, Ord, Eq, Show, Hashable, Lift, NFData)
 nextQuantifiedSymbolInfo :: SymBiMap -> (SymBiMap, SExpr -> SExpr)
-nextQuantifiedSymbolInfo (SymBiMap t s f num) =
-  ( SymBiMap t s f (num + 1),
+nextQuantifiedSymbolInfo (SymBiMap t s f names num) =
+  ( SymBiMap t s f names (num + 1),
     \meta ->
       List
         [ Atom "grisette-quantified",
@@ -97,7 +100,7 @@ attachNextQuantifiedSymbolInfo m s =
 
 -- | An empty bidirectional map.
 emptySymBiMap :: SymBiMap
-emptySymBiMap = SymBiMap M.empty 0 M.empty 0
+emptySymBiMap = SymBiMap M.empty 0 M.empty M.empty 0
 
 -- | The size of the bidirectional map.
 sizeBiMap :: SymBiMap -> Int
@@ -112,22 +115,28 @@ addBiMap ::
   SomeTypedSymbol knd ->
   SymBiMap ->
   SymBiMap
-addBiMap s d n sb (SymBiMap t sz f num) =
+addBiMap s d n sb (SymBiMap t sz f names num) =
   case castSomeTypedSymbol sb of
-    Just sb' -> SymBiMap (M.insert s (const d) t) (sz + 1) (M.insert n sb' f) num
+    Just sb' -> SymBiMap (M.insert s (const d) t) (sz + 1)
+      (M.insert n sb' f) (M.insert sb' n names) num
     _ -> error "Casting to AnySymbol, should not fail"
 
 -- | Add a new entry to the bidirectional map for intermediate values.
 addBiMapIntermediate ::
   (HasCallStack) => SomeTerm -> (QuantifiedStack -> Dynamic) -> SymBiMap -> SymBiMap
-addBiMapIntermediate s d (SymBiMap t sz f num) =
-  SymBiMap (M.insert s d t) (sz + 1) f num
+addBiMapIntermediate s d (SymBiMap t sz f names num) =
+  SymBiMap (M.insert s d t) (sz + 1) f names num
 
 -- | Find a symbolic Grisette term from a string.
 findStringToSymbol :: (IsSymbolKind knd) => String -> SymBiMap -> Maybe (SomeTypedSymbol knd)
-findStringToSymbol s (SymBiMap _ _ f _) = do
+findStringToSymbol s (SymBiMap _ _ f _ _) = do
   r <- M.lookup s f
   castSomeTypedSymbol r
+
+-- | Exact backend name of an already registered free symbol. Missing requested
+-- symbols remain sparse; projection must not lower them to invent bindings.
+findSymbolToString :: SomeTypedAnySymbol -> SymBiMap -> Maybe String
+findSymbolToString symbol = M.lookup symbol . biMapSymbolNames
 
 -- | Look up an sbv value with a symbolic Grisette term in the bidirectional
 -- map.

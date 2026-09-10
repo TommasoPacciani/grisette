@@ -1,10 +1,10 @@
 packages: grisette.cabal
 allow-newer: base
 
-source-repository-package
-  type: git
-  location: https://github.com/TommasoPacciani/sbv.git
-  tag: 64af8a97a063ac94af83dfdf9d8a0770f2c8063d
+-- Same native fork as the owning p4check2 project: exact 64af8a97 base plus
+-- direct registered-free-symbol model projection. Never use the browser fork
+-- or a cached source tree as the native development authority.
+packages: ../sbv-native/sbv.cabal
 
 package grisette
   tests: True

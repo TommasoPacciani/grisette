@@ -55,7 +55,7 @@ import Grisette.Internal.Core.Control.Exception
   )
 import Grisette.Internal.Core.Control.Monad.Union (Union)
 import Grisette.Internal.Core.Data.Class.Mergeable (Mergeable)
-import Grisette.Internal.Core.Data.Class.TryMerge (tryMerge)
+import Grisette.Internal.Core.Data.Class.TryMerge (TryMerge, tryMerge)
 import Grisette.Internal.Internal.Decl.Core.Data.Class.SymOrd
   ( SymOrd,
     SymOrd1,
@@ -181,6 +181,7 @@ mrgMax ::
     UnifiedBranching mode m,
     DecideEvalMode mode,
     Applicative m,
+    TryMerge m,
     Mergeable a
   ) =>
   a ->
@@ -207,6 +208,7 @@ mrgMin ::
     UnifiedBranching mode m,
     DecideEvalMode mode,
     Applicative m,
+    TryMerge m,
     Mergeable a
   ) =>
   a ->

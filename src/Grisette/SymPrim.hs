@@ -1,4 +1,4 @@
-{-# LANGUAGE ExplicitNamespaces #-}
+{-# LANGUAGE GHC2024 #-}
 {-# LANGUAGE PatternSynonyms #-}
 -- Disable this warning because we are re-exporting things.
 {-# OPTIONS_GHC -Wno-missing-import-lists #-}
@@ -291,13 +291,6 @@ module Grisette.SymPrim
     pattern FromFPOrTerm,
     pattern ToFPTerm,
     SymArray (..),
-    selectThroughIte,
-    PreparedSliceThroughIte,
-    prepareSliceThroughIte,
-    applyPreparedSliceThroughIte,
-    PreparedSliceSelectThroughIte,
-    prepareSliceSelectThroughIte,
-    applyPreparedSliceSelectThroughIte,
     SymSeq,
     SymPair,
     NominalDomain (..),
@@ -446,16 +439,7 @@ import Grisette.Internal.SymPrim.Prim.TermUtils
     termSize,
     termsSize,
   )
-import Grisette.Internal.SymPrim.SymArray
-  ( PreparedSliceThroughIte,
-    PreparedSliceSelectThroughIte,
-    SymArray (..),
-    applyPreparedSliceThroughIte,
-    applyPreparedSliceSelectThroughIte,
-    prepareSliceThroughIte,
-    prepareSliceSelectThroughIte,
-    selectThroughIte,
-  )
+import Grisette.Internal.SymPrim.SymArray (SymArray (..))
 import Grisette.Internal.SymPrim.SymPair (SymPair)
 import Grisette.Internal.SymPrim.SymSeq (SymSeq)
 import Grisette.Internal.SymPrim.Nominal

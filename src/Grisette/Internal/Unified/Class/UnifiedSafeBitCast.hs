@@ -32,6 +32,7 @@ import Control.Monad.Error.Class (MonadError)
 import GHC.TypeLits (KnownNat, type (+), type (<=))
 import Grisette.Internal.Core.Data.Class.SafeBitCast (SafeBitCast)
 import qualified Grisette.Internal.Core.Data.Class.SafeBitCast
+import Grisette.Internal.Core.Data.Class.TryMerge (TryMerge)
 import Grisette.Internal.SymPrim.BV (IntN, WordN)
 import Grisette.Internal.SymPrim.FP (FP, NotRepresentableFPError, ValidFP)
 import Grisette.Internal.SymPrim.SymBV (SymIntN, SymWordN)
@@ -77,6 +78,7 @@ instance
 instance
   ( MonadError NotRepresentableFPError m,
     UnifiedBranching mode m,
+    TryMerge m,
     ValidFP eb sb,
     KnownNat n,
     1 <= n,
@@ -90,6 +92,7 @@ instance
 instance
   ( MonadError NotRepresentableFPError m,
     UnifiedBranching mode m,
+    TryMerge m,
     ValidFP eb sb,
     KnownNat n,
     1 <= n,
@@ -103,6 +106,7 @@ instance
 instance
   ( MonadError NotRepresentableFPError m,
     UnifiedBranching 'S m,
+    TryMerge m,
     ValidFP eb sb,
     KnownNat n,
     1 <= n,
@@ -115,6 +119,7 @@ instance
 instance
   ( MonadError NotRepresentableFPError m,
     UnifiedBranching 'S m,
+    TryMerge m,
     ValidFP eb sb,
     KnownNat n,
     1 <= n,

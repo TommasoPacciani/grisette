@@ -24,6 +24,7 @@ module Grisette.Internal.Internal.Impl.Unified.UnifiedBV () where
 import Control.Exception (ArithException)
 import Control.Monad.Except (MonadError)
 import GHC.TypeLits (KnownNat, type (<=))
+import Grisette.Internal.Core.Data.Class.TryMerge (TryMerge)
 import Grisette.Internal.Core.Data.Class.BitVector (SizedBV)
 import Grisette.Internal.Internal.Decl.Unified.UnifiedBV
   ( AllUnifiedBV,
@@ -132,6 +133,7 @@ instance
 instance
   ( forall n m.
     ( UnifiedBranching mode m,
+      TryMerge m,
       MonadError ArithException m,
       KnownNat n,
       1 <= n
@@ -139,6 +141,7 @@ instance
     SafeUnifiedBV mode n m,
     forall m.
     ( UnifiedBranching mode m,
+      TryMerge m,
       MonadError (Either SomeBVException ArithException) m
     ) =>
     SafeUnifiedSomeBV mode m,

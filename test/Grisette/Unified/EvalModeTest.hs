@@ -276,6 +276,7 @@ type FDataConstraint mode m =
   ( EvalModeBase mode,
     EvalModeBV mode,
     UnifiedBranching mode m,
+    MonadTryMerge m,
     MonadError ArithException m
   )
 #else
@@ -284,6 +285,7 @@ type FDataConstraint mode m =
     EvalModeBV mode,
     MonadError ArithException m,
     UnifiedBranching mode m,
+    MonadTryMerge m,
     UnifiedData mode (A mode),
     SafeUnifiedBV mode 8 m,
     Mergeable (GetData mode (A mode))
@@ -333,12 +335,14 @@ fpToBVBitCast = bitCastOrCanonical
 type SafeFPToBVConstraint mode m =
   ( EvalModeFP mode,
     UnifiedBranching mode m,
+    MonadTryMerge m,
     MonadError NotRepresentableFPError m
   )
 #else
 type SafeFPToBVConstraint mode m =
   ( EvalModeFP mode,
     UnifiedBranching mode m,
+    MonadTryMerge m,
     MonadError NotRepresentableFPError m,
     SafeUnifiedBVFPConversion mode 8 4 4 m
   )

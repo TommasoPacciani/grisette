@@ -100,7 +100,9 @@ memo' ::
   f b ->
   g b
 memo' _ f tbl weakTbl !x = unsafePerformIO $ do
-  sn <- makeStableName $ unsafeToAny x
+  -- Stable naming is non-strict: name the already-forced key, not a fresh
+  -- unevaluated coercion application. This adds no strictness to its payload.
+  sn <- makeStableName $! unsafeToAny x
   lkp <- HM.lookup sn <$> readIORef tbl
   case lkp of
     Nothing -> notFound sn

@@ -1,10 +1,7 @@
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE GADTs #-}
+{-# LANGUAGE GHC2024 #-}
 {-# LANGUAGE PatternSynonyms #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 {-# HLINT ignore "Eta reduce" #-}
-{-# LANGUAGE TypeApplications #-}
-{-# LANGUAGE TypeOperators #-}
+-- The width-indexed instances require the inherited primitive dictionaries.
 {-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 
@@ -43,6 +40,7 @@ import Grisette.Internal.SymPrim.Prim.Internal.Term
     modIntegralTerm,
     quotIntegralTerm,
     remIntegralTerm,
+    totalize2,
     pattern ConTerm,
     pattern SupportedTerm,
   )
@@ -143,10 +141,12 @@ doPevalDefaultRemIntegralTerm _ (ConTerm (-1)) = Just $ conTerm 0
 doPevalDefaultRemIntegralTerm _ _ = Nothing
 
 instance PEvalDivModIntegralTerm Integer where
-  pevalDivIntegralTerm = pevalDefaultDivIntegralTerm
-  pevalModIntegralTerm = pevalDefaultModIntegralTerm
-  pevalQuotIntegralTerm = pevalDefaultQuotIntegralTerm
-  pevalRemIntegralTerm = pevalDefaultRemIntegralTerm
+  -- Retain native arithmetic DAGs under symbolic choice.  The local rules
+  -- preserve constant evaluation, unit divisors, and residual zero divisors.
+  pevalDivIntegralTerm = totalize2 doPevalDefaultDivIntegralTerm divIntegralTerm
+  pevalModIntegralTerm = totalize2 doPevalDefaultModIntegralTerm modIntegralTerm
+  pevalQuotIntegralTerm = totalize2 doPevalDefaultQuotIntegralTerm quotIntegralTerm
+  pevalRemIntegralTerm = totalize2 doPevalDefaultRemIntegralTerm remIntegralTerm
   withSbvDivModIntegralTermConstraint r = r
 
 instance (KnownNat n, 1 <= n) => PEvalDivModIntegralTerm (IntN n) where

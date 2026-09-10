@@ -19,7 +19,6 @@ module Grisette.Internal.Core.Data.Class.SafeFromFP (SafeFromFP (..)) where
 
 import Control.Monad.Error.Class (MonadError (throwError))
 import GHC.TypeLits (KnownNat, type (<=))
-import Grisette.Internal.Core.Control.Monad.Class.Union (MonadUnion)
 import Grisette.Internal.Core.Data.Class.IEEEFP
   ( IEEEFPConvertible (fromFPOr),
     IEEEFPRoundingMode (rna, rne, rtn, rtp, rtz),
@@ -28,7 +27,10 @@ import Grisette.Internal.Core.Data.Class.IEEEFP
     fpIsPositiveInfinite,
   )
 import Grisette.Internal.Core.Data.Class.ITEOp (ITEOp (symIte))
-import Grisette.Internal.Core.Data.Class.SimpleMergeable (mrgIf)
+import Grisette.Internal.Core.Data.Class.SimpleMergeable
+  ( MergingBranching,
+    mrgIf,
+  )
 import Grisette.Internal.Core.Data.Class.Solvable (Solvable (con))
 import Grisette.Internal.Core.Data.Class.SymEq (SymEq ((.==)))
 import Grisette.Internal.Core.Data.Class.SymIEEEFP
@@ -81,7 +83,11 @@ instance
     | otherwise = mrgSingle $ fromFPOr undefined mode a
 
 instance
-  (MonadError NotRepresentableFPError m, MonadUnion m, ValidFP eb sb) =>
+  ( MonadError NotRepresentableFPError m,
+    MergingBranching m,
+    TryMerge m,
+    ValidFP eb sb
+  ) =>
   SafeFromFP
     NotRepresentableFPError
     SymAlgReal
@@ -109,7 +115,11 @@ instance
     | otherwise = mrgSingle $ fromFPOr 0 mode a
 
 instance
-  (MonadError NotRepresentableFPError m, MonadUnion m, ValidFP eb sb) =>
+  ( MonadError NotRepresentableFPError m,
+    MergingBranching m,
+    TryMerge m,
+    ValidFP eb sb
+  ) =>
   SafeFromFP
     NotRepresentableFPError
     SymInteger
@@ -200,7 +210,8 @@ symConvertibleUpperBound _ mode =
 
 instance
   ( MonadError NotRepresentableFPError m,
-    MonadUnion m,
+    MergingBranching m,
+    TryMerge m,
     ValidFP eb sb,
     KnownNat n,
     1 <= n
@@ -242,7 +253,8 @@ instance
 
 instance
   ( MonadError NotRepresentableFPError m,
-    MonadUnion m,
+    MergingBranching m,
+    TryMerge m,
     ValidFP eb sb,
     KnownNat n,
     1 <= n
